@@ -17,7 +17,6 @@ build:
     sbcl --non-interactive \
          --eval '(require :asdf)' \
          --eval '(push (truename "./") asdf:*central-registry*)' \
-         --eval '(asdf:load-asd (merge-pathnames "librecode.asd" (truename "./")))' \
          --eval '(asdf:load-system :librecode-runner)' \
          --eval '(asdf:load-system :librecode-meta)'
 
@@ -25,7 +24,6 @@ build:
 repl:
     rlwrap sbcl --eval '(require :asdf)' \
                 --eval '(push (truename "./") asdf:*central-registry*)' \
-                --eval '(asdf:load-asd (merge-pathnames "librecode.asd" (truename "./")))' \
                 --eval '(asdf:load-system :librecode-runner)' \
                 --eval '(asdf:load-system :librecode-meta)'
 
@@ -37,7 +35,6 @@ clean:
 run port="4096":
     sbcl --eval '(require :asdf)' \
          --eval '(push (truename "./") asdf:*central-registry*)' \
-         --eval '(asdf:load-asd (merge-pathnames "librecode.asd" (truename "./")))' \
          --eval '(asdf:load-system :librecode-runner)' \
          --eval '(librecode-runner.http:start-http-bridge :port {{port}})' \
          --eval '(progn (format t "Server listening on port {{port}}...~%") (force-output))' \

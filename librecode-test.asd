@@ -3,8 +3,6 @@
 ;;; librecode-test.asd — ASDF system definition for librecode-test
 ;;;
 
-(asdf:load-asd (merge-pathnames "librecode.asd" *load-pathname*))
-
 (asdf:defsystem #:librecode-test
   :description "Unit and property-based test suite for librecode."
   :author "nrd"
