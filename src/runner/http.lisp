@@ -317,7 +317,10 @@
               :access-control-allow-methods "GET, POST, PUT, DELETE, OPTIONS"
               :access-control-allow-headers "Content-Type, Authorization, x-requested-with")
             '(""))
-      (let ((parts (split-path path)))
+      (let* ((raw-parts (split-path path))
+             (parts (if (and (consp raw-parts) (string= (first raw-parts) "api"))
+                        (rest raw-parts)
+                        raw-parts)))
         (cond
           ((and (eq method :post)
                 (equal parts '("session")))
