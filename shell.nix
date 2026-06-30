@@ -9,6 +9,7 @@ let
     hunchentoot
     clack
     fiveam
+    trivial-signal
   ]);
 in
 pkgs.mkShell {
