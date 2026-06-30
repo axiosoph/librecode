@@ -91,7 +91,7 @@
                                             :properties (:str (:type "string")
                                                          :num (:type "integer")
                                                          :bool (:type "boolean"))
-                                            :required (:str))
+                                            :required #(:str))
                               :capabilities nil
                               :handler (lambda (args) (getf args :str)))))
     ;; Correct arguments
@@ -112,6 +112,67 @@
     ;; Type mismatch boolean
     (signals error
       (execute-tool tool '(:str "hello" :bool "not-bool")))))
+
+(test test-nested-argument-validation
+  "Verify nested parameter validation catches mismatches and missing required nested properties."
+  (let* ((tool (make-instance 'tool
+                              :name "nested-tool"
+                              :description "Desc"
+                              :parameters '(:type "object"
+                                            :properties (:nested (:type "object"
+                                                                  :properties (:val (:type "string"))
+                                                                  :required #(:val))))
+                              :capabilities nil
+                              :handler (lambda (args) (getf (getf args :nested) :val)))))
+    ;; Correct nested arguments
+    (is (equal "hello" (execute-tool tool '(:nested (:val "hello")))))
+
+    ;; Nested type mismatch (integer instead of string)
+    (signals error
+      (execute-tool tool '(:nested (:val 123))))
+
+    ;; Missing required nested property
+    (signals error
+      (execute-tool tool '(:nested ())))))
+
+(test test-array-argument-validation
+  "Verify array parameter validation validates elements correctly."
+  (let* ((tool (make-instance 'tool
+                              :name "array-tool"
+                              :description "Desc"
+                              :parameters '(:type "object"
+                                            :properties (:arr (:type "array"
+                                                               :items (:type "integer"))))
+                              :capabilities nil
+                              :handler (lambda (args) (getf args :arr)))))
+    ;; Correct array elements
+    (is (equalp #(1 2 3) (execute-tool tool '(:arr #(1 2 3)))))
+
+    ;; Element of incorrect type
+    (signals error
+      (execute-tool tool '(:arr #(1 "two" 3))))))
+
+(test test-multi-required-argument-validation
+  "Verify tool with multiple required parameters parses and validates correctly."
+  (let* ((tool (make-instance 'tool
+                              :name "multi-req-tool"
+                              :description "Desc"
+                              :parameters '(:type "object"
+                                            :properties (:arg1 (:type "string")
+                                                         :arg2 (:type "integer"))
+                                            :required #(:arg1 :arg2))
+                              :capabilities nil
+                              :handler (lambda (args) (list (getf args :arg1) (getf args :arg2))))))
+    ;; Correct arguments
+    (is (equal '("hello" 42) (execute-tool tool '(:arg1 "hello" :arg2 42))))
+
+    ;; Missing one required argument
+    (signals error
+      (execute-tool tool '(:arg1 "hello")))
+
+    ;; Missing both required arguments
+    (signals error
+      (execute-tool tool '()))))
 
 (test test-async-execution-success
   "Verify that async execution returns the correct value."

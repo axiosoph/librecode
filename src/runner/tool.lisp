@@ -43,6 +43,70 @@ Returns the index of the key if found, or nil."
               (loop for k in x by #'cddr
                     always (symbolp k))))))
 
+(defun key-to-string (key)
+  (if (symbolp key)
+      (string-downcase (symbol-name key))
+      (format nil "~A" key)))
+
+(defun coerce-to-hash-table (val)
+  (cond
+    ((eq val nil) nil)
+    ((eq val t) t)
+    ((or (eq val :null) (eq val 'null)) 'null)
+    ((hash-table-p val)
+     (let ((new-ht (make-hash-table :test 'equal)))
+       (maphash (lambda (k v)
+                  (setf (gethash (key-to-string k) new-ht)
+                        (coerce-to-hash-table v)))
+                val)
+       new-ht))
+    ((plist-p val)
+     (let ((ht (make-hash-table :test 'equal)))
+       (loop for (k v) on val by #'cddr
+             do (setf (gethash (key-to-string k) ht)
+                      (coerce-to-hash-table v)))
+       ht))
+    ((vectorp val)
+     (if (stringp val)
+         val
+         (map 'vector #'coerce-to-hash-table val)))
+    ((listp val)
+     ;; Represent JSON arrays as Lisp vectors in coerced output
+     (map 'vector #'coerce-to-hash-table val))
+    ((and (symbolp val) (not (member val '(t nil null))))
+     (key-to-string val))
+    (t val)))
+
+(defun coerce-arguments-by-schema (properties arguments)
+  "Recursively coerce arguments plist based on the properties schema plist.
+If a property is of type 'object' and its argument is nil/empty list,
+coerce it to an empty hash-table so cl-jschema can validate its required fields."
+  (let ((coerced (copy-list arguments)))
+    (loop for (key val) on coerced by #'cddr
+          do (let* ((prop-schema (getf properties key))
+                    (prop-type (getf prop-schema :type)))
+               (cond
+                 ((and (equal prop-type "object") (null val))
+                  (setf (getf coerced key) (make-hash-table :test 'equal)))
+                 ((and (equal prop-type "object") (plist-p val))
+                  (let ((sub-properties (getf prop-schema :properties)))
+                    (setf (getf coerced key)
+                          (coerce-arguments-by-schema sub-properties val))))
+                 ((and (equal prop-type "array") (or (listp val) (vectorp val)))
+                  (let* ((items-schema (getf prop-schema :items))
+                         (items-type (getf items-schema :type)))
+                    (when (equal items-type "object")
+                      (let ((sub-properties (getf items-schema :properties)))
+                        (setf (getf coerced key)
+                              (map 'vector
+                                   (lambda (item)
+                                     (cond
+                                       ((null item) (make-hash-table :test 'equal))
+                                       ((plist-p item) (coerce-arguments-by-schema sub-properties item))
+                                       (t item)))
+                                   val)))))))))
+    coerced))
+
 (defun deep-merge-plists (plist1 plist2)
   "Recursively merge two property lists.
 If a key exists in both and both values are plists, recursively merge them.
@@ -67,32 +131,28 @@ Otherwise, the value from plist2 overrides plist1."
 (defun validate-arguments (schema arguments)
   "Validate arguments against schema. schema is a plist.
 Arguments is a plist."
-  (let ((properties (getf schema :properties))
-        (required (getf schema :required)))
-    ;; Check required keys
-    (dolist (req required)
-      (let* ((req-key (if (stringp req) (intern (string-upcase req) :keyword) req))
-             (present (nth-value 1 (get-properties arguments (list req-key)))))
-        (unless present
-          (error 'simple-error :format-control "Missing required parameter: ~A" :format-arguments (list req)))))
-    ;; Check types of present arguments
-    (loop for (key val) on arguments by #'cddr
-          do (let* ((prop-schema (getf properties key))
-                    (expected-type (getf prop-schema :type)))
-               (when (and prop-schema expected-type)
-                 (cond
-                   ((equal expected-type "string")
-                    (unless (stringp val)
-                      (error 'simple-error :format-control "Parameter ~A must be a string, got ~S" :format-arguments (list key val))))
-                   ((equal expected-type "integer")
-                    (unless (integerp val)
-                      (error 'simple-error :format-control "Parameter ~A must be an integer, got ~S" :format-arguments (list key val))))
-                   ((equal expected-type "boolean")
-                    (unless (typep val 'boolean)
-                      (error 'simple-error :format-control "Parameter ~A must be a boolean, got ~S" :format-arguments (list key val))))
-                   ((equal expected-type "number")
-                    (unless (numberp val)
-                      (error 'simple-error :format-control "Parameter ~A must be a number, got ~S" :format-arguments (list key val))))))))))
+  (let* ((properties (getf schema :properties))
+         (coerced-args (if properties
+                           (coerce-arguments-by-schema properties arguments)
+                           arguments))
+         (schema-json (if schema
+                          (com.inuoe.jzon:stringify (coerce-to-hash-table schema))
+                          "{}"))
+         (arguments-json (if coerced-args
+                             (com.inuoe.jzon:stringify (coerce-to-hash-table coerced-args))
+                             "{}"))
+         (parsed-schema (cl-jschema:parse schema-json))
+         (parsed-arguments (com.inuoe.jzon:parse arguments-json)))
+    (handler-case
+        (cl-jschema:validate parsed-schema parsed-arguments)
+      (cl-jschema:invalid-json (c)
+        (let* ((errors (cl-jschema:invalid-json-errors c))
+               (msg (format nil "JSON Schema validation failed: ~{~A at ~A~^; ~}"
+                            (mapcan (lambda (err)
+                                      (list (or (cl-jschema:invalid-json-value-error-message err) "Invalid value")
+                                            (or (cl-jschema:invalid-json-value-json-pointer err) "/")))
+                                    errors))))
+          (error 'simple-error :format-control "~A" :format-arguments (list msg)))))))
 
 (defun materialize-tools (registry agent model-capabilities)
   "Filter registered tools by permissions and capabilities, and return their plist representations."
@@ -170,13 +230,13 @@ Arguments is a plist."
                                        :message (format nil "Tool ~A execution exceeded timeout of ~A seconds."
                                                         (tool-name tool) timeout)))))
                             (let ((elapsed (- (get-universal-time) start-time)))
-                              (when (>= elapsed timeout)
-                                (unless finished-p
-                                  (error 'librecode-runner.conditions:tool-timeout
-                                         :tool-id (tool-name tool)
-                                         :duration timeout
-                                         :message (format nil "Tool ~A execution exceeded timeout of ~A seconds."
-                                                          (tool-name tool) timeout)))))))
+                               (when (>= elapsed timeout)
+                                 (unless finished-p
+                                   (error 'librecode-runner.conditions:tool-timeout
+                                          :tool-id (tool-name tool)
+                                          :duration timeout
+                                          :message (format nil "Tool ~A execution exceeded timeout of ~A seconds."
+                                                           (tool-name tool) timeout)))))))
                (loop until finished-p
                      do (bt:condition-wait cv lock)))
            (if result-err

@@ -11,6 +11,7 @@ let
     fiveam
     check-it
     trivial-signal
+    cl-jschema
   ]);
 in
 pkgs.mkShell {
