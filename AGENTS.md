@@ -76,6 +76,9 @@ The implementation of `librecode` is divided into key modules, each documented e
 * **[user-workflows.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/user-workflows.md)**
   * **User Stories & Workflows**: Campaign initiation, asynchronous mobile messaging integration, REPL SLIME/Sly intervention flow, and UI/TUI connection layout.
 
+* **[design-council-resolutions.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/design-council-resolutions.md)**
+  * **Council Decisions**: The Design Council's formal critique, unanimous rejection verdict, and resolved architectural directives.
+
 ## Invariants
 
 The system enforces the following core architectural invariants:
