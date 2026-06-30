@@ -5,6 +5,9 @@
 
 (in-package :cl-user)
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  #+sbcl (require :sb-concurrency))
+
 (defpackage #:librecode-runner.conditions
   (:use #:cl)
   (:documentation "Custom serious conditions for error handling and recovery in the librecode execution harness.")
@@ -51,7 +54,9 @@
   (:documentation "Thread-safe, append-only S-expression and JSONL audit trail logging.")
   (:export #:write-audit-event
            #:start-audit-logger
-           #:stop-audit-logger))
+           #:stop-audit-logger
+           #:init-audit-logger
+           #:shutdown-audit-logger))
 
 (defpackage #:librecode-runner.protocol
   (:use #:cl)
