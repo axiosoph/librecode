@@ -313,3 +313,83 @@
                      (let ((content (sqlite:execute-single db "SELECT content FROM session_history WHERE role = 'assistant'")))
                        (is (equal "Hello world!" content))))))
             (hunchentoot:stop acceptor)))))))
+
+(test test-session-permission-asked-event-logging
+  "Assert that interactive permission check triggers :event-permission-asked and logs to event_log."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (librecode-test.event-store::with-test-db (db dir)
+      (let* ((session-id "session-permission-test")
+             (agent-id "agent-permission-test")
+             (action "execute_tool")
+             (resource "shell_command")
+             (req-id nil)
+             (bound-session-id nil)
+             (ruleset (list (librecode-runner.agent:make-permission-rule :action "*" :resource "*" :effect :ask)))
+             (agent (make-instance 'librecode-runner.agent:agent
+                                   :id agent-id
+                                   :ruleset ruleset
+                                   :system-context ""))
+             (drain-fn (lambda ()
+                         (setf bound-session-id (and (boundp 'librecode-runner.agent:*current-session-id*)
+                                                     librecode-runner.agent:*current-session-id*))
+                         (librecode-runner.agent:check-permission agent action resource))))
+        
+        ;; Clear any existing pending requests
+        (bt:with-lock-held (librecode-runner.agent::*pending-requests-lock*)
+          (clrhash librecode-runner.agent::*pending-requests*))
+
+        ;; Initialize projected session state
+        (sqlite:execute-non-query db
+          "INSERT INTO session_state (session_id, agent_id, version, status, last_updated)
+           VALUES (?, ?, 1, 'active', ?)"
+          session-id agent-id (librecode-runner.event-store::current-timestamp-ms))
+
+        (let* ((librecode-runner.agent:*interactive-p* t)
+               (coord-thread (bt:make-thread
+                              (lambda ()
+                                (let ((librecode-runner.event-store:*db* db))
+                                  (declare (special librecode-runner.event-store:*db*))
+                                  (run-coordinator session-id drain-fn)))
+                              :name "coordinator-permission-test")))
+          
+          ;; Wait for request to register in *pending-requests*
+          (loop repeat 20
+                while (= (hash-table-count librecode-runner.agent::*pending-requests*) 0)
+                do (sleep 0.05))
+
+          ;; Retrieve the pending request ID
+          (setf req-id (let ((keys nil))
+                         (bt:with-lock-held (librecode-runner.agent::*pending-requests-lock*)
+                           (maphash (lambda (k v)
+                                      (declare (ignore v))
+                                      (push k keys))
+                                    librecode-runner.agent::*pending-requests*))
+                         (first keys)))
+          (is-true req-id)
+
+          ;; Resolve the pending request to :allow
+          (librecode-runner.agent:resolve-permission-request req-id :allow)
+
+          ;; Wait for coordinator thread to finish
+          (loop repeat 20
+                while (bt:thread-alive-p coord-thread)
+                do (sleep 0.05))
+
+          ;; Assert that *current-session-id* inside the run loop was correctly bound
+          (is (equal session-id bound-session-id))
+
+          ;; Assert that the event was logged to SQLite event_log
+          (let* ((event-row (sqlite:execute-to-list db
+                             "SELECT event_type, payload, sequence FROM event_log WHERE session_id = ? ORDER BY sequence DESC LIMIT 1"
+                             session-id))
+                 (first-row (first event-row))
+                 (event-type (first first-row))
+                 (payload-str (second first-row))
+                 (seq (third first-row)))
+            (is (equal "EVENT-PERMISSION-ASKED" event-type))
+            (is (equal 1 seq))
+            (let ((payload (com.inuoe.jzon:parse payload-str)))
+              (is (equal req-id (gethash "req-id" payload)))
+              (is (equal action (gethash "action" payload)))
+              (is (equal resource (gethash "resource" payload)))
+              (is (equal "asked" (gethash "status" payload))))))))))
