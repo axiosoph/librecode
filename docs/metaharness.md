@@ -241,7 +241,11 @@ To recover from supervisor process crashes or system reboots during long-running
 
 ## 6. Asynchronous Messaging & Headless Notifications
 
-For headless operation, the Metaharness does not require the developer to sit at a terminal monitoring active tmux sessions. Instead, it exposes an abstract messaging layer that relays alerts and handles blocking gates asynchronously.
+The Metaharness operates as a long-running background daemon (`librecode-metad`) that coordinates campaigns headlessly. It exposes a Clack/Hunchentoot-based HTTP server for programmatic control:
+* **REST Endpoints**: `/campaign/:id/status`, `/campaign/:id/nodes`, and `/campaign/:id/gate/approve`.
+* **Server-Sent Events (SSE)**: `GET /campaign/:id/events` to stream real-time progress, node dispatches, linter outputs, and council votes.
+
+This architecture decouples execution from monitoring: the campaign runs autonomously in the background while developers connect via headless messaging channels or the native dashboard.
 
 ### Notification Protocol
 
@@ -255,9 +259,9 @@ For headless operation, the Metaharness does not require the developer to sit at
 
 ### Messaging Adapters
 
-* **Standard Console (Local TUI/REPL)**: The default channel for local interactive execution, prompting the developer in the active Lisp listener or terminal window.
-* **Signal Protocol (Signal Messenger) [Optional]**: An optional, headless channel that communicates with the developer's mobile device by wrapping a local Signal daemon (`signal-cli`). The Metaharness packages gate failures or permission requests into secure messages, transmits them, blocks execution, and resumes once the user sends a response string matching one of the options. If unavailable or disabled, the system automatically falls back to local console/TUI input (RES-11).
+* **Metaharness Native TUI (librecode-meta-tui)**: A terminal user interface that connects to the local daemon port. It renders the active campaign DAG, tracks node lifecycle states (pending, dispatched, landed, accepted, rework), displays consolidated linter/test logs, and lets the developer inspect council deposits or co-sign merge gates.
+* **Standard Console (Local TUI/REPL)**: A fallback interactive channel prompting the developer in the active Lisp listener or terminal window.
+* **Signal Protocol (Signal Messenger) [Optional]**: An optional, headless channel that communicates with the developer's mobile device by wrapping a local Signal daemon (`signal-cli`). If unavailable or disabled, the system automatically falls back to local console/TUI input (RES-11).
 * **Webhook/Matrix [Optional]**: Optional general purpose HTTP POST adapters to plug the Metaharness into Matrix rooms or chat integrations.
-
 
 This decoupled layer ensures the campaign runs cheaply and autonomously in the background, but remains bound to the developer's final gate authority.

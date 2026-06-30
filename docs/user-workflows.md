@@ -97,13 +97,30 @@ Select restart index or connect to REPL on port 4005.
 
 ## 4. UI Integration & Local TUI
 
-Developers can monitor and interact with active harnesses locally using the OpenCode UI client.
+Developers can monitor and interact with active harnesses and campaigns locally via HTTP clients or native TUIs.
 
-### Client-Server Handshake
+### 4.1 Single Session Client-Server Handshake (`librecode-runner`)
 
 1. **Launch Server**: The developer runs `librecode-runner start-server --port 3000`. This starts the Hunchentoot HTTP listener.
 2. **Open TUI/GUI**: The developer opens the OpenCode UI application.
 3. **Connection**: The UI connects to `localhost:3000` via:
-   * **REST endpoints** to query system config, retrieve project files, and submit admitted prompts (`POST /session/:id/admit`).
+   * **REST endpoints** to query system config, retrieve files, and submit admitted prompts (`POST /session/:id/admit`).
    * **Server-Sent Events (SSE)** (`GET /session/:id/events`) to receive real-time, event-sourced notifications of agent thoughts, tool executions, and file diffs.
 4. The developer types a prompt in the GUI; the server admits it to SQLite, promotes it at the turn boundary, runs the LLM client, and streams output chunks back to the screen instantly.
+
+### 4.2 Metaharness Campaign Monitor (`librecode-meta`)
+
+1. **Launch Daemon**: The developer runs the campaign orchestrator in daemon mode:
+   ```bash
+   librecode-metad start --port 3010
+   ```
+   This runs the supervisor in the background, reading the campaign S-expression journal and managing child processes.
+2. **Launch Campaign TUI Dashboard**:
+   ```bash
+   librecode-meta-tui --connect localhost:3010
+   ```
+   This opens a native console interface rendering:
+   * **Top Pane**: A graphical representation of the Campaign DAG nodes showing their current dispatch state (green = accepted, yellow = running, red = rework).
+   * **Bottom-Left Pane**: Streaming logs of active child harnesses.
+   * **Bottom-Right Pane**: Interactive prompt listener for manual council gates, allowing the developer to cast co-sign verdicts or attach to a child process's tmux terminal wrapper.
+3. **Programmatic Interaction**: Webhooks or Matrix bots communicate with `/campaign/:id/gate/approve` to let developers trigger approvals or query progress headlessly.
