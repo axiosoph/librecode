@@ -65,7 +65,13 @@
   (:use #:cl)
   (:documentation "Durable event sourcing and SQLite integration.")
   (:export #:init-db
-           #:with-transaction))
+           #:connect-db
+           #:with-transaction
+           #:with-immediate-transaction
+           #:commit-event
+           #:apply-projectors
+           #:*workspace-root*
+           #:*db*))
 
 (defpackage #:librecode-runner.agent
   (:use #:cl)
