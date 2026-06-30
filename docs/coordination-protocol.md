@@ -323,3 +323,68 @@ CREATE TABLE IF NOT EXISTS context_epoch (
 );
 ```
 
+### Primitives: Deposit and Findings Tables
+
+The following schemas define the storage model for Predicate's primitive deposits and security findings:
+
+#### Deposits Table (`deposits`)
+
+Stores immutable deposit records for verification tracking.
+
+```sql
+CREATE TABLE IF NOT EXISTS deposits (
+    id TEXT PRIMARY KEY,
+    step TEXT NOT NULL,
+    evidence TEXT NOT NULL CHECK(length(evidence) > 0),
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+);
+```
+
+#### Deposit Cites Table (`deposit_cites`)
+
+Maps deposits to resolved paths cited as evidence.
+
+```sql
+CREATE TABLE IF NOT EXISTS deposit_cites (
+    deposit_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    PRIMARY KEY (deposit_id, path),
+    FOREIGN KEY (deposit_id) REFERENCES deposits(id) ON DELETE CASCADE
+);
+```
+
+#### Deposit References Table (`deposit_refs`)
+
+Tracks directed reference relationships between deposits.
+
+```sql
+CREATE TABLE IF NOT EXISTS deposit_refs (
+    source_id TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    ref_type TEXT NOT NULL,
+    PRIMARY KEY (source_id, target_id, ref_type),
+    FOREIGN KEY (source_id) REFERENCES deposits(id) ON DELETE CASCADE,
+    FOREIGN KEY (target_id) REFERENCES deposits(id) ON DELETE CASCADE
+);
+```
+
+#### Findings Table (`findings`)
+
+Maintains security and verification findings linked to their resolving deposits.
+
+```sql
+CREATE TABLE IF NOT EXISTS findings (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    rule_id TEXT,
+    status TEXT NOT NULL CHECK(status IN ('open', 'resolved')),
+    evaluator TEXT,
+    resolved_at INTEGER,
+    resolution_deposit_id TEXT,
+    FOREIGN KEY(id) REFERENCES deposits(id) ON DELETE CASCADE,
+    FOREIGN KEY(session_id) REFERENCES session_state(session_id) ON DELETE CASCADE,
+    FOREIGN KEY(resolution_deposit_id) REFERENCES deposits(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_findings_session ON findings(session_id);
+```
+
