@@ -158,15 +158,15 @@ When multiple config files are discovered (e.g. global, project-root, and subdir
 
 The runner initiates a lightweight multi-threaded HTTP server (powered by `Clack` wrapping `Hunchentoot`) to listen for frontend requests.
 
-* **`POST /session/:id/admit`**: Receives user inputs (prompts or steering instructions) and writes them to the durable database inbox (R9).
-* **`GET /session/:id/events`**: Establishes a server-sent events (SSE) connection, streaming EventV2 events to the UI client as they are committed to the SQLite store (R2).
-* **`POST /session/:id/control`**: Handles control commands (such as waking the run coordinator or signaling an interrupt to active session execution).
-* **`GET /status`**: Returns health diagnostics and run status of the active runner process.
+* **`POST /api/session/:sessionID/prompt`**: Receives user inputs (prompts or steering instructions) and writes them to the durable database inbox (R9).
+* **`GET /api/session/:sessionID/event`**: Establishes a server-sent events (SSE) connection, streaming EventV2 events to the UI client as they are committed to the SQLite store (R2).
+* **`POST /api/session/:sessionID/interrupt`**: Interrupts active session execution loop (R1/R5).
+* **`GET /api/session/:sessionID/history`**: Returns paginated event history from the event store (R2).
 
 All endpoints validate authorization parameters and route requests to the matching session mailbox or key lock (R1, R6).
 
 #### SSE Character Line Processing
-Because the streaming reader runs in a dedicated thread as described in Section 4, we offload character decoding and line buffering entirely to standard character streams. Using `read-line` natively resolves character fragments, eliminating the need for custom chunk-splitting or buffer-searching logic. The Hunchentoot event-streaming endpoints (`GET /session/:id/events`) must handle `stream-error` (broken pipes or client disconnects) explicitly to prevent thread and socket leaks:
+Because the streaming reader runs in a dedicated thread as described in Section 4, we offload character decoding and line buffering entirely to standard character streams. Using `read-line` natively resolves character fragments, eliminating the need for custom chunk-splitting or buffer-searching logic. The Hunchentoot event-streaming endpoints (`GET /api/session/:sessionID/event`) must handle `stream-error` (broken pipes or client disconnects) explicitly to prevent thread and socket leaks:
 ```lisp
 (handler-case
     (loop for event = (sb-concurrency:receive-message event-mailbox)

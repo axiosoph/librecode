@@ -29,9 +29,9 @@ The Design Council (convened on 2026-06-30) has delivered a unanimous **REJECTED
 * **Resolution**:
   * Demote Tmux to an optional, local developer visualization helper.
   * The `harness-opencode` adapter will communicate with the child process strictly via OpenCode's native HTTP REST and SSE APIs:
-    * Submit prompts via `POST /session/:id/admit` and `POST /session/:id/promote`.
-    * Stream thoughts and events via `GET /session/:id/events`.
-    * Issue interrupts via `POST /session/:id/interrupt`.
+    * Submit prompts via `POST /api/session/:sessionID/prompt`.
+    * Stream thoughts and events via `GET /api/session/:sessionID/event`.
+    * Issue interrupts via `POST /api/session/:sessionID/interrupt`.
   * Dynamic surface write monitoring is performed at the boundary: when the runner attempts to execute a tool (like `write_to_file`), the Metaharness intercepts the tool call payload via the SSE event stream, runs the surface check, and decides whether to approve or reject the write *before* letting the runner proceed.
 
 ### [RES-04] Cross-Process Restart Incoherence (Architect #4)

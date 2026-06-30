@@ -104,8 +104,8 @@ Developers can monitor and interact with active harnesses and campaigns locally 
 1. **Launch Server**: The developer runs `librecode-runner start-server --port 3000`. This starts the Hunchentoot HTTP listener.
 2. **Open TUI/GUI**: The developer opens the OpenCode UI application.
 3. **Connection**: The UI connects to `localhost:3000` via:
-   * **REST endpoints** to query system config, retrieve files, and submit admitted prompts (`POST /session/:id/admit`).
-   * **Server-Sent Events (SSE)** (`GET /session/:id/events`) to receive real-time, event-sourced notifications of agent thoughts, tool executions, and file diffs.
+   * **REST endpoints** to query system config, retrieve files, and submit admitted prompts (`POST /api/session/:sessionID/prompt`).
+   * **Server-Sent Events (SSE)** (`GET /api/session/:sessionID/event`) to receive real-time, event-sourced notifications of agent thoughts, tool executions, and file diffs.
 4. The developer types a prompt in the GUI; the server admits it to SQLite, promotes it at the turn boundary, runs the LLM client, and streams output chunks back to the screen instantly.
 
 ### 4.2 Metaharness Campaign Monitor (`librecode-meta`)

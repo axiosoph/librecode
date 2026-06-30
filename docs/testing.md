@@ -91,7 +91,7 @@ OpenCode's Playwright-based E2E smoke tests (located in `packages/app/e2e/`) run
    cd packages/app
    bun run test:e2e
    ```
-   This validates the REST routes (`POST /session/:id/admit`) and event-stream delivery (`GET /session/:id/events`) under active UI operations.
+    This validates the REST routes (`POST /api/session/:sessionID/prompt`) and event-stream delivery (`GET /api/session/:sessionID/event`) under active UI operations.
 
 ---
 
