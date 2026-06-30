@@ -186,3 +186,112 @@
                        (setf hunchentoot:*dispatch-table* (delete dispatcher hunchentoot:*dispatch-table*))
                        (ignore-errors (bt:destroy-thread sse-thread)))))))
         (stop-http-bridge)))))
+
+(test test-http-prompt-endpoint
+  "Test POST /session/:id/prompt and GET /session/:id/event routing."
+  (setf hunchentoot:*dispatch-table* nil)
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    ;; Initialize schema in librecode.db and close connection immediately
+    (let* ((db-path (merge-pathnames "librecode.db" dir))
+           (init-db (librecode-runner.event-store:connect-db db-path)))
+      (unwind-protect
+           (librecode-runner.event-store:init-db init-db)
+        (sqlite:disconnect init-db)))
+
+    (let* ((port (get-free-port))
+           (url-base (format nil "http://127.0.0.1:~A" port))
+           (session-id nil))
+      ;; Start the HTTP bridge
+      (start-http-bridge :port port :address "127.0.0.1" :db-path "librecode.db" :workspace-root dir)
+      (sleep 0.2)
+      (unwind-protect
+           (progn
+             ;; Create session
+             (let* ((payload (com.inuoe.jzon:stringify
+                              (alexandria:plist-hash-table `("agent_id" "test-agent"))))
+                    (res (dexador:post (format nil "~A/session" url-base)
+                                       :headers '(("Content-Type" . "application/json"))
+                                       :content payload
+                                       :keep-alive nil))
+                    (parsed (com.inuoe.jzon:parse res)))
+               (is (not (null (gethash "session_id" parsed))))
+               (setf session-id (gethash "session_id" parsed)))
+
+             ;; Test GET /session/:id/event (alias of stream) and POST /session/:id/prompt
+             (let* ((sse-url (format nil "~A/session/~A/event" url-base session-id))
+                    (sse-events (librecode-runner.protocol:make-mailbox :name "sse-test-events-2"))
+                    (sse-thread
+                      (bt:make-thread
+                       (lambda ()
+                         (handler-case
+                             (let ((stream (dexador:get sse-url :want-stream t :read-timeout 5 :keep-alive nil)))
+                               (unwind-protect
+                                    (loop
+                                      (let ((line (read-line stream nil :eof)))
+                                        (if (eq line :eof)
+                                            (return)
+                                            (when (alexandria:starts-with-subseq "data: " line)
+                                              (let ((data (subseq line 6)))
+                                                (librecode-runner.protocol:send-message sse-events data))))))
+                                 (close stream)))
+                           (error (c)
+                             (librecode-runner.protocol:send-message sse-events (format nil "error: ~A" c))))))))
+               ;; Sleep slightly to allow SSE connection to establish
+               (sleep 0.2)
+
+               ;; Now prompt the session using mock LLM endpoint.
+               (let* ((mock-port (get-free-port))
+                      (mock-acceptor (make-instance 'hunchentoot:easy-acceptor :port mock-port))
+                      (dispatcher (lambda (request)
+                                    (when (equal (hunchentoot:script-name request) "/provider-stream")
+                                      (lambda ()
+                                        (setf (hunchentoot:content-type*) "text/event-stream")
+                                        (setf (hunchentoot:header-out "Connection") "close")
+                                        (let ((stream (hunchentoot:send-headers)))
+                                          (write-sequence (flexi-streams:string-to-octets (format nil "data: {\"choices\": [{\"delta\": {\"content\": \"Prompt response!\"}}]}~%") :external-format :utf-8) stream)
+                                          (force-output stream)
+                                          (write-sequence (flexi-streams:string-to-octets (format nil "data: [DONE]~%") :external-format :utf-8) stream)
+                                          (force-output stream)
+                                          ""))))))
+                 (push dispatcher hunchentoot:*dispatch-table*)
+                 (unwind-protect
+                      (progn
+                        (hunchentoot:start mock-acceptor)
+                        ;; Use setf to globally update provider url so the spawned coordinate thread sees it
+                        (let ((old-provider-url librecode-runner.runner::*provider-url*))
+                          (unwind-protect
+                               (progn
+                                 (setf librecode-runner.runner::*provider-url* (format nil "http://127.0.0.1:~A/provider-stream" mock-port))
+                                 ;; Trigger POST /session/:id/prompt
+                                 (let* ((prompt-payload (com.inuoe.jzon:stringify
+                                                         (alexandria:plist-hash-table
+                                                          `("id" "prompt-test-id"
+                                                            "prompt" ,(alexandria:plist-hash-table '("text" "Hello bot"))
+                                                            "resume" t))))
+                                        (prompt-res (dexador:post (format nil "~A/session/~A/prompt" url-base session-id)
+                                                                  :headers '(("Content-Type" . "application/json"))
+                                                                  :content prompt-payload
+                                                                  :keep-alive nil))
+                                        (prompt-parsed (com.inuoe.jzon:parse prompt-res)))
+                                   (is (not (null (gethash "data" prompt-parsed))))
+                                   (let ((data-obj (gethash "data" prompt-parsed)))
+                                     (is (equal "prompt-test-id" (gethash "id" data-obj)))
+                                     (is (equal session-id (gethash "session_id" data-obj)))
+                                     (is (equal "Hello bot" (gethash "text" (gethash "prompt" data-obj)))))
+
+                                   ;; Read events from sse-events mailbox
+                                   (let* ((evt-open-str (librecode-runner.protocol:receive-message sse-events :timeout 4.0))
+                                          (evt-open (and evt-open-str (com.inuoe.jzon:parse evt-open-str)))
+                                          (evt1-str (librecode-runner.protocol:receive-message sse-events :timeout 4.0))
+                                          (evt1 (and evt1-str (com.inuoe.jzon:parse evt1-str))))
+                                     (is (not (null evt-open)))
+                                     (is (equal "open" (gethash "event" evt-open)))
+                                     (is (not (null evt1)))
+                                     (is (equal "session_start" (gethash "event" evt1))))))
+                            (setf librecode-runner.runner::*provider-url* old-provider-url))))
+                   (progn
+                     (hunchentoot:stop mock-acceptor)
+                     (setf hunchentoot:*dispatch-table* (delete dispatcher hunchentoot:*dispatch-table*))
+                     (ignore-errors (bt:destroy-thread sse-thread)))))))
+        (stop-http-bridge)))))
+

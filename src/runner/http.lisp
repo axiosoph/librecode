@@ -191,6 +191,53 @@
     (error (c)
       (json-response 400 (list :error (format nil "Error admitting input: ~A" c))))))
 
+(defun handle-prompt-input (session-id env)
+  (handler-case
+      (let* ((json (parse-json-body env))
+             (prompt-id (and json (or (gethash "prompt_id" json) (gethash "id" json))))
+             (prompt-field (and json (or (gethash "prompt" json) (gethash "prompt_text" json) (gethash "text" json) (gethash "content" json))))
+             (prompt-text (cond
+                            ((stringp prompt-field) prompt-field)
+                            ((hash-table-p prompt-field) (gethash "text" prompt-field))
+                            (t nil)))
+             (delivery-mode (or (and json (or (gethash "delivery" json) (gethash "delivery_mode" json) (gethash "mode" json))) "STEER"))
+             (resume (if (and json (nth-value 1 (gethash "resume" json)))
+                         (gethash "resume" json)
+                         t))
+             (provider (or (and json (gethash "provider" json)) "mock-provider"))
+             (model (or (and json (gethash "model" json)) "mock-model"))
+             (db-path *http-db-path*)
+             (workspace-root *http-workspace-root*))
+        (unless (and prompt-id prompt-text)
+          (return-from handle-prompt-input (json-response 400 '(:error "Missing prompt_id or prompt_text"))))
+        (let ((result (librecode-runner.session:admit-input session-id prompt-id prompt-text delivery-mode)))
+          (when resume
+            (librecode-runner.protocol:wake-session session-id
+              (lambda ()
+                (let* ((librecode-runner.event-store:*workspace-root*
+                         (or workspace-root librecode-runner.event-store:*workspace-root*))
+                       (db (librecode-runner.event-store:connect-db db-path)))
+                  (unwind-protect
+                       (let ((librecode-runner.event-store:*db* db))
+                         (librecode-runner.protocol:broadcast-event session-id :session-start)
+                         (unwind-protect
+                              (let ((continue t))
+                                (loop while (and continue (not (librecode-runner.protocol:session-stopping-p session-id)))
+                                      do (setf continue (librecode-runner.runner:execute-provider-turn session-id provider model))))
+                           (librecode-runner.protocol:broadcast-event session-id :session-complete)))
+                    (sqlite:disconnect db))))))
+          (json-response 200
+                         (list :data
+                               (list :admitted-seq 1
+                                     :id prompt-id
+                                     :session-id session-id
+                                     :prompt (list :text prompt-text)
+                                     :delivery (string-downcase delivery-mode)
+                                     :time-created (librecode-runner.event-store::current-timestamp-ms))))))
+    (error (c)
+      (json-response 400 (list :error (format nil "Error handling prompt: ~A" c))))))
+
+
 (defun handle-promote-input (session-id env)
   (handler-case
       (let* ((json (parse-json-body env))
@@ -333,6 +380,11 @@
           ((and (eq method :post)
                 (= (length parts) 3)
                 (string= (first parts) "session")
+                (string= (third parts) "prompt"))
+           (handle-prompt-input (second parts) env))
+          ((and (eq method :post)
+                (= (length parts) 3)
+                (string= (first parts) "session")
                 (string= (third parts) "promote"))
            (handle-promote-input (second parts) env))
           ((and (eq method :post)
@@ -348,15 +400,14 @@
           ((and (eq method :get)
                 (= (length parts) 3)
                 (string= (first parts) "session")
-                (string= (third parts) "stream"))
+                (or (string= (third parts) "stream")
+                    (string= (third parts) "event")))
            (handle-get-stream (second parts) env))
           ((and (eq method :get)
-                (or (equal parts '("session"))
-                    (equal parts '("api" "session"))))
+                (equal parts '("session")))
            (handle-list-sessions))
           ((and (eq method :get)
-                (or (equal parts '("global" "health"))
-                    (equal parts '("api" "global" "health"))))
+                (equal parts '("global" "health")))
            (json-response 200 '(:healthy t :version "1.0.0")))
           ;; TODO: Implement native workspace/IDE configuration routes (e.g. /lsp, /project, /path,
           ;; /provider, /global/config) to support full standalone server deployment.
