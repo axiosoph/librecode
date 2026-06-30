@@ -24,14 +24,17 @@ If *workspace-root* is nil, or if relative-path is absolute, returns relative-pa
 Resolves DB-PATH relative to *workspace-root*.
 Enforces journal_mode=WAL, busy_timeout=5000, and foreign_keys=ON immediately on connection."
   (let* ((resolved (resolve-path db-path))
-         (db (sqlite:connect resolved)))
-    (handler-bind ((error (lambda (c)
-                            (declare (ignore c))
-                            (sqlite:disconnect db))))
-      (sqlite:execute-non-query db "PRAGMA foreign_keys = ON;")
-      (sqlite:execute-non-query db "PRAGMA journal_mode = WAL;")
-      (sqlite:execute-non-query db "PRAGMA busy_timeout = 5000;"))
-    db))
+         (db (sqlite:connect resolved))
+         (ok nil))
+    (unwind-protect
+         (progn
+           (sqlite:execute-non-query db "PRAGMA foreign_keys = ON;")
+           (sqlite:execute-non-query db "PRAGMA journal_mode = WAL;")
+           (sqlite:execute-non-query db "PRAGMA busy_timeout = 5000;")
+           (setf ok t)
+           db)
+      (unless ok
+        (sqlite:disconnect db)))))
 
 (defmacro with-immediate-transaction ((db) &body body)
   "Executes BODY inside a SQLite immediate transaction.
@@ -61,11 +64,62 @@ Rolls back completely if an error occurs."
   #-sbcl
   (* (get-universal-time) 1000))
 
+(defun alist-p (x)
+  (and (listp x)
+       (consp x)
+       (loop for cell in x
+             always (consp cell))))
+
+(defun plist-p (x)
+  (and (listp x)
+       (consp x)
+       (let ((len (list-length x)))
+         (and len
+              (evenp len)
+              (loop for k in x by #'cddr
+                    always (symbolp k))))))
+
+(defun key-to-string (key)
+  (if (symbolp key)
+      (string-downcase (symbol-name key))
+      (format nil "~A" key)))
+
+(defun coerce-to-hash-table (val)
+  (cond
+    ((null val) nil)
+    ((hash-table-p val)
+     (let ((new-ht (make-hash-table :test 'equal)))
+       (maphash (lambda (k v)
+                  (setf (gethash (key-to-string k) new-ht)
+                        (coerce-to-hash-table v)))
+                val)
+       new-ht))
+    ((alist-p val)
+     (let ((ht (make-hash-table :test 'equal)))
+       (dolist (pair val)
+         (setf (gethash (key-to-string (car pair)) ht)
+               (coerce-to-hash-table (cdr pair))))
+       ht))
+    ((plist-p val)
+     (let ((ht (make-hash-table :test 'equal)))
+       (loop for (k v) on val by #'cddr
+             do (setf (gethash (key-to-string k) ht)
+                      (coerce-to-hash-table v)))
+       ht))
+    ((listp val)
+     (mapcar #'coerce-to-hash-table val))
+    ((vectorp val)
+     (if (stringp val)
+         val
+         (map 'vector #'coerce-to-hash-table val)))
+    (t val)))
+
 (defun serialize-payload (payload)
-  "Serialize PAYLOAD (either a string, plist, or hash-table) to a JSON string."
+  "Serialize PAYLOAD (either a string, plist, alist, hash-table, or list/vector) to a JSON string.
+Recursively coerces plists and alists into hash-tables so they serialize to JSON objects."
   (if (stringp payload)
       payload
-      (com.inuoe.jzon:stringify payload)))
+      (com.inuoe.jzon:stringify (coerce-to-hash-table payload))))
 
 (defun parse-event-safely (event)
   "Parse a JSON string EVENT safely, returning the parsed object or NIL."
@@ -196,6 +250,8 @@ Rolls back completely if an error occurs."
 
   db)
 
+
+
 (defun apply-projectors (db session-id event type version)
   "Applies event projections to update session_state in DB."
   (declare (ignore type))
@@ -203,18 +259,20 @@ Rolls back completely if an error occurs."
          (agent-id (or (when (hash-table-p parsed)
                          (or (gethash "agent_id" parsed)
                              (gethash "agent-id" parsed)))
-                       (when (listp parsed)
+                       (when (alist-p parsed)
                          (or (cdr (assoc :agent-id parsed))
-                             (cdr (assoc :agent_id parsed))
-                             (getf parsed :agent-id)
+                             (cdr (assoc :agent_id parsed))))
+                       (when (plist-p parsed)
+                         (or (getf parsed :agent-id)
                              (getf parsed :agent_id)))
                        (sqlite:execute-single db "SELECT agent_id FROM session_state WHERE session_id = ?" session-id)
                        "unknown-agent"))
          (status (or (when (hash-table-p parsed)
                        (gethash "status" parsed))
-                     (when (listp parsed)
-                       (or (cdr (assoc :status parsed))
-                           (getf parsed :status)))
+                     (when (alist-p parsed)
+                       (cdr (assoc :status parsed)))
+                     (when (plist-p parsed)
+                       (getf parsed :status))
                      (sqlite:execute-single db "SELECT status FROM session_state WHERE session_id = ?" session-id)
                      "idle"))
          (now (current-timestamp-ms)))

@@ -4,7 +4,7 @@
 ;;;
 
 (asdf:defsystem #:librecode-runner
-  :description "OpenCode coordination protocol and Metaharness supervisor."
+  :description "OpenCode coordination protocol runner."
   :author "nrd"
   :license "MIT"
   :depends-on (#:sqlite
@@ -23,8 +23,16 @@
    (:file "src/runner/runner")
    (:file "src/runner/compaction")
    (:file "src/runner/tool")
-   (:file "src/runner/audit")
-   (:file "src/meta/multiplexer")
+   (:file "src/runner/audit")))
+
+(asdf:defsystem #:librecode-meta
+  :description "OpenCode multi-agent campaign coordinator metaharness."
+  :author "nrd"
+  :license "MIT"
+  :depends-on (#:librecode-runner)
+  :serial t
+  :components
+  ((:file "src/meta/multiplexer")
    (:file "src/meta/multiplexer-tmux")
    (:file "src/meta/harness")
    (:file "src/meta/harness-opencode")
