@@ -12,19 +12,21 @@
                #:com.inuoe.jzon
                #:dexador
                #:trivial-signal
-               #:cl-jschema)
+               #:cl-jschema
+               #:clack
+               #:hunchentoot)
   :serial t
   :components
-  ((:file "src/packages")
-   (:file "src/runner/conditions")
-   (:file "src/runner/protocol")
-   (:file "src/runner/event-store")
-   (:file "src/runner/agent")
-   (:file "src/runner/session")
-   (:file "src/runner/runner")
-   (:file "src/runner/compaction")
-   (:file "src/runner/tool")
-   (:file "src/runner/audit")))
+   ((:file "src/packages")
+    (:file "src/runner/conditions")
+    (:file "src/runner/protocol")
+    (:file "src/runner/event-store")
+    (:file "src/runner/agent")
+    (:file "src/runner/session")
+    (:file "src/runner/tool")
+    (:file "src/runner/runner")
+    (:file "src/runner/compaction")
+    (:file "src/runner/audit")))
 
 (asdf:defsystem #:librecode-meta
   :description "OpenCode multi-agent campaign coordinator metaharness."

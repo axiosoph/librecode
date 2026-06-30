@@ -62,9 +62,21 @@
   (:use #:cl)
   (:documentation "Event loop, run coordinator with wake coalescing, and mailbox messaging.")
   (:export #:run-coordinator
+           #:wake-session
+           #:interrupt-session
+           #:session-stopping-p
            #:make-mailbox
            #:send-message
-           #:receive-message))
+           #:receive-message
+           #:flush-mailbox
+           #:*session-mailbox*
+           #:*active-worker-mailboxes*
+           #:register-worker-mailbox
+           #:unregister-worker-mailbox
+           #:*active-worker-threads*
+           #:*active-worker-threads-lock*
+           #:register-worker-thread
+           #:unregister-worker-thread))
 
 (defpackage #:librecode-runner.event-store
   (:use #:cl)
@@ -114,7 +126,8 @@
            #:session-id
            #:session-state
            #:admit-input
-           #:promote-input))
+           #:promote-input
+           #:promote-pending-inputs))
 
 (defpackage #:librecode-runner.runner
   (:use #:cl)
