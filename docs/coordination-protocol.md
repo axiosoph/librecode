@@ -77,9 +77,11 @@ Admitted inputs are promoted to become visible to the LLM model at precise turn 
 
 A single session execution drain consists of a sequence of turns. The loop enforces strict invariants on LLM invocations and tool execution.
 
-### Single Provider Call Invariant
+### Single Provider Call Invariant & Concurrency Interrupts
 
 * The runner issues **exactly one** streaming LLM call per turn using `dexador` with `:want-stream t` for incremental line-by-line SSE chunk parsing.
+* **Socket Interrupts**: Socket connections are configured with explicit read timeouts. The SSE chunk line-read iteration loop must check the thread-local `stopping` flag at each step to respond immediately to interruption signals.
+* **Subprocess Interrupts**: All external subprocesses (e.g. CLI tools) are spawned asynchronously (using `uiop:launch-program`). The coordinator thread blocks on a condition variable with a timeout, checking the `stopping` flag on wakeup. If an interrupt is signaled, the coordinator issues an OS signal (e.g., `SIGTERM`) to the child process handle to terminate it immediately.
 * Loop continuation is only permitted if the model returned tool calls requiring execution, or if new steering inputs require immediate promotion.
 
 ### Parallel Tool Execution & Settlement
@@ -104,31 +106,19 @@ When the model emits multiple tool calls:
 ### Discovery & Loading
 
 At location context construction, `librecode` builds the configuration by walking the file tree:
-1. **Upward Walk**: Walks upward from the current working directory (CWD) to the project root directory looking for `.opencode/` folders or `opencode.json` / `opencode.jsonc` files.
+1. **Upward Walk**: Walks upward from the dynamically bound `*workspace-root*` or an explicitly passed directory to the project root directory looking for `.opencode/` folders or `opencode.json` / `opencode.jsonc` files. The Lisp engine is strictly prohibited from mutating the process-global CWD (via `chdir`).
 2. **Global Config**: Loads the user's global config from `~/.opencode/` or platform equivalent.
 3. **Caching**: Config is loaded once when the location context is opened and cached. Changes take effect on session restart or context reload.
 
 ### Parsing JSONC (JSON with Comments)
 
-Since Common Lisp's `com.inuoe.jzon` parses strict RFC 8259 JSON, `librecode` preprocesses JSONC files before parsing. To prevent stripping comment symbols (like `//` or `/*`) inside string literals (e.g. `"https://example.com"`), the preprocessor implements a character-by-character lexical state machine:
-
-* **States**: `:normal`, `:string-literal`, `:escape-char`, `:slash-seen`, `:single-line-comment`, `:multi-line-comment`, `:star-seen`.
-* **Transitions**:
-  * In `:normal`: encountering `"` transitions to `:string-literal`. Encountering `/` transitions to `:slash-seen`.
-  * In `:string-literal`: encountering `\` transitions to `:escape-char`. Encountering `"` returns to `:normal`.
-  * In `:escape-char`: returns unconditionally to `:string-literal` on next character.
-  * In `:slash-seen`: encountering `/` transitions to `:single-line-comment` (discarding both slashes). Encountering `*` transitions to `:multi-line-comment` (discarding both characters). Otherwise, emits `/` and returns to `:normal`.
-  * In `:single-line-comment`: discards all characters until a newline `\n` is encountered, then returns to `:normal` and emits the newline.
-  * In `:multi-line-comment`: discards all characters until `*` is encountered, transitioning to `:star-seen`.
-  * In `:star-seen`: encountering `/` returns to `:normal`. Otherwise, returns to `:multi-line-comment`.
-* **Comma cleanup**: The preprocessor also strips trailing commas occurring directly before closing brackets `]` or braces `}`.
-* The preprocessed string is then safely passed to `jzon:parse`.
+Since Common Lisp's `com.inuoe.jzon` parses strict RFC 8259 JSON, `librecode` preprocesses JSONC files before parsing. To support comments in config files, we use a simple quote-aware comment-stripping preprocessor that skips lines starting with `//` and ignores comment markers/comma stripping inside double-quoted string literals. The preprocessed, valid JSON content is then passed directly to `jzon:parse`.
 
 ### Merge Semantics
 
 When multiple config files are discovered (e.g. global, project-root, and subdirectory configs):
 * The configuration is resolved by merging the files in order of ascending priority: global config -> project config -> subdirectory config.
-* **Field Resolution**: The merge uses a flat **last-write-wins** replacement policy per top-level key. `librecode` does not perform deep recursive merging on nested config objects.
+* **Field Resolution**: The merge uses a recursive deep-merge helper for plist/map configuration structures to align with OpenCode's configuration merging model, preserving nested properties instead of using flat last-write-wins replacement.
 * Once loaded, the JSON document is mapped to an internal CL struct representing the active system config.
 
 ---
@@ -286,6 +276,50 @@ CREATE TABLE IF NOT EXISTS permission_saved (
     effect TEXT NOT NULL,           -- 'ALLOW', 'DENY'
     timestamp INTEGER NOT NULL,     -- Unix epoch in milliseconds
     PRIMARY KEY (project_id, action, resource)
+);
+```
+
+### Session State Table (`session_state`)
+
+Stores the current state projections of active sessions.
+
+```sql
+CREATE TABLE IF NOT EXISTS session_state (
+  session_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  status TEXT NOT NULL, -- 'idle', 'running', 'error'
+  last_updated INTEGER NOT NULL
+);
+```
+
+### Session History Table (`session_history`)
+
+Stores historical message transcripts for model continuation and context building.
+
+```sql
+CREATE TABLE IF NOT EXISTS session_history (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  role TEXT NOT NULL, -- 'system', 'user', 'assistant', 'tool'
+  content TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY(session_id) REFERENCES session_state(session_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_session_history_session ON session_history(session_id);
+```
+
+### Context Epoch Table (`context_epoch`)
+
+Stores context snapshots used to calculate context updates.
+
+```sql
+CREATE TABLE IF NOT EXISTS context_epoch (
+  session_id TEXT PRIMARY KEY,
+  epoch_id TEXT NOT NULL,
+  baseline_text TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY(session_id) REFERENCES session_state(session_id) ON DELETE CASCADE
 );
 ```
 
