@@ -12,9 +12,7 @@
                #:com.inuoe.jzon
                #:dexador
                #:trivial-signal
-               #:alexandria
-               #:cl-jschema
-               #:yason)
+               #:cl-jschema)
   :serial t
   :components
   ((:file "src/packages")

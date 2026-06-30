@@ -48,36 +48,11 @@ Returns the index of the key if found, or nil."
       (string-downcase (symbol-name key))
       (format nil "~A" key)))
 
-#+sbcl
-(sb-ext:without-package-locks
-  (defun cl-jschema::json-false-p (value)
-    (or (eq value nil) (eq value 'yason:false)))
-  (defun cl-jschema::json-true-p (value)
-    (or (eq value t) (eq value 'yason:true)))
-  (defun cl-jschema::json-null-p (value)
-    (or (eq value 'null) (eq value :null)))
-  (let ((array-spec (find "array" cl-jschema::*type-specs* :key #'cl-jschema::type-spec-name :test #'equal)))
-    (when array-spec
-      (setf (cl-jschema::type-spec-lisp-type array-spec) 'vector))))
-#-sbcl
-(progn
-  (defun cl-jschema::json-false-p (value)
-    (or (eq value nil) (eq value 'yason:false)))
-  (defun cl-jschema::json-true-p (value)
-    (or (eq value t) (eq value 'yason:true)))
-  (defun cl-jschema::json-null-p (value)
-    (or (eq value 'null) (eq value :null)))
-  (let ((array-spec (find "array" cl-jschema::*type-specs* :key #'cl-jschema::type-spec-name :test #'equal)))
-    (when array-spec
-      (setf (cl-jschema::type-spec-lisp-type array-spec) 'vector))))
-
 (defun coerce-to-hash-table (val)
   (cond
-    ((eq val nil) 'yason:false)
-    ((eq val 'yason:false) 'yason:false)
-    ((eq val 'yason:true) 'yason:true)
-    ((eq val t) 'yason:true)
-    ((or (eq val :null) (eq val 'null)) :null)
+    ((eq val nil) nil)
+    ((eq val t) t)
+    ((or (eq val :null) (eq val 'null)) 'null)
     ((hash-table-p val)
      (let ((new-ht (make-hash-table :test 'equal)))
        (maphash (lambda (k v)
@@ -98,9 +73,39 @@ Returns the index of the key if found, or nil."
     ((listp val)
      ;; Represent JSON arrays as Lisp vectors in coerced output
      (map 'vector #'coerce-to-hash-table val))
-    ((and (symbolp val) (not (member val '(t nil null yason:true yason:false))))
+    ((and (symbolp val) (not (member val '(t nil null))))
      (key-to-string val))
     (t val)))
+
+(defun coerce-arguments-by-schema (properties arguments)
+  "Recursively coerce arguments plist based on the properties schema plist.
+If a property is of type 'object' and its argument is nil/empty list,
+coerce it to an empty hash-table so cl-jschema can validate its required fields."
+  (let ((coerced (copy-list arguments)))
+    (loop for (key val) on coerced by #'cddr
+          do (let* ((prop-schema (getf properties key))
+                    (prop-type (getf prop-schema :type)))
+               (cond
+                 ((and (equal prop-type "object") (null val))
+                  (setf (getf coerced key) (make-hash-table :test 'equal)))
+                 ((and (equal prop-type "object") (plist-p val))
+                  (let ((sub-properties (getf prop-schema :properties)))
+                    (setf (getf coerced key)
+                          (coerce-arguments-by-schema sub-properties val))))
+                 ((and (equal prop-type "array") (or (listp val) (vectorp val)))
+                  (let* ((items-schema (getf prop-schema :items))
+                         (items-type (getf items-schema :type)))
+                    (when (equal items-type "object")
+                      (let ((sub-properties (getf items-schema :properties)))
+                        (setf (getf coerced key)
+                              (map 'vector
+                                   (lambda (item)
+                                     (cond
+                                       ((null item) (make-hash-table :test 'equal))
+                                       ((plist-p item) (coerce-arguments-by-schema sub-properties item))
+                                       (t item)))
+                                   val)))))))))
+    coerced))
 
 (defun deep-merge-plists (plist1 plist2)
   "Recursively merge two property lists.
@@ -123,37 +128,21 @@ Otherwise, the value from plist2 overrides plist1."
                       (setf result (nconc result (list k2 v2))))))
        result))))
 
-(defun sanitize-parsed-arguments (val)
-  "Recursively traverse parsed JSON object, converting any vectors (except strings)
-to simple-vectors so that cl-jschema can validate them."
-  (cond
-    ((hash-table-p val)
-     (maphash (lambda (k v)
-                (setf (gethash k val) (sanitize-parsed-arguments v)))
-              val)
-     val)
-    ((vectorp val)
-     (if (stringp val)
-         val
-         (map 'simple-vector #'sanitize-parsed-arguments val)))
-    (t val)))
-
 (defun validate-arguments (schema arguments)
   "Validate arguments against schema. schema is a plist.
 Arguments is a plist."
-  (let* ((schema-json (if schema
-                          (with-output-to-string (s)
-                            (yason:encode (coerce-to-hash-table schema) s))
+  (let* ((properties (getf schema :properties))
+         (coerced-args (if properties
+                           (coerce-arguments-by-schema properties arguments)
+                           arguments))
+         (schema-json (if schema
+                          (com.inuoe.jzon:stringify (coerce-to-hash-table schema))
                           "{}"))
-         (arguments-json (if arguments
-                             (with-output-to-string (s)
-                               (yason:encode (coerce-to-hash-table arguments) s))
+         (arguments-json (if coerced-args
+                             (com.inuoe.jzon:stringify (coerce-to-hash-table coerced-args))
                              "{}"))
          (parsed-schema (cl-jschema:parse schema-json))
-         (parsed-arguments (let ((yason:*parse-json-booleans-as-symbols* t)
-                                 (yason:*parse-json-null-as-keyword* t)
-                                 (yason:*parse-json-arrays-as-vectors* t))
-                             (sanitize-parsed-arguments (yason:parse arguments-json)))))
+         (parsed-arguments (com.inuoe.jzon:parse arguments-json)))
     (handler-case
         (cl-jschema:validate parsed-schema parsed-arguments)
       (cl-jschema:invalid-json (c)
@@ -241,13 +230,13 @@ Arguments is a plist."
                                        :message (format nil "Tool ~A execution exceeded timeout of ~A seconds."
                                                         (tool-name tool) timeout)))))
                             (let ((elapsed (- (get-universal-time) start-time)))
-                              (when (>= elapsed timeout)
-                                (unless finished-p
-                                  (error 'librecode-runner.conditions:tool-timeout
-                                         :tool-id (tool-name tool)
-                                         :duration timeout
-                                         :message (format nil "Tool ~A execution exceeded timeout of ~A seconds."
-                                                          (tool-name tool) timeout)))))))
+                               (when (>= elapsed timeout)
+                                 (unless finished-p
+                                   (error 'librecode-runner.conditions:tool-timeout
+                                          :tool-id (tool-name tool)
+                                          :duration timeout
+                                          :message (format nil "Tool ~A execution exceeded timeout of ~A seconds."
+                                                           (tool-name tool) timeout)))))))
                (loop until finished-p
                      do (bt:condition-wait cv lock)))
            (if result-err

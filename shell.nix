@@ -12,7 +12,6 @@ let
     check-it
     trivial-signal
     cl-jschema
-    yason
   ]);
 in
 pkgs.mkShell {
