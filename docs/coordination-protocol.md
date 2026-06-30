@@ -122,3 +122,81 @@ When multiple config files are discovered (e.g. global, project-root, and subdir
 * The configuration is resolved by merging the files in order of ascending priority: global config -> project config -> subdirectory config.
 * **Field Resolution**: The merge uses a flat **last-write-wins** replacement policy per top-level key. `librecode` does not perform deep recursive merging on nested config objects.
 * Once loaded, the JSON document is mapped to an internal CL struct representing the active system config.
+
+---
+
+## 6. HTTP API Server & REPL Interface
+
+`librecode-runner` exposes an external HTTP API and an interactive REPL interface to support integration with the OpenCode UI client and local developer maintenance.
+
+### HTTP REST / SSE Server
+
+The runner initiates a lightweight multi-threaded HTTP server (powered by `Clack` wrapping `Hunchentoot`) to listen for frontend requests.
+
+* **`POST /session/:id/admit`**: Receives user inputs (prompts or steering instructions) and writes them to the durable database inbox (R9).
+* **`GET /session/:id/events`**: Establishes a server-sent events (SSE) connection, streaming EventV2 events to the UI client as they are committed to the SQLite store (R2).
+* **`POST /session/:id/control`**: Handles control commands (such as waking the run coordinator or signaling an interrupt to active session execution).
+* **`GET /status`**: Returns health diagnostics and run status of the active runner process.
+
+All endpoints validate authorization parameters and route requests to the matching session mailbox or key lock (R1, R6).
+
+### Interactive REPL Boundary
+
+In interactive execution mode, `librecode-runner` provides a REPL listener:
+* **Interactive Restarts**: Serious conditions signaled during a turn drop the runner thread into an interactive REPL interface (`drop-to-repl-intervention`).
+* **Stack Inspection**: Developers can query active session coordinates, examine the execution stack trace, inspect local variable values, and force custom recovery states.
+* **Dynamic Rebinds**: The REPL allows hot-reloading package functions and tool definitions on the fly, resuming execution at the exact signal boundary without losing the dynamic context.
+
+---
+
+## 7. ASDF System & Package Layout
+
+`librecode` is organized as a single directory repository containing two decoupled ASDF systems to maintain clean boundaries between the runner execution engine and the metaharness coordinator.
+
+### System Definitions (`librecode.asd`)
+
+```lisp
+(defsystem "librecode-runner"
+  :description "The Common Lisp reimplementation of OpenCode's single-agent harness."
+  :version "0.1.0"
+  :author "nrd"
+  :depends-on ("bordeaux-threads" "cl-sqlite" "com.inuoe.jzon" "dexador" "uiop")
+  :pathname "src/"
+  :serial t
+  :components ((:file "packages")
+               (:file "conditions")
+               (:file "protocol")
+               (:file "event-store")
+               (:file "agent")
+               (:file "session")
+               (:file "runner")
+               (:file "compaction")
+               (:file "tool")
+               (:file "audit")))
+
+(defsystem "librecode-meta"
+  :description "The parent orchestrator for multi-agent campaigns (Metaharness)."
+  :version "0.1.0"
+  :author "nrd"
+  :depends-on ("librecode-runner" "trivial-signal")
+  :pathname "src/"
+  :serial t
+  :components ((:file "multiplexer")
+               (:file "multiplexer-tmux")
+               (:file "harness")
+               (:file "harness-opencode")
+               (:file "harness-librecode")
+               (:file "campaign")
+               (:file "gate")
+               (:file "council")
+               (:file "conditioning")
+               (:file "metaharness")))
+```
+
+### Package Structure (`src/packages.lisp`)
+
+To prevent dependency cycles and maintain isolation:
+* **`librecode-runner.*`**: Standard package naming partition for harness layers (e.g. `librecode-runner.event-store` exports `commit-event` and `apply-projectors` but has no knowledge of campaigns or tmux multiplexers).
+* **`librecode-meta.*`**: Package partition for Metaharness layers (e.g. `librecode-meta.campaign` imports the abstract `harness` protocol and schedules DAG nodes).
+* All internal variables and helper functions remain unexported, forcing all components to interact exclusively through their public API functions.
+

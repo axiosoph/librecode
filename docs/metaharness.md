@@ -146,6 +146,13 @@ To maintain decorrelation and avoid group-think:
    * `:full` — Unanimous machine consensus (Composer, Architect, Maintainer, Auditor) required.
    * `:human` — Requires the head's explicit approval (the human seam).
 
+### Gate Evaluation Mechanics
+
+To enforce the verification dual, `librecode-meta` implements a dedicated gate runner (`gate.lisp`):
+* **Nickel Contract Delegation**: For structural and consensus assertions (such as validating that a decision ledger is authorized under the constitution), the gate runner shells out to `nickel export` to execute the predicate contract files directly. This avoids duplicate validation logic and guarantees consistency between the Lisp supervisor and static project rules.
+* **Workspace Verification**: For linter checks, test suite execution, and file surface constraints, the gate runner executes shell commands or project-local scripts within the node's isolated git worktree directory.
+* **Failure Handling**: If a gate checks fails (returns a non-zero exit code), the gate runner signals a Lisp condition. If in autonomous mode, it triggers a rework loop; if in interactive mode, it notifies the user via the messaging channel.
+
 ---
 
 ## 5. Campaign Coordination Loop (The Orchestration LLM)
