@@ -32,7 +32,7 @@ librecode-meta start-campaign \
 
 ## 2. Asynchronous Mobile Messaging Workflow
 
-For headless or background campaign runs, the developer does not need to monitor terminal panes. The Metaharness runs autonomously but prompts the developer on high-stakes decisions via secure open-source messaging (Signal Protocol).
+For headless or background campaign runs, the developer does not need to monitor terminal panes. The Metaharness runs autonomously and can optionally prompt the developer on high-stakes decisions via secure open-source messaging (Signal Protocol). If the Signal channel is disabled or unavailable, the system transparently falls back to local console/TUI input (RES-11).
 
 ### Scenario: Interactive Permission Gate
 
@@ -61,11 +61,11 @@ Reply with option:
 
 ## 3. Stack-Freezing REPL Debugging Workflow
 
-When a serious error occurs (such as an LLM provider connection drop, a tool timeout, or a gate verification failure), the Metaharness stops the active sequence without unwinding the call stack, allowing the developer to repair the execution context in place.
+When a serious error occurs in an active worker thread (such as an LLM provider connection drop, a tool timeout, or a gate verification failure), the system intercepts the condition and freezes the thread's execution stack in place (e.g., by waiting on a thread-local condition variable CV) instead of unwinding it. This keeps the exact stack context alive and inspectable for inline SLIME/Sly debugger interaction (RES-06).
 
 ### Scenario: Tool Execution Timeout
 
-A custom search tool hangs. The runner signals a `tool-timeout` condition, freezing the execution thread.
+A custom search tool hangs. The runner thread signals a `tool-timeout` condition and immediately freezes, maintaining its stack frame at the error site.
 
 ### Notification Flow
 
