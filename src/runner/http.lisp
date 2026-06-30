@@ -54,6 +54,10 @@
        (loop for (k v) on val by #'cddr
              do (setf (gethash (symbol-to-json-key k) ht) (coerce-to-json v)))
        ht))
+    ((vectorp val)
+     (if (stringp val)
+         val
+         (map 'vector #'coerce-to-json val)))
     ((listp val)
      (mapcar #'coerce-to-json val))
     (t val)))
@@ -68,12 +72,11 @@
       (string= "tauri://localhost" origin)
       (string= "http://tauri.localhost" origin)
       (string= "https://tauri.localhost" origin)
+      (string= "https://opencode.ai" origin)
       (let ((len (length origin)))
-        (and (>= len 19)
+        (and (>= len 20)
              (uiop:string-prefix-p "https://" origin)
-             (or (string= "opencode.ai" origin :start2 (- len 11))
-                 (and (>= len 20)
-                      (string= ".opencode.ai" origin :start2 (- len 12))))))))
+             (string= ".opencode.ai" origin :start2 (- len 12))))))
 
 (defun json-response (status body-plist)
   (let ((headers '(:content-type "application/json")))
@@ -95,17 +98,15 @@
                 ((integerp len-raw) len-raw)
                 ((stringp len-raw) (parse-integer len-raw :junk-allowed t))
                 (t nil))))
-    (format *error-output* "DEBUG: [Server] parse-json-body body=~A len-raw=~A len=~A~%" body len-raw len) (force-output *error-output*)
     (when (and body len (> len 0))
       (let ((octets (make-array len :element-type '(unsigned-byte 8))))
-        (format *error-output* "DEBUG: [Server] read-sequence start~%") (force-output *error-output*)
         (handler-case
             (progn
               (read-sequence octets body)
-              (format *error-output* "DEBUG: [Server] read-sequence done, parsing JSON~%") (force-output *error-output*)
               (com.inuoe.jzon:parse octets))
           (error (c)
-            (format *error-output* "DEBUG: [Server] Error in read/parse: ~A~%" c) (force-output *error-output*)
+            (format *error-output* "ERROR: [Server] parse-json-body failed: ~A~%" c)
+            (force-output *error-output*)
             nil))))))
 
 (defun split-path (path)
@@ -141,7 +142,6 @@
 ;; --- Request Handlers ---
 
 (defun handle-create-session (env)
-  (format *error-output* "DEBUG: [Server] handle-create-session entering~%") (force-output *error-output*)
   (handler-case
       (let* ((json (parse-json-body env))
              (agent-id (or (and json (or (gethash "agent_id" json) (gethash "agent-id" json))) "default-agent"))
@@ -149,7 +149,6 @@
              (ruleset (and json (gethash "ruleset" json)))
              (session-id (format nil "session-~A-~A" (librecode-runner.event-store::current-timestamp-ms) (random 1000000)))
              (db librecode-runner.event-store:*db*))
-        (format *error-output* "DEBUG: [Server] handle-create-session agent-id=~A session-id=~A~%" agent-id session-id) (force-output *error-output*)
         (librecode-runner.event-store:with-transaction (db)
           ;; 1. Create session state record
           (sqlite:execute-non-query db
@@ -172,10 +171,10 @@
                     (sqlite:execute-non-query db
                       "INSERT OR REPLACE INTO permission_saved (project_id, action, resource, effect, timestamp) VALUES (?, ?, ?, ?, ?)"
                       librecode-runner.agent::*project-id* act res eff (librecode-runner.event-store::current-timestamp-ms))))))))
-        (format *error-output* "DEBUG: [Server] handle-create-session returning 200~%") (force-output *error-output*)
         (json-response 200 (list :session-id session-id)))
     (error (c)
-      (format *error-output* "DEBUG: [Server] handle-create-session error: ~A~%" c) (force-output *error-output*)
+      (format *error-output* "ERROR: [Server] handle-create-session error: ~A~%" c)
+      (force-output *error-output*)
       (json-response 400 (list :error (format nil "Error creating session: ~A" c))))))
 
 (defun handle-admit-input (session-id env)
@@ -221,9 +220,12 @@
                    (let ((librecode-runner.event-store:*db* db))
                      (librecode-runner.protocol:broadcast-event session-id :session-start)
                      (unwind-protect
-                          (let ((continue t))
-                            (loop while (and continue (not (librecode-runner.protocol:session-stopping-p session-id)))
-                                  do (setf continue (librecode-runner.runner:execute-provider-turn session-id provider model))))
+                          (handler-case
+                              (let ((continue t))
+                                (loop while (and continue (not (librecode-runner.protocol:session-stopping-p session-id)))
+                                      do (setf continue (librecode-runner.runner:execute-provider-turn session-id provider model))))
+                            (error (c)
+                              (librecode-runner.protocol:broadcast-event session-id :error (format nil "~A" c))))
                        (librecode-runner.protocol:broadcast-event session-id :session-complete)))
                 (sqlite:disconnect db)))))
         (json-response 200 (list :status "woken")))
@@ -234,20 +236,18 @@
   (declare (ignore env))
   (handler-case
       (let ((db librecode-runner.event-store:*db*))
-        (let ((rows (sqlite:execute-to-list db
-                      "SELECT id, role, content, created_at FROM session_history WHERE session_id = ? ORDER BY created_at ASC"
-                      session-id)))
-          (list 200
-                '(:content-type "application/json")
-                (list (com.inuoe.jzon:stringify
-                       (mapcar (lambda (row)
-                                 (let ((ht (make-hash-table :test 'equal)))
-                                   (setf (gethash "id" ht) (first row))
-                                   (setf (gethash "role" ht) (second row))
-                                   (setf (gethash "content" ht) (third row))
-                                   (setf (gethash "created_at" ht) (fourth row))
-                                   ht))
-                               rows))))))
+        (let* ((rows (sqlite:execute-to-list db
+                       "SELECT id, role, content, created_at FROM session_history WHERE session_id = ? ORDER BY created_at ASC"
+                       session-id))
+               (history (mapcar (lambda (row)
+                                  (let ((ht (make-hash-table :test 'equal)))
+                                    (setf (gethash "id" ht) (first row))
+                                    (setf (gethash "role" ht) (second row))
+                                    (setf (gethash "content" ht) (third row))
+                                    (setf (gethash "created_at" ht) (fourth row))
+                                    ht))
+                                rows)))
+          (json-response 200 (coerce history 'vector))))
     (error (c)
       (json-response 400 (list :error (format nil "Error retrieving history: ~A" c))))))
 
@@ -256,67 +256,78 @@
   (let ((client-mbox (librecode-runner.protocol:make-mailbox :name (format nil "stream-client-~A" session-id))))
     (register-sse-listener session-id client-mbox)
     (lambda (responder)
-      (let ((writer (funcall responder '(200 (:content-type "text/event-stream"
-                                              :cache-control "no-cache"
-                                              :connection "close")))))
-        ;; Immediately write open event as data line to flush headers and prevent client timeouts
-        (funcall writer (format nil "data: {\"event\":\"open\"}~%~%"))
-        (unwind-protect
-             (handler-case
-                 (loop
-                   (let ((msg (librecode-runner.protocol:receive-message client-mbox)))
-                     (cond
-                       ((null msg) (return))
-                       (t
-                        (let* ((event-type (car msg))
-                               (event-data (cadr msg))
-                               (json-payload
-                                 (cond
-                                   ((eq event-type :delta)
-                                    (com.inuoe.jzon:stringify (alexandria:plist-hash-table `("event" "delta" "content" ,event-data))))
-                                   ((eq event-type :tool-start)
-                                    (com.inuoe.jzon:stringify (alexandria:plist-hash-table
-                                                               `("event" "tool_start"
-                                                                 "tool_call_id" ,(getf event-data :id)
-                                                                 "name" ,(getf event-data :name)
-                                                                 "arguments" ,(getf event-data :arguments)))))
-                                   ((eq event-type :tool-success)
-                                    (com.inuoe.jzon:stringify (alexandria:plist-hash-table
-                                                               `("event" "tool_success"
-                                                                 "tool_call_id" ,(getf event-data :id)
-                                                                 "result" ,(getf event-data :result)))))
-                                   ((eq event-type :tool-error)
-                                    (com.inuoe.jzon:stringify (alexandria:plist-hash-table
-                                                               `("event" "tool_error"
-                                                                 "tool_call_id" ,(getf event-data :id)
-                                                                 "error" ,(getf event-data :error)))))
-                                   ((eq event-type :session-complete)
-                                    (com.inuoe.jzon:stringify (alexandria:plist-hash-table `("event" "complete"))))
-                                   (t
-                                    (com.inuoe.jzon:stringify (alexandria:plist-hash-table
-                                                               `("event" ,(symbol-to-json-key event-type)
-                                                                 "data" ,event-data))))))
-                               (sse-payload (format nil "data: ~A~%~%" json-payload)))
-                          (funcall writer sse-payload)
-                          (when (eq event-type :session-complete)
-                            (return)))))))
-               (error (c)
-                 (declare (ignore c))
-                 nil))
-          (unregister-sse-listener session-id client-mbox)
-          (ignore-errors
-           (funcall writer nil :close t)))))))
+      (let ((headers '(:content-type "text/event-stream"
+                       :cache-control "no-cache"
+                       :connection "close")))
+        (when (allowed-origin-p *http-origin*)
+          (setf headers
+                (append headers
+                        `(:access-control-allow-origin ,(or *http-origin* "*")
+                          :access-control-allow-methods "GET, POST, OPTIONS"
+                          :access-control-allow-headers "Content-Type, Authorization, x-requested-with"))))
+        (let ((writer (funcall responder (list 200 headers))))
+          ;; Immediately write open event as data line to flush headers and prevent client timeouts
+          (funcall writer (format nil "data: {\"event\":\"open\"}~%~%"))
+          (unwind-protect
+               (handler-case
+                   (loop
+                     (let ((msg (librecode-runner.protocol:receive-message client-mbox :timeout 15)))
+                       (cond
+                         ((null msg)
+                          ;; Send SSE comment/ping to flush the connection and detect client disconnects
+                          (funcall writer (format nil ": ping~%~%")))
+                         (t
+                          (let* ((event-type (car msg))
+                                 (event-data (cadr msg))
+                                 (json-payload
+                                   (cond
+                                     ((eq event-type :delta)
+                                      (com.inuoe.jzon:stringify (alexandria:plist-hash-table `("event" "delta" "content" ,event-data))))
+                                     ((eq event-type :tool-start)
+                                      (com.inuoe.jzon:stringify (alexandria:plist-hash-table
+                                                                 `("event" "tool_start"
+                                                                   "tool_call_id" ,(getf event-data :id)
+                                                                   "name" ,(getf event-data :name)
+                                                                   "arguments" ,(getf event-data :arguments)))))
+                                     ((eq event-type :tool-success)
+                                      (com.inuoe.jzon:stringify (alexandria:plist-hash-table
+                                                                 `("event" "tool_success"
+                                                                   "tool_call_id" ,(getf event-data :id)
+                                                                   "result" ,(getf event-data :result)))))
+                                     ((eq event-type :tool-error)
+                                      (com.inuoe.jzon:stringify (alexandria:plist-hash-table
+                                                                 `("event" "tool_error"
+                                                                   "tool_call_id" ,(getf event-data :id)
+                                                                   "error" ,(getf event-data :error)))))
+                                     ((eq event-type :session-complete)
+                                      (com.inuoe.jzon:stringify (alexandria:plist-hash-table `("event" "complete"))))
+                                     (t
+                                      (com.inuoe.jzon:stringify (alexandria:plist-hash-table
+                                                                 `("event" ,(symbol-to-json-key event-type)
+                                                                   "data" ,event-data))))))
+                                 (sse-payload (format nil "data: ~A~%~%" json-payload)))
+                            (funcall writer sse-payload)
+                            (when (eq event-type :session-complete)
+                              (return)))))))
+                 (error (c)
+                   (declare (ignore c))
+                   nil))
+            (unregister-sse-listener session-id client-mbox)
+            (ignore-errors
+             (funcall writer nil :close t))))))))
 
 ;; --- Main Router ---
 
 (defun handle-request (method path env)
   (if (eq method :options)
-      (list 200
-            '(:content-type "application/json"
-              :access-control-allow-origin "*"
-              :access-control-allow-methods "GET, POST, PUT, DELETE, OPTIONS"
-              :access-control-allow-headers "Content-Type, Authorization, x-requested-with")
-            '(""))
+      (let ((headers '(:content-type "application/json")))
+        (when (allowed-origin-p *http-origin*)
+          (setf headers
+                (append headers
+                        `(:access-control-allow-origin ,(or *http-origin* "*")
+                          :access-control-allow-methods "GET, POST, PUT, DELETE, OPTIONS"
+                          :access-control-allow-headers "Content-Type, Authorization, x-requested-with"))))
+        (list 200 headers '("")))
       (let ((parts (split-path path)))
         (cond
           ((and (eq method :post)
@@ -367,20 +378,15 @@
            (path (getf env :path-info))
            (librecode-runner.event-store:*workspace-root*
              (or workspace-root librecode-runner.event-store:*workspace-root*)))
-      (format *error-output* "DEBUG: [Server] Request ~A ~A received. Connecting to DB...~%" method path) (force-output *error-output*)
       (let* ((should-connect (or db-path (null librecode-runner.event-store:*db*)))
              (db (if should-connect
-                     (progn
-                       (format *error-output* "DEBUG: [Server] Calling connect-db for ~A...~%" (or db-path "librecode.db")) (force-output *error-output*)
-                       (librecode-runner.event-store:connect-db (or db-path "librecode.db")))
+                     (librecode-runner.event-store:connect-db (or db-path "librecode.db"))
                      librecode-runner.event-store:*db*)))
-        (format *error-output* "DEBUG: [Server] Connected. Executing request handler...~%") (force-output *error-output*)
         (unwind-protect
              (let ((librecode-runner.event-store:*db* db)
                    (*http-origin* (getf env :http-origin)))
                (handle-request method path env))
           (when (and should-connect db)
-            (format *error-output* "DEBUG: [Server] Disconnecting DB...~%") (force-output *error-output*)
             (sqlite:disconnect db)))))))
 
 ;; --- External API ---
