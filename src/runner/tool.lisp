@@ -43,6 +43,82 @@ Returns the index of the key if found, or nil."
               (loop for k in x by #'cddr
                     always (symbolp k))))))
 
+(defun key-to-string (key)
+  (if (symbolp key)
+      (string-downcase (symbol-name key))
+      (format nil "~A" key)))
+
+(defun coerce-to-hash-table (val)
+  (cond
+    ((null val) nil)
+    ((hash-table-p val)
+     (let ((new-ht (make-hash-table :test 'equal)))
+       (maphash (lambda (k v)
+                  (setf (gethash (key-to-string k) new-ht)
+                        (coerce-to-hash-table v)))
+                val)
+       new-ht))
+    ((plist-p val)
+     (let ((ht (make-hash-table :test 'equal)))
+       (loop for (k v) on val by #'cddr
+             do (setf (gethash (key-to-string k) ht)
+                      (coerce-to-hash-table v)))
+       ht))
+    ((listp val)
+     (mapcar #'coerce-to-hash-table val))
+    ((vectorp val)
+     (if (stringp val)
+         val
+         (map 'vector #'coerce-to-hash-table val)))
+    ((and (symbolp val) (not (member val '(t nil null))))
+     (key-to-string val))
+    (t val)))
+
+;; Work around cl-jschema bugs checking required and dependentRequired properties.
+;; By default, cl-jschema uses (gethash field value) which fails if the value is nil (JSON false).
+(defmethod cl-jschema::check-type-property ((keyword (eql :|required|))
+                                            required value)
+  "Check VALUE by 'required' for keys in REQUIRED, correctly handling falsy values like nil."
+  (when (and (typep value 'hash-table) required)
+    (loop
+      for field in required
+      always (multiple-value-bind (val present-p) (gethash field value)
+               (declare (ignore val))
+               (or present-p
+                   (cl-jschema::raise-invalid-json-value keyword field))))))
+
+(defmethod cl-jschema::check-type-property ((keyword (eql :|properties|))
+                                            properties value)
+  "Check VALUE properties against schemas in PROPERTIES, correctly handling falsy values like nil."
+  (when (typep value 'hash-table)
+    (maphash (lambda (field schema)
+               (multiple-value-bind (val present-p) (gethash field value)
+                 (when present-p
+                   (cl-jschema::check-schema schema val))))
+             properties)))
+
+(defmethod cl-jschema::check-type-property ((keyword (eql :|dependentRequired|))
+                                            dependent-required value)
+  "Check VALUE by 'dependentRequired' for DEPENDENT-REQUIRED, correctly handling falsy values."
+  (when (typep value 'hash-table)
+    (maphash (lambda (dependent required)
+               (multiple-value-bind (val present-p) (gethash dependent value)
+                 (declare (ignore val))
+                 (when present-p
+                   (cl-jschema::check-type-property :|required| required value))))
+             dependent-required)))
+
+(defmethod cl-jschema::check-type-property ((keyword (eql :|dependentSchemas|))
+                                            dependent-schemas value)
+  "Check VALUE by 'dependentSchemas' for DEPENDENT-SCHEMAS, correctly handling falsy values."
+  (when (typep value 'hash-table)
+    (maphash (lambda (dependent schema)
+               (multiple-value-bind (val present-p) (gethash dependent value)
+                 (declare (ignore val))
+                 (when present-p
+                   (cl-jschema::check-schema schema value))))
+             dependent-schemas)))
+
 (defun deep-merge-plists (plist1 plist2)
   "Recursively merge two property lists.
 If a key exists in both and both values are plists, recursively merge them.
@@ -67,32 +143,24 @@ Otherwise, the value from plist2 overrides plist1."
 (defun validate-arguments (schema arguments)
   "Validate arguments against schema. schema is a plist.
 Arguments is a plist."
-  (let ((properties (getf schema :properties))
-        (required (getf schema :required)))
-    ;; Check required keys
-    (dolist (req required)
-      (let* ((req-key (if (stringp req) (intern (string-upcase req) :keyword) req))
-             (present (nth-value 1 (get-properties arguments (list req-key)))))
-        (unless present
-          (error 'simple-error :format-control "Missing required parameter: ~A" :format-arguments (list req)))))
-    ;; Check types of present arguments
-    (loop for (key val) on arguments by #'cddr
-          do (let* ((prop-schema (getf properties key))
-                    (expected-type (getf prop-schema :type)))
-               (when (and prop-schema expected-type)
-                 (cond
-                   ((equal expected-type "string")
-                    (unless (stringp val)
-                      (error 'simple-error :format-control "Parameter ~A must be a string, got ~S" :format-arguments (list key val))))
-                   ((equal expected-type "integer")
-                    (unless (integerp val)
-                      (error 'simple-error :format-control "Parameter ~A must be an integer, got ~S" :format-arguments (list key val))))
-                   ((equal expected-type "boolean")
-                    (unless (typep val 'boolean)
-                      (error 'simple-error :format-control "Parameter ~A must be a boolean, got ~S" :format-arguments (list key val))))
-                   ((equal expected-type "number")
-                    (unless (numberp val)
-                      (error 'simple-error :format-control "Parameter ~A must be a number, got ~S" :format-arguments (list key val))))))))))
+  (let* ((schema-json (if schema
+                          (com.inuoe.jzon:stringify (coerce-to-hash-table schema))
+                          "{}"))
+         (arguments-json (if arguments
+                             (com.inuoe.jzon:stringify (coerce-to-hash-table arguments))
+                             "{}"))
+         (parsed-schema (cl-jschema:parse schema-json))
+         (parsed-arguments (com.inuoe.jzon:parse arguments-json)))
+    (handler-case
+        (cl-jschema:validate parsed-schema parsed-arguments)
+      (cl-jschema:invalid-json (c)
+        (let* ((errors (cl-jschema:invalid-json-errors c))
+               (msg (format nil "JSON Schema validation failed: ~{~A at ~A~^; ~}"
+                            (mapcan (lambda (err)
+                                      (list (or (cl-jschema:invalid-json-value-error-message err) "Invalid value")
+                                            (or (cl-jschema:invalid-json-value-json-pointer err) "/")))
+                                    errors))))
+          (error 'simple-error :format-control "~A" :format-arguments (list msg)))))))
 
 (defun materialize-tools (registry agent model-capabilities)
   "Filter registered tools by permissions and capabilities, and return their plist representations."

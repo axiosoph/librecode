@@ -113,6 +113,45 @@
     (signals error
       (execute-tool tool '(:str "hello" :bool "not-bool")))))
 
+(test test-nested-argument-validation
+  "Verify nested parameter validation catches mismatches and missing required nested properties."
+  (let* ((tool (make-instance 'tool
+                              :name "nested-tool"
+                              :description "Desc"
+                              :parameters '(:type "object"
+                                            :properties (:nested (:type "object"
+                                                                  :properties (:val (:type "string"))
+                                                                  :required (:val))))
+                              :capabilities nil
+                              :handler (lambda (args) (getf (getf args :nested) :val)))))
+    ;; Correct nested arguments
+    (is (equal "hello" (execute-tool tool '(:nested (:val "hello")))))
+
+    ;; Nested type mismatch (integer instead of string)
+    (signals error
+      (execute-tool tool '(:nested (:val 123))))
+
+    ;; Missing required nested property
+    (signals error
+      (execute-tool tool '(:nested ())))))
+
+(test test-array-argument-validation
+  "Verify array parameter validation validates elements correctly."
+  (let* ((tool (make-instance 'tool
+                              :name "array-tool"
+                              :description "Desc"
+                              :parameters '(:type "object"
+                                            :properties (:arr (:type "array"
+                                                               :items (:type "integer"))))
+                              :capabilities nil
+                              :handler (lambda (args) (getf args :arr)))))
+    ;; Correct array elements
+    (is (equal '(1 2 3) (execute-tool tool '(:arr (1 2 3)))))
+
+    ;; Element of incorrect type
+    (signals error
+      (execute-tool tool '(:arr (1 "two" 3))))))
+
 (test test-async-execution-success
   "Verify that async execution returns the correct value."
   (let* ((tool (make-instance 'tool
