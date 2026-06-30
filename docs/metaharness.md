@@ -145,3 +145,38 @@ To maintain decorrelation and avoid group-think:
    * `:subset` — Quorum threshold required for qualitative judgments.
    * `:full` — Unanimous machine consensus (Composer, Architect, Maintainer, Auditor) required.
    * `:human` — Requires the head's explicit approval (the human seam).
+
+---
+
+## 5. Campaign Coordination Loop (The Orchestration LLM)
+
+To keep multi-agent campaigns moving forward autonomously while preserving safety boundaries, the Metaharness runs its own **Campaign Coordination Loop** powered by a parent-level LLM context:
+
+* **Task Initiation**: When a campaign begins, the orchestrator constructs the initial task graph and generates the localized Initial Boundary Conditions (IBCs) for each dispatched child harness.
+* **Progress Assessment**: The coordinator loop wakes periodically (e.g., when a child harness lands its work, hits a boundary, or triggers a surface collision) to evaluate progress. It analyzes the SQLite event store and the S-expression audit trail, generating prompt updates to steer the active harnesses.
+* **Failure Analysis & Realignment**: If a child harness fails a validation gate, the parent coordinator uses the LLM to inspect compilation, test, or linter stderr traces, formulates a corrective design revision, and updates the child's target boundary for dispatching rework.
+* **Blocking Determinations**: The loop distinguishes between autonomous progress and non-negotiable checks (e.g., design-rights conflicts, missing third-party dependencies, or non-converging review cycles). If a block is encountered, the coordinator halts the campaign and delegates the decision to the human seam.
+
+---
+
+## 6. Asynchronous Messaging & Headless Notifications
+
+For headless operation, the Metaharness does not require the developer to sit at a terminal monitoring active tmux sessions. Instead, it exposes an abstract messaging layer that relays alerts and handles blocking gates asynchronously.
+
+### Notification Protocol
+
+```lisp
+(defgeneric send-notification (channel recipient message &key status)
+  (:documentation "Sends an asynchronous status update or diagnostic alert to the recipient."))
+
+(defgeneric request-decision (channel recipient prompt options)
+  (:documentation "Suspends the coordinator execution path, sends a prompt with structured select options (e.g. Accept, Reject, Widen Surface), and returns the selected option once the recipient replies."))
+```
+
+### Messaging Adapters
+
+* **Standard Console (Local TUI/REPL)**: The default channel for local interactive execution, prompting the developer in the active Lisp listener or terminal window.
+* **Signal Protocol (Signal Messenger)**: A headless channel that communicates with the developer's mobile device by wrapping a local Signal daemon (`signal-cli`). The Metaharness packages gate failures or permission requests into secure messages, transmits them, blocks execution, and resumes once the user sends a response string matching one of the options.
+* **Webhook/Matrix**: General purpose HTTP POST adapters to plug the Metaharness into Matrix rooms or chat integrations.
+
+This decoupled layer ensures the campaign runs cheaply and autonomously in the background, but remains bound to the developer's final gate authority.
