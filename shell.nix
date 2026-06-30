@@ -9,6 +9,8 @@ let
     hunchentoot
     clack
     fiveam
+    check-it
+    trivial-signal
   ]);
 in
 pkgs.mkShell {
@@ -34,6 +36,20 @@ pkgs.mkShell {
     export PREDICATE_PLUGIN_SRC="/var/home/nrd/.gemini/antigravity-cli/plugins/predicate"
     # Ensure CFFI finds system libraries in Nix environments
     export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath (with pkgs; [ sqlite ncurses openssl ])}:$LD_LIBRARY_PATH"
+    
+    sbcl() {
+      local args=()
+      for arg in "$@"; do
+        if [ "$arg" = "(asdf:load-system :librecode-runner)" ]; then
+          args+=("(progn (asdf:load-asd (merge-pathnames \"librecode.asd\" *default-pathname-defaults*)) (asdf:load-system :librecode-runner))")
+        elif [ "$arg" = "(asdf:load-system :librecode-meta)" ]; then
+          args+=("(progn (asdf:load-asd (merge-pathnames \"librecode.asd\" *default-pathname-defaults*)) (asdf:load-system :librecode-meta))")
+        else
+          args+=("$arg")
+        fi
+      done
+      command sbcl "''${args[@]}"
+    }
     
     echo "====================================================="
     echo "  librecode Development Shell"
