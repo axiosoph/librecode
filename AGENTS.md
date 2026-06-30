@@ -82,6 +82,9 @@ The implementation of `librecode` is divided into key modules, each documented e
 * **[testing.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/testing.md)**
   * **Testing Strategy & Parity**: White-box test porting (FiveAM) and E2E black-box UI/TUI reuse procedures.
 
+* **[cl-guidelines.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/cl-guidelines.md)**
+  * **Common Lisp Developer Guidance**: Style constraints, approved library dependencies, and dynamic binding/restarts guidelines.
+
 ## Invariants
 
 The system enforces the following core architectural invariants:
@@ -208,15 +211,7 @@ Each entry has a **decision/lean** and a **signpost** tracking its implementatio
 
 ## Style
 
-- Common Lisp, targeting SBCL exclusively.
-- ASDF for build. Single `.asd` initially; split into subsystems when justified.
-- `defpackage` per module. Internal symbols are unexported.
-- Prefer `handler-bind` over `handler-case` unless unwinding is intentional.
-- Prefer `defstruct` over `defclass` for value types (events, messages, config).
-  Use `defclass` for entities with polymorphic dispatch (agents, tools).
-- Comments say why, not what. Docstrings on exported symbols.
-- No `defmethod` without a corresponding `defgeneric`.
-- Test with FiveAM. Tests in a separate `librecode-test` system.
+All code and packages must conform to the [cl-guidelines.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/cl-guidelines.md) specification (including naming conventions, dynamic variable contexts, and approved library dependencies).
 
 ## Commits
 
