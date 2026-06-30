@@ -48,25 +48,17 @@ and deletes compacted messages from the history."
                        (summary (format nil "Summary of past context:~%~{~A~^~%~}" summary-lines))
                        (epoch-id (format nil "epoch-~A" (librecode-runner.event-store::current-timestamp-ms)))
                        (next-seq (librecode-runner.agent::get-next-event-sequence session-id))
-                       (now (librecode-runner.event-store::current-timestamp-ms)))
-                  ;; Commit baseline update event for replay self-containment (this runs inside its own transaction)
+                       (compacted-ids (map 'vector (lambda (m) (getf m :id)) older)))
+                  ;; Commit baseline update event for replay self-containment.
+                  ;; Database updates are deferred to apply-projectors in event-store.lisp to ensure I2 atomicity.
                   (librecode-runner.event-store:commit-event
                    session-id
                    `((:epoch-id . ,epoch-id)
                      (:baseline-text . ,summary)
-                     (:status . "compacted"))
+                     (:status . "compacted")
+                     (:compacted-message-ids . ,compacted-ids))
                    :context-baseline-updated
                    next-seq)
-                  ;; Insert/Replace in context_epoch and delete from history inside a single transaction
-                  (librecode-runner.event-store:with-transaction (db)
-                    (sqlite:execute-non-query db
-                      "INSERT OR REPLACE INTO context_epoch (session_id, epoch_id, baseline_text, created_at)
-                       VALUES (?, ?, ?, ?)"
-                      session-id epoch-id summary now)
-                    (dolist (m older)
-                      (sqlite:execute-non-query db
-                        "DELETE FROM session_history WHERE id = ?"
-                        (getf m :id))))
                   t)
                 nil))
           nil))))
