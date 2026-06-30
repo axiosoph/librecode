@@ -211,3 +211,105 @@
         ;; Verify context-baseline-updated event exists in event_log at sequence 2
         (is (equal "CONTEXT-BASELINE-UPDATED"
                    (sqlite:execute-single db "SELECT event_type FROM event_log WHERE session_id = ? AND sequence = 2" session-id)))))))
+
+(test test-worker-thread-termination
+  "Assert that worker threads are terminated when the session coordinator is aborted/interrupted."
+  (let* ((session-id "session-terminate-test")
+         (worker-thread nil)
+         (drain-fn (lambda ()
+                     ;; Spawn a worker thread and block on mailbox
+                     (bt:make-thread
+                      (lambda ()
+                        (let ((this (bt:current-thread)))
+                          (setf worker-thread this)
+                          (librecode-runner.protocol:register-worker-thread session-id this)
+                          (unwind-protect
+                               (loop (sleep 0.1))
+                            (librecode-runner.protocol:unregister-worker-thread session-id this))))
+                      :name "mock-infinite-worker")
+                     (loop
+                       (let ((msg (librecode-runner.protocol:receive-message librecode-runner.protocol:*session-mailbox*)))
+                         (when (eq (car msg) :interrupt)
+                           (error "Interrupted!")))))))
+    ;; Spawn the coordinator
+    (let ((coord-thread (bt:make-thread
+                         (lambda ()
+                           (handler-case
+                               (run-coordinator session-id drain-fn)
+                             (error () nil)))
+                         :name "coordinator-terminate-test-thread")))
+      ;; Wait for coordinator to start and spawn the worker thread
+      (loop repeat 10
+            while (null worker-thread)
+            do (sleep 0.1))
+      (is-true worker-thread)
+      (is-true (bt:thread-alive-p worker-thread))
+      ;; Interrupt the session
+      (interrupt-session session-id)
+      ;; Wait for cleanup to finish
+      (sleep 0.5)
+      ;; Verify coordinator and worker thread are dead
+      (is-false (bt:thread-alive-p coord-thread))
+      (is-false (bt:thread-alive-p worker-thread)))))
+
+(test test-sequential-turns-no-contamination
+  "Run two sequential execution turns where the first turn simulates an SSE stream error, verifying that the second turn executes cleanly without mailbox contamination."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (librecode-test.event-store::with-test-db (db dir)
+      (let* ((session-id "session-sequential")
+             (port (get-free-port))
+             (acceptor (make-instance 'hunchentoot:easy-acceptor :port port))
+             (request-count 0))
+        ;; Create projected session state
+        (sqlite:execute-non-query db
+          "INSERT INTO session_state (session_id, agent_id, version, status, last_updated)
+           VALUES (?, ?, 1, 'active', ?)"
+          session-id "agent-1" (librecode-runner.event-store::current-timestamp-ms))
+
+        ;; Set up custom local route dispatcher
+        (let ((dispatcher (lambda (request)
+                            (when (equal (hunchentoot:script-name request) "/stream")
+                              (lambda ()
+                                (incf request-count)
+                                (setf (hunchentoot:content-type*) "text/event-stream")
+                                (let ((stream (hunchentoot:send-headers)))
+                                  (cond
+                                    ((= request-count 1)
+                                     ;; First turn: send some data, then send error JSON, followed by more data to guarantee mailbox contamination
+                                     (write-sequence (flexi-streams:string-to-octets (format nil "data: {\"choices\": [{\"delta\": {\"content\": \"Stale data\"}}]}~%") :external-format :utf-8) stream)
+                                     (force-output stream)
+                                     (write-sequence (flexi-streams:string-to-octets (format nil "data: {\"error\": \"Simulated stream error\"}~%") :external-format :utf-8) stream)
+                                     (force-output stream)
+                                     (write-sequence (flexi-streams:string-to-octets (format nil "data: {\"choices\": [{\"delta\": {\"content\": \"More stale data\"}}]}~%") :external-format :utf-8) stream)
+                                     (force-output stream)
+                                     "")
+                                    (t
+                                     ;; Second turn: send clean data
+                                     (write-sequence (flexi-streams:string-to-octets (format nil "data: {\"choices\": [{\"delta\": {\"content\": \"Hello \"}}]}~%") :external-format :utf-8) stream)
+                                     (force-output stream)
+                                     (write-sequence (flexi-streams:string-to-octets (format nil "data: {\"choices\": [{\"delta\": {\"content\": \"world!\"}}]}~%") :external-format :utf-8) stream)
+                                     (force-output stream)
+                                     (write-sequence (flexi-streams:string-to-octets (format nil "data: [DONE]~%") :external-format :utf-8) stream)
+                                     (force-output stream)
+                                     ""))))))))
+          (push dispatcher hunchentoot:*dispatch-table*)
+          (hunchentoot:start acceptor)
+          (unwind-protect
+               (let ((librecode-runner.runner::*provider-url* (format nil "http://127.0.0.1:~A/stream" port)))
+                 ;; Bind session mailbox dynamically
+                 (let ((mbox (librecode-runner.protocol:make-mailbox :name "test-seq-mbox")))
+                   (let ((librecode-runner.protocol:*session-mailbox* mbox))
+                     ;; First turn: should fail with provider-error
+                     (signals provider-error
+                       (execute-provider-turn session-id "mock-provider" "mock-model"))
+                     
+                     ;; Verify mailbox has leftover stale messages (contamination exists in raw mailbox)
+                     (is-true (nth-value 1 (sb-concurrency:receive-message-no-hang mbox)))
+                     
+                     ;; Second turn: should succeed because it flushes the mailbox first
+                     (execute-provider-turn session-id "mock-provider" "mock-model")
+                     
+                     ;; Verify assistant message has correct content from second turn only (stale content is discarded)
+                     (let ((content (sqlite:execute-single db "SELECT content FROM session_history WHERE role = 'assistant'")))
+                       (is (equal "Hello world!" content))))))
+            (hunchentoot:stop acceptor)))))))

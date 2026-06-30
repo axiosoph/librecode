@@ -86,43 +86,48 @@
   "Parse a single SSE streaming delta line and accumulate content and tool calls."
   (let ((trimmed (string-trim '(#\Space #\Tab #\Return #\Newline) line)))
     (when (alexandria:starts-with-subseq "data: " trimmed)
-      (let ((data-val (subseq trimmed 5)))
-        (unless (string= data-val "[DONE]")
-          (handler-case
-              (let* ((preprocessed (strip-jsonc-comments data-val))
-                     (parsed (com.inuoe.jzon:parse preprocessed)))
-                (when (hash-table-p parsed)
-                  (let ((choices (gethash "choices" parsed)))
-                    (when (and choices (> (length choices) 0))
-                      (let* ((choice (elt choices 0))
-                             (delta (gethash "delta" choice)))
-                        (when delta
-                          (let ((content (gethash "content" delta)))
-                            (when (stringp content)
-                              (loop for char across content
-                                    do (vector-push-extend char text-accum))))
-                          (let ((tool-calls (gethash "tool_calls" delta)))
-                            (when tool-calls
-                              (loop for tc across tool-calls
-                                    do (let* ((index (gethash "index" tc))
-                                              (id (gethash "id" tc))
-                                              (function (gethash "function" tc)))
-                                         (when (or id function)
-                                           (let ((existing (gethash index tools-accum)))
-                                             (unless existing
-                                               (setf existing (list :id "" :name "" :arguments "")))
-                                             (when id
-                                               (setf (getf existing :id) id))
-                                             (when function
-                                               (let ((name (gethash "name" function))
-                                                     (args (gethash "arguments" function)))
-                                                 (when name
-                                                   (setf (getf existing :name) name))
-                                                 (when args
-                                                   (setf (getf existing :arguments)
-                                                         (concatenate 'string (getf existing :arguments) args)))))
-                                               (setf (gethash index tools-accum) existing)))))))))))))
-             (error () nil)))))))
+      (let* ((data-val (subseq trimmed 5))
+             (parsed (unless (string= data-val "[DONE]")
+                       (handler-case
+                           (com.inuoe.jzon:parse (strip-jsonc-comments data-val))
+                         (error () nil)))))
+        (when (hash-table-p parsed)
+          (let ((err (gethash "error" parsed)))
+            (when err
+              (error 'librecode-runner.conditions:provider-error
+                     :endpoint *provider-url*
+                     :provider "mock"
+                     :message (format nil "SSE provider error: ~A" err))))
+          (let ((choices (gethash "choices" parsed)))
+            (when (and choices (> (length choices) 0))
+              (let* ((choice (elt choices 0))
+                     (delta (gethash "delta" choice)))
+                (when delta
+                  (let ((content (gethash "content" delta)))
+                    (when (stringp content)
+                      (loop for char across content
+                            do (vector-push-extend char text-accum))))
+                  (let ((tool-calls (gethash "tool_calls" delta)))
+                    (when tool-calls
+                      (loop for tc across tool-calls
+                            do (let* ((index (gethash "index" tc))
+                                      (id (gethash "id" tc))
+                                      (function (gethash "function" tc)))
+                                 (when (or id function)
+                                   (let ((existing (gethash index tools-accum)))
+                                     (unless existing
+                                       (setf existing (list :id "" :name "" :arguments "")))
+                                     (when id
+                                       (setf (getf existing :id) id))
+                                     (when function
+                                       (let ((name (gethash "name" function))
+                                             (args (gethash "arguments" function)))
+                                         (when name
+                                           (setf (getf existing :name) name))
+                                         (when args
+                                           (setf (getf existing :arguments)
+                                                 (concatenate 'string (getf existing :arguments) args)))))
+                                     (setf (gethash index tools-accum) existing))))))))))))))))
 
 (defun get-active-agent (session-id)
   "Retrieve or construct the agent for the active session."
@@ -208,23 +213,26 @@
         (if (not tool)
             (setf (gethash call-id results) (format nil "Error: Tool ~A not found" name))
             (let ((worker-mbox (librecode-runner.protocol:make-mailbox :name (format nil "worker-mbox-~A" call-id))))
-              (librecode-runner.protocol:register-worker-mailbox worker-mbox)
+              (librecode-runner.protocol:register-worker-mailbox session-id worker-mbox)
               (bt:make-thread
                (lambda ()
-                 (unwind-protect
-                      (handler-case
-                          (progn
-                            ;; Evaluate permission request at execution site
-                            (librecode-runner.agent:check-permission agent "execute_tool" name)
-                            (let ((res (funcall (librecode-runner.tool:tool-handler tool) args-plist)))
-                              (librecode-runner.protocol:send-message
-                               librecode-runner.protocol:*session-mailbox*
-                               `(:tool-success ,call-id ,res))))
-                        (error (c)
-                          (librecode-runner.protocol:send-message
-                           librecode-runner.protocol:*session-mailbox*
-                           `(:tool-error ,call-id ,(format nil "~A" c)))))
-                   (librecode-runner.protocol:unregister-worker-mailbox worker-mbox)))
+                 (let ((self (bt:current-thread)))
+                   (librecode-runner.protocol:register-worker-thread session-id self)
+                   (unwind-protect
+                        (handler-case
+                            (progn
+                              ;; Evaluate permission request at execution site
+                              (librecode-runner.agent:check-permission agent "execute_tool" name)
+                              (let ((res (funcall (librecode-runner.tool:tool-handler tool) args-plist)))
+                                (librecode-runner.protocol:send-message
+                                 librecode-runner.protocol:*session-mailbox*
+                                 `(:tool-success ,call-id ,res))))
+                          (error (c)
+                            (librecode-runner.protocol:send-message
+                             librecode-runner.protocol:*session-mailbox*
+                             `(:tool-error ,call-id ,(format nil "~A" c)))))
+                     (librecode-runner.protocol:unregister-worker-thread session-id self)
+                     (librecode-runner.protocol:unregister-worker-mailbox session-id worker-mbox))))
                :name (format nil "tool-worker-~A" name))))))
 
     ;; Read from unified session mailbox for all tools to settle
@@ -257,6 +265,7 @@
 Enforces that exactly one provider call is made. Returns t if continuation is allowed."
   (unless librecode-runner.event-store:*db*
     (error "No active database connection in *db*."))
+  (librecode-runner.protocol:flush-mailbox librecode-runner.protocol:*session-mailbox*)
   (let* ((session-id (librecode-runner.session::coerce-session-id session)))
     ;; 1. Promote any pending steer inputs
     (librecode-runner.session:promote-pending-inputs session-id :mode :steer)
@@ -294,7 +303,8 @@ Enforces that exactly one provider call is made. Returns t if continuation is al
                   (let ((text-accum (make-array 0 :element-type 'character :fill-pointer 0 :adjustable t))
                         (tools-accum (make-hash-table :test 'equal)))
                     ;; Spawn Dedicated SSE reader thread
-                    (let ((mbox librecode-runner.protocol:*session-mailbox*))
+                    (let ((mbox librecode-runner.protocol:*session-mailbox*)
+                          (rid (format nil "reader-~A" (random 1000000))))
                       (bt:make-thread
                        (lambda ()
                          (let ((librecode-runner.protocol:*session-mailbox* mbox))
@@ -305,39 +315,43 @@ Enforces that exactly one provider call is made. Returns t if continuation is al
                                        (progn
                                          (librecode-runner.protocol:send-message
                                           librecode-runner.protocol:*session-mailbox*
-                                          '(:sse-eof))
+                                          `(:sse-eof ,rid))
                                          (return))
                                        (librecode-runner.protocol:send-message
                                         librecode-runner.protocol:*session-mailbox*
-                                        `(:sse-line ,line)))))
+                                        `(:sse-line ,rid ,line)))))
                              (error (c)
                                (librecode-runner.protocol:send-message
                                 librecode-runner.protocol:*session-mailbox*
-                                `(:sse-error ,c))))))
-                       :name "sse-reader-thread"))
+                                `(:sse-error ,rid ,c))))))
+                       :name "sse-reader-thread")
 
-                   ;; Unified Event Loop on *session-mailbox*
-                   (loop
-                     (let ((msg (librecode-runner.protocol:receive-message librecode-runner.protocol:*session-mailbox*)))
-                       (cond
-                         ((null msg) (return))
-                         ((eq (car msg) :interrupt)
-                          (close dex-stream)
-                          (error 'librecode-runner.conditions:harness-failure
-                                 :message "Session interrupted during LLM execution turn."))
-                         ((eq (car msg) :abort)
-                          (close dex-stream)
-                          (error 'librecode-runner.conditions:harness-failure
-                                 :message "Session aborted during LLM execution turn."))
-                         ((eq (car msg) :sse-error)
-                          (error 'librecode-runner.conditions:provider-error
-                                 :endpoint *provider-url*
-                                 :provider provider
-                                 :message (format nil "SSE stream error: ~A" (second msg))))
-                         ((eq (car msg) :sse-eof)
-                          (return))
-                         ((eq (car msg) :sse-line)
-                            (process-sse-line-data (second msg) text-accum tools-accum)))))
+                     ;; Unified Event Loop on *session-mailbox*
+                     (loop
+                       (let ((msg (librecode-runner.protocol:receive-message librecode-runner.protocol:*session-mailbox*)))
+                         (cond
+                           ((null msg) (return))
+                           ((eq (car msg) :interrupt)
+                            (close dex-stream)
+                            (error 'librecode-runner.conditions:harness-failure
+                                   :message "Session interrupted during LLM execution turn."))
+                           ((eq (car msg) :abort)
+                            (close dex-stream)
+                            (error 'librecode-runner.conditions:harness-failure
+                                   :message "Session aborted during LLM execution turn."))
+                           ;; Filter reader-specific messages by reader-id
+                           ((and (member (car msg) '(:sse-line :sse-eof :sse-error))
+                                 (not (equal (second msg) rid)))
+                            nil)
+                           ((eq (car msg) :sse-error)
+                            (error 'librecode-runner.conditions:provider-error
+                                   :endpoint *provider-url*
+                                   :provider provider
+                                   :message (format nil "SSE stream error: ~A" (third msg))))
+                           ((eq (car msg) :sse-eof)
+                            (return))
+                           ((eq (car msg) :sse-line)
+                            (process-sse-line-data (third msg) text-accum tools-accum))))))
 
                     (let ((tc-list nil))
                       (maphash (lambda (k v)

@@ -68,13 +68,15 @@
            #:make-mailbox
            #:send-message
            #:receive-message
+           #:flush-mailbox
            #:*session-mailbox*
            #:*active-worker-mailboxes*
            #:register-worker-mailbox
            #:unregister-worker-mailbox
-           #:*active-subprocesses*
-           #:register-subprocess
-           #:unregister-subprocess))
+           #:*active-worker-threads*
+           #:*active-worker-threads-lock*
+           #:register-worker-thread
+           #:unregister-worker-thread))
 
 (defpackage #:librecode-runner.event-store
   (:use #:cl)

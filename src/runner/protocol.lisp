@@ -13,7 +13,9 @@
   (stopping nil :type boolean)
   (waiters-count 0 :type integer) ; Reference counter to prevent idle deletion races
   (active-thread nil)
-  (mailbox nil))
+  (mailbox nil)
+  (active-worker-threads nil)
+  (active-worker-mailboxes nil))
 
 (defvar *coordinator-lock* (bt:make-lock "global-coordinator-lock"))
 (defvar *coordinator-entries* (make-hash-table :test 'equal))
@@ -24,37 +26,47 @@
 (defvar *session-mailbox* nil
   "Dynamic variable for the active session's mailbox.")
 
-(defvar *active-worker-mailboxes* nil
-  "Dynamic list of active worker mailboxes spawned during session execution.")
-(defvar *active-worker-lock* (bt:make-lock "active-worker-lock"))
-
-(defvar *active-subprocesses* nil
-  "Dynamic list of active UIOP subprocess info objects.")
-(defvar *active-subprocesses-lock* (bt:make-lock "active-subprocesses-lock"))
-
-(defun register-worker-mailbox (mbox)
+(defun register-worker-mailbox (session-id mbox)
   "Register an active worker mailbox."
-  (when (boundp '*active-worker-mailboxes*)
-    (bt:with-lock-held (*active-worker-lock*)
-      (push mbox *active-worker-mailboxes*))))
+  (bt:with-lock-held (*coordinator-lock*)
+    (let ((entry (gethash session-id *coordinator-entries*)))
+      (when entry
+        (bt:with-lock-held ((coordinator-entry-lock entry))
+          (push mbox (coordinator-entry-active-worker-mailboxes entry)))))))
 
-(defun unregister-worker-mailbox (mbox)
+(defun unregister-worker-mailbox (session-id mbox)
   "Unregister an active worker mailbox."
-  (when (boundp '*active-worker-mailboxes*)
-    (bt:with-lock-held (*active-worker-lock*)
-      (setf *active-worker-mailboxes* (delete mbox *active-worker-mailboxes*)))))
+  (bt:with-lock-held (*coordinator-lock*)
+    (let ((entry (gethash session-id *coordinator-entries*)))
+      (when entry
+        (bt:with-lock-held ((coordinator-entry-lock entry))
+          (setf (coordinator-entry-active-worker-mailboxes entry)
+                (delete mbox (coordinator-entry-active-worker-mailboxes entry))))))))
 
-(defun register-subprocess (proc)
-  "Register a running external subprocess."
-  (when (boundp '*active-subprocesses*)
-    (bt:with-lock-held (*active-subprocesses-lock*)
-      (push proc *active-subprocesses*))))
+(defun register-worker-thread (session-id thread)
+  "Register an active worker thread."
+  (bt:with-lock-held (*coordinator-lock*)
+    (let ((entry (gethash session-id *coordinator-entries*)))
+      (when entry
+        (bt:with-lock-held ((coordinator-entry-lock entry))
+          (push thread (coordinator-entry-active-worker-threads entry)))))))
 
-(defun unregister-subprocess (proc)
-  "Unregister a running external subprocess."
-  (when (boundp '*active-subprocesses*)
-    (bt:with-lock-held (*active-subprocesses-lock*)
-      (setf *active-subprocesses* (delete proc *active-subprocesses*)))))
+(defun unregister-worker-thread (session-id thread)
+  "Unregister an active worker thread."
+  (bt:with-lock-held (*coordinator-lock*)
+    (let ((entry (gethash session-id *coordinator-entries*)))
+      (when entry
+        (bt:with-lock-held ((coordinator-entry-lock entry))
+          (setf (coordinator-entry-active-worker-threads entry)
+                (delete thread (coordinator-entry-active-worker-threads entry))))))))
+
+(defun flush-mailbox (mbox)
+  "Drain and discard all messages currently queued in MBOX."
+  (when mbox
+    (loop
+      (multiple-value-bind (msg val) (sb-concurrency:receive-message-no-hang mbox)
+        (declare (ignore msg))
+        (unless val (return))))))
 
 (defun session-stopping-p (&optional session-id)
   "Check if the current session has been requested to stop."
@@ -105,10 +117,8 @@ Blocks if another thread is already draining this session."
              (setf (coordinator-entry-active-thread entry) (bt:current-thread))
              (setf (coordinator-entry-mailbox entry) mbox))
 
-           ;; 2. Run the execution turn loop with dynamic variables for subprocess and worker tracking
-           (let ((*active-worker-mailboxes* nil)
-                 (*active-subprocesses* nil)
-                 (*session-stopping* nil)
+           ;; 2. Run the execution turn loop with dynamic variables for coordinator state tracking
+           (let ((*session-stopping* nil)
                  (*session-mailbox* mbox))
              (unwind-protect
                   (loop
@@ -122,13 +132,14 @@ Blocks if another thread is already draining this session."
                       (if (coordinator-entry-pending-wake entry)
                           (setf (coordinator-entry-pending-wake entry) nil)
                           (return))))
-               ;; Cleanup block for threads and subprocesses upon abort, interrupt, or exit
-               (bt:with-lock-held (*active-worker-lock*)
-                 (dolist (mbox *active-worker-mailboxes*)
-                   (ignore-errors (sb-concurrency:send-message mbox '(:abort)))))
-               (bt:with-lock-held (*active-subprocesses-lock*)
-                 (dolist (proc *active-subprocesses*)
-                   (ignore-errors (uiop:terminate-process proc :urgent t)))))))
+               ;; Cleanup block for threads and mailboxes upon abort, interrupt, or exit
+               (bt:with-lock-held ((coordinator-entry-lock entry))
+                 (dolist (m (coordinator-entry-active-worker-mailboxes entry))
+                   (ignore-errors (sb-concurrency:send-message m '(:abort))))
+                 (setf (coordinator-entry-active-worker-mailboxes entry) nil)
+                 (dolist (thr (coordinator-entry-active-worker-threads entry))
+                   (ignore-errors (bt:destroy-thread thr)))
+                 (setf (coordinator-entry-active-worker-threads entry) nil)))))
       ;; 3. Release entry ownership and notify next thread
       (unwind-protect
            (bt:with-lock-held (*coordinator-lock*)
