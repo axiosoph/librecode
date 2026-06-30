@@ -24,8 +24,7 @@ build:
 repl:
     rlwrap sbcl --eval '(require :asdf)' \
                 --eval '(push (truename "./") asdf:*central-registry*)' \
-                --eval '(asdf:load-system :librecode-runner)' \
-                --eval '(asdf:load-system :librecode-meta)'
+                --eval "(handler-bind ((warning #'muffle-warning)) (asdf:load-system :librecode-runner) (asdf:load-system :librecode-meta))"
 
 # Clean system fasl compiler caches
 clean:
@@ -35,7 +34,7 @@ clean:
 run port="4096":
     sbcl --eval '(require :asdf)' \
          --eval '(push (truename "./") asdf:*central-registry*)' \
-         --eval '(asdf:load-system :librecode-runner)' \
+         --eval "(handler-bind ((warning #'muffle-warning)) (asdf:load-system :librecode-runner))" \
          --eval '(librecode-runner.http:start-http-bridge :port {{port}})' \
          --eval '(progn (format t "Server listening on port {{port}}...~%") (force-output))' \
          --eval '(loop (sleep 1))'
