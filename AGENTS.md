@@ -79,6 +79,9 @@ The implementation of `librecode` is divided into key modules, each documented e
 * **[design-council-resolutions.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/design-council-resolutions.md)**
   * **Council Decisions**: The Design Council's formal critique, unanimous rejection verdict, and resolved architectural directives.
 
+* **[testing.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/testing.md)**
+  * **Testing Strategy & Parity**: White-box test porting (FiveAM) and E2E black-box UI/TUI reuse procedures.
+
 ## Invariants
 
 The system enforces the following core architectural invariants:
