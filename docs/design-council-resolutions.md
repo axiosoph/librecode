@@ -110,7 +110,121 @@ CREATE TABLE IF NOT EXISTS session_history (
 
 ---
 
-## 3. Deliberation Verdict
+## 3. Lisp-Based Primitives Mapping Specification
+
+To map Predicate's five core primitives (**P-GROUND**, **P-ARSENAL**, **P-COMPOSE**, **P-INTENT**, **P-TRACK**) elegantly into Common Lisp, we replace the TypeScript/Effect/Nickel toolchain with native CL constructs and SQLite schema constraints.
+
+### 3.1 P-GROUND — The Deposit Substrate
+* **Model**: Represented as immutable value types via Lisp structures:
+  ```lisp
+  (defstruct deposit-ref
+    (target-id nil :type string)
+    (ref-type nil :type string))
+
+  (defstruct deposit
+    (id nil :type string)
+    (step nil :type string)
+    (evidence nil :type string)
+    (cites nil :type list)   ; List of strings (resolved paths)
+    (refs nil :type list))   ; List of deposit-ref structures
+  ```
+* **Enforcement**: Native SQLite referential integrity (`FOREIGN KEY`) constraints guarantee structural uniqueness (`I-G1`) and link validation (`I-G2`) directly at database level.
+  ```sql
+  PRAGMA foreign_keys = ON;
+
+  CREATE TABLE deposits (
+      id TEXT PRIMARY KEY,
+      step TEXT NOT NULL,
+      evidence TEXT NOT NULL CHECK(length(evidence) > 0),
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+  );
+
+  CREATE TABLE deposit_cites (
+      deposit_id TEXT NOT NULL,
+      path TEXT NOT NULL,
+      PRIMARY KEY (deposit_id, path),
+      FOREIGN KEY (deposit_id) REFERENCES deposits(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE deposit_refs (
+      source_id TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      ref_type TEXT NOT NULL,
+      PRIMARY KEY (source_id, target_id, ref_type),
+      FOREIGN KEY (source_id) REFERENCES deposits(id) ON DELETE CASCADE,
+      FOREIGN KEY (target_id) REFERENCES deposits(id) ON DELETE CASCADE
+  );
+  ```
+
+### 3.2 P-ARSENAL — Capability Selection
+* **Model**: Parameterized plist structures mapping class biases (`:strongest` or `:cheapest-sufficient`) and capabilities.
+* **Enforcement**: CLOS `eql` method specializers dispatch selection biases dynamically against an upstream registry:
+  ```lisp
+  (defgeneric select-capability (bias members available)
+    (:documentation "Selects a capability member based on the class bias."))
+
+  (defmethod select-capability ((bias (eql :strongest)) members available)
+    "Picks the strongest (highest index in members list) that is also available."
+    (car (intersection (reverse members) available :test #'string=)))
+
+  (defmethod select-capability ((bias (eql :cheapest-sufficient)) members available)
+    "Picks the cheapest (lowest index in members list) that is also available."
+    (car (intersection members available :test #'string=)))
+  ```
+
+### 3.3 P-COMPOSE — Skill Composition
+* **Model**: Innermost state machines where each state is strictly a **leaf** (performs local work and deposits evidence) OR an **invocation** of another capability class (runs sub-procedures and deposits references). Hybrid states are forbidden (`I-C1`).
+* **Enforcement**: Enforced structurally at compiler-time using CLOS subclasses and macro expansion:
+  ```lisp
+  (defclass state ()
+    ((name :initarg :name :reader state-name)
+     (transitions :initarg :transitions :accessor state-transitions :initform nil)))
+
+  (defclass leaf-state (state)
+    ((evidence-fn :initarg :evidence-fn :reader state-evidence-fn)
+     (cites-fn :initarg :cites-fn :reader state-cites-fn :initform (lambda () nil))))
+
+  (defclass invoke-state (state)
+     ((capability-class :initarg :capability-class :reader state-capability-class)))
+
+  (defmacro defprocedure (name &key states initial-state)
+    "Statically checks and defines a formal procedure state machine."
+    `(defun ,name ()
+       (let ((state-instances (list ,@states)))
+         (validate-procedure-states state-instances)
+         (make-instance 'procedure
+                        :name ',name
+                        :states state-instances
+                        :initial-state ',initial-state))))
+  ```
+
+### 3.4 P-INTENT — Intent Reconstruction
+* **Model**: Thread-local dynamic variable `*active-purpose*` bound dynamically via `let` inside a `with-boundary` macro, executing a set-intersection goal-overlap check (excluding common stop words) on entry.
+  ```lisp
+  (defvar *active-purpose* nil "Thread-local dynamic binding of the active purpose string.")
+
+  (defmacro with-boundary ((db purpose &key non-goals (step "\"boundary\"")) &body body)
+    "Establishes a new intent boundary, enforcing goal-overlap check and updating scope."
+    `(let* ((boundary-dep (verify-and-deposit-boundary ,db ,purpose ,non-goals ,step))
+            (*active-purpose* (boundary-deposit-purpose boundary-dep)))
+       ,@body))
+  ```
+
+### 3.5 P-TRACK — Ambient R/I/U Tracking
+* **Model**: Dynamic `*active-tracker*` dynamic binding parameterizing the active context. Freshness validation runs at boundaries, raising a `tracker-staleness-error` if validation evidence is empty or outdated.
+  ```lisp
+  (defvar *active-tracker* nil "Thread-local dynamic binding of the current tracker instance.")
+
+  (defmacro with-tracker ((db session-id) &body body)
+    "Binds the tracker instance thread-locally, running freshness checks."
+    `(let ((*active-tracker* (load-tracker-from-db ,db ,session-id)))
+       (verify-tracker-freshness)
+       ,@body))
+  ```
+
+---
+
+## 4. Deliberation Verdict
 
 The Council votes unanimously to **REJECT** the current specifications until these resolutions are fully integrated.
 * **Architect**: REJECTED (Pending circular dependency & CWD safety).
