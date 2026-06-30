@@ -197,6 +197,8 @@
 (defun val-equal-p (v1 v2)
   "Recursively check equality of coerced Lisp structures vs parsed JSON structures."
   (cond
+    ((and (stringp v1) (stringp v2))
+     (string= v1 v2))
     ((and (hash-table-p v1) (hash-table-p v2))
      (and (= (hash-table-count v1) (hash-table-count v2))
           (loop for k being the hash-keys of v1 using (hash-value val1)
@@ -267,3 +269,250 @@
                            (boolean)))
                 :min-length 1 :max-length 10)))
     #'round-trip-ok-p)))
+
+;;; --- Nested Property-Based Serialization ---
+
+(check-it:def-generator nested-json-structure (depth)
+  (if (<= depth 0)
+      (check-it:generator
+       (or (integer)
+           (string :min-length 1 :max-length 8)
+           (boolean)))
+      (check-it:generator
+       (or (integer)
+           (string :min-length 1 :max-length 8)
+           (boolean)
+           (map (lambda (lst) (coerce lst 'vector))
+                (list (nested-json-structure (1- depth)) :min-length 1 :max-length 3))
+           (map (lambda (pairs)
+                  (loop for (k v) in pairs
+                        append (list k v)))
+                (list (tuple (map (lambda (str) (intern (string-upcase str) :keyword))
+                                  (string :min-length 1 :max-length 8))
+                             (nested-json-structure (1- depth)))
+                      :min-length 1 :max-length 3))
+           (map (lambda (pairs)
+                  (loop for (k v) in pairs
+                        collect (cons k v)))
+                (list (tuple (map (lambda (str) (intern (string-upcase str) :keyword))
+                                  (string :min-length 1 :max-length 8))
+                             (nested-json-structure (1- depth)))
+                      :min-length 1 :max-length 3))
+           (map (lambda (pairs)
+                  (let ((ht (make-hash-table :test 'equal)))
+                    (loop for (k v) in pairs
+                          do (setf (gethash k ht) v))
+                    ht))
+                (list (tuple (string :min-length 1 :max-length 8)
+                             (nested-json-structure (1- depth)))
+                      :min-length 1 :max-length 3))))))
+
+(check-it:def-generator nested-json-top (depth)
+  (check-it:generator
+   (or (map (lambda (lst) (coerce lst 'vector))
+            (list (nested-json-structure depth) :min-length 1 :max-length 3))
+       (map (lambda (pairs)
+              (loop for (k v) in pairs
+                    append (list k v)))
+            (list (tuple (map (lambda (str) (intern (string-upcase str) :keyword))
+                              (string :min-length 1 :max-length 8))
+                         (nested-json-structure depth))
+                  :min-length 1 :max-length 3))
+       (map (lambda (pairs)
+              (loop for (k v) in pairs
+                    collect (cons k v)))
+            (list (tuple (map (lambda (str) (intern (string-upcase str) :keyword))
+                              (string :min-length 1 :max-length 8))
+                         (nested-json-structure depth))
+                  :min-length 1 :max-length 3))
+       (map (lambda (pairs)
+              (let ((ht (make-hash-table :test 'equal)))
+                (loop for (k v) in pairs
+                      do (setf (gethash k ht) v))
+                ht))
+            (list (tuple (string :min-length 1 :max-length 8)
+                         (nested-json-structure depth))
+                  :min-length 1 :max-length 3)))))
+
+(test test-serialization-roundtrip-nested
+  "Property test verifying that recursively generated nested mixtures of plists, alists, hash-tables, and vectors round-trip parse cleanly."
+  (is-true
+   (check-it
+    (check-it:generator (nested-json-top 3))
+    #'round-trip-ok-p)))
+
+;;; --- Concurrency Stress Testing ---
+
+(test test-concurrency-stress
+  "Verify concurrency stress properties: spawning 20+ threads executing random transactions with timeouts, zero deadlocks, hangs, or leaked connections."
+  (with-tmp-sandbox (dir)
+    (with-test-db (main-db dir)
+      (identity main-db)
+      (let ((connections nil)
+            (connections-lock (bt:make-lock "connections-lock"))
+            (threads nil)
+            (num-threads 25)
+            (ops-per-thread 15)
+            (db-path "test.db"))
+        (unwind-protect
+             (progn
+               (dotimes (i num-threads)
+                 (let ((thread-id i))
+                   (push (bt:make-thread
+                          (lambda ()
+                            (dotimes (j ops-per-thread)
+                              (let* ((*workspace-root* dir)
+                                     (db (connect-db db-path)))
+                                (bt:with-lock-held (connections-lock)
+                                  (push db connections))
+                                (unwind-protect
+                                     (progn
+                                       (case (random 2)
+                                         (0
+                                          (handler-case
+                                              (let ((*db* db))
+                                                (commit-event
+                                                 (format nil "session-~A" (random 3))
+                                                 `((:agent-id . ,(format nil "agent-~A-~A" thread-id j))
+                                                   (:status . "running"))
+                                                 :concurrency-event
+                                                 (+ (* thread-id 1000) j)))
+                                            (sqlite:sqlite-error (c)
+                                              (declare (ignore c))
+                                              nil)))
+                                         (1
+                                          (handler-case
+                                              (sqlite:execute-to-list db "SELECT * FROM session_state")
+                                            (sqlite:sqlite-error (c)
+                                              (declare (ignore c))
+                                              nil)))))
+                                  (sqlite:disconnect db))
+                                (sleep (random 0.02))))))
+                         threads)))
+               (let ((start-time (get-universal-time))
+                     (timeout-seconds 12))
+                 (loop
+                   (let ((alive (remove-if-not #'bt:thread-alive-p threads)))
+                     (when (null alive)
+                       (return))
+                     (when (> (- (get-universal-time) start-time) timeout-seconds)
+                       (dolist (th alive)
+                         (ignore-errors (bt:destroy-thread th)))
+                       (error "Concurrency stress test timed out: threads did not finish within ~A seconds. Possible deadlock!" timeout-seconds))
+                     (sleep 0.1)))))
+          (let ((leaked-count 0))
+            (bt:with-lock-held (connections-lock)
+              (dolist (db connections)
+                (when (and (slot-boundp db 'sqlite::handle)
+                           (sqlite::handle db))
+                  (incf leaked-count))))
+            (is (= 0 leaked-count) "Leaked database connections detected!"))
+          (let* ((*workspace-root* dir)
+                 (final-db (connect-db db-path)))
+            (unwind-protect
+                 (progn
+                   (is (listp (sqlite:execute-to-list final-db "SELECT count(*) FROM event_log")))
+                   (is (integerp (sqlite:execute-single final-db "SELECT count(*) FROM session_state"))))
+              (sqlite:disconnect final-db))))))))
+
+;;; --- Metamorphic Projection Testing ---
+
+(defun extract-field (payload field-type)
+  "Extracts field-type (:agent-id or :status) from payload."
+  (cond
+    ((hash-table-p payload)
+     (case field-type
+       (:agent-id (or (gethash "agent_id" payload)
+                      (gethash "agent-id" payload)))
+       (:status (gethash "status" payload))))
+    ((and (listp payload) (consp payload) (consp (car payload)))
+     (case field-type
+       (:agent-id (or (cdr (assoc :agent-id payload))
+                      (cdr (assoc :agent_id payload))))
+       (:status (cdr (assoc :status payload)))))
+    ((listp payload)
+     (case field-type
+       (:agent-id (or (getf payload :agent-id)
+                      (getf payload :agent_id)))
+       (:status (getf payload :status))))
+    (t nil)))
+
+(defun fold-session-state (events)
+  "Folds over a list of event plists to calculate the expected state."
+  (let ((current-agent-id "unknown-agent")
+        (current-status "idle")
+        (last-version 0)
+        (has-inserted-p nil))
+    (dolist (evt events)
+      (let* ((payload (getf evt :payload))
+             (version (getf evt :version))
+             (agent-id (extract-field payload :agent-id))
+             (status (or (extract-field payload :status)
+                         current-status)))
+        (unless has-inserted-p
+          (setf current-agent-id (or agent-id "unknown-agent")
+                has-inserted-p t))
+        (setf current-status status
+              last-version version)))
+    (values current-agent-id last-version current-status)))
+
+(defun random-payload-type ()
+  (let ((types '(:plist :alist :hash-table)))
+    (nth (random (length types)) types)))
+
+(defun make-random-payload (payload-type agent-id status)
+  (let ((kv-pairs nil))
+    (when agent-id
+      (push (cons :agent-id agent-id) kv-pairs))
+    (when status
+      (push (cons :status status) kv-pairs))
+    (case payload-type
+      (:plist
+       (loop for (k . v) in kv-pairs
+             append (list k v)))
+      (:alist
+       kv-pairs)
+      (:hash-table
+       (let ((ht (make-hash-table :test 'equal)))
+         (loop for (k . v) in kv-pairs
+               do (setf (gethash (string-downcase (symbol-name k)) ht) v))
+         ht)))))
+
+(defun generate-random-events (len)
+  (loop for version from 1 to len
+        collect (let* ((agent-id (if (< (random 10) 7)
+                                     (format nil "agent-~A" (random 5))
+                                     nil))
+                       (status (if (< (random 10) 7)
+                                   (format nil "status-~A" (random 5))
+                                   nil))
+                       (payload-type (random-payload-type))
+                       (payload (make-random-payload payload-type agent-id status)))
+                  (list :version version
+                        :payload payload))))
+
+(test test-metamorphic-projection
+  "Assert metamorphic equivalence: final database projection state matches pure fold of event log."
+  (with-tmp-sandbox (dir)
+    (with-test-db (db dir)
+      (let ((session-id "session-metamorphic")
+            (events (generate-random-events 25)))
+        (dolist (evt events)
+          (let ((*db* db))
+            (commit-event session-id
+                          (getf evt :payload)
+                          :metamorphic-event
+                          (getf evt :version))))
+        (multiple-value-bind (expected-agent-id expected-version expected-status)
+            (fold-session-state events)
+          (let* ((row (sqlite:execute-to-list db
+                         "SELECT agent_id, version, status FROM session_state WHERE session_id = ?"
+                         session-id))
+                 (actual (car row))
+                 (actual-agent-id (first actual))
+                 (actual-version (second actual))
+                 (actual-status (third actual)))
+            (is (equal expected-agent-id actual-agent-id))
+            (is (= expected-version actual-version))
+            (is (equal expected-status actual-status))))))))
+
