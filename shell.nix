@@ -9,6 +9,7 @@ let
     hunchentoot
     clack
     fiveam
+    check-it
     trivial-signal
   ]);
 in
