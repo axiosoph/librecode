@@ -150,7 +150,33 @@
 
     ;; Element of incorrect type
     (signals error
-      (execute-tool tool '(:arr #(1 "two" 3))))))
+      (execute-tool tool '(:arr #(1 "two" 3))))
+
+    ;; Correct array elements as list of even length with symbols (avoid plist-p ambiguity)
+    (is-true (execute-tool (make-instance 'tool
+                                           :name "array-symbol-tool"
+                                           :description "Desc"
+                                           :parameters '(:type "object"
+                                                         :properties (:arr (:type "array"
+                                                                            :items (:type "string"))))
+                                           :handler (lambda (args) (declare (ignore args)) t))
+                            '(:arr (:a :b))))))
+
+(test test-schema-plist-ambiguity-coercion
+  "Verify that lists inside schema keywords like :required or :enum are not treated as plists."
+  (let ((tool (make-instance 'tool
+                             :name "enum-tool"
+                             :description "Desc"
+                             :parameters '(:type "object"
+                                           :properties (:val (:type "string"
+                                                              :enum (:a :b)))
+                                           :required (:val))
+                             :handler (lambda (args) (getf args :val)))))
+    ;; Correct arguments
+    (is (equal "a" (execute-tool tool '(:val "a"))))
+    ;; Invalid enum value
+    (signals error
+      (execute-tool tool '(:val "c")))))
 
 (test test-multi-required-argument-validation
   "Verify tool with multiple required parameters parses and validates correctly."
