@@ -17,10 +17,14 @@
   :components
   ((:module "t"
     :components
-    ((:file "event-store-tests"))))
+    ((:file "event-store-tests")
+     (:file "agent-tests"))))
   :perform (asdf:test-op (op c)
-                         (let ((results (uiop:symbol-call :fiveam :run
-                                                           (uiop:find-symbol* :event-store-suite :librecode-test.event-store))))
+                         (let ((results (append
+                                         (uiop:symbol-call :fiveam :run
+                                                           (uiop:find-symbol* :event-store-suite :librecode-test.event-store))
+                                         (uiop:symbol-call :fiveam :run
+                                                           (uiop:find-symbol* :agent-suite :librecode-test.agent)))))
                            (uiop:symbol-call :fiveam :explain! results)
                            (unless (every (lambda (r)
                                             (typep r (uiop:find-symbol* :test-passed :fiveam)))
