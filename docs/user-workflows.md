@@ -19,7 +19,7 @@ librecode-meta start-campaign \
 ### Execution Behavior
 
 1. **DAG Parsing**: The Metaharness parses the campaign DAG YAML, runs Kahn's algorithm to schedule the topological layers, and checks for initial file surface collisions.
-2. **Workspace Isolation**: For each concurrent node in the current layer, the Metaharness spawns a dedicated git worktree under `.scratch/worktrees/<node-id>/` linked to a private tracking branch (e.g. `agent/node-<node-id>`).
+2. **Workspace Isolation**: For each concurrent node in the current layer, the Metaharness spawns a dedicated git worktree under the external campaign directory (e.g. `worktrees/<node-id>/` inside the external project-delimited campaign storage folder) linked to a private tracking branch (e.g. `agent/node-<node-id>`).
 3. **Pane Multiplexing**: The Metaharness launches a multiplexed terminal session (such as `tmux` or `zellij`):
    * A main pane is created for the coordinator process.
    * Dedicated panes are created for each concurrent child harness instance (running `librecode-runner` or `harness-opencode`).

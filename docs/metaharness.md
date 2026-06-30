@@ -2,7 +2,17 @@
 
 The Metaharness (`librecode-meta`) is the parent supervisor that coordinates multi-agent campaigns across physical process boundaries, establishing a **"Team of Teams"** topology. 
 
-Rather than executing code or communicating with LLMs directly, the Metaharness schedules parallelized tasks, executes verification gates on committed files, and runs the decision council. It delegates actual task execution to independent child harness processes (such as `librecode-runner`, `harness-opencode`, or `harness-claude-code`). Each child harness operates within its own isolated git worktree workspace and manages its own local agent composition and sub-delegation loops.
+### Externalized Campaign Workspace
+
+Rather than executing code or communicating with LLMs directly, the Metaharness schedules parallelized tasks, executes verification gates on committed files, and runs the decision council. It delegates actual task execution to independent child harness processes (such as `librecode-runner`, `harness-opencode`, or `harness-claude-code`).
+
+To prevent tight coupling with the active project repository and maintain clean workspaces, the Metaharness manages campaign metadata, node worktrees, and council logs externally. By default, all campaign-related files reside in a project-delimited external storage directory (e.g. `~/.librecode/projects/<project-id>/campaigns/<campaign-id>/` or a user-configured path):
+* **`worktrees/`**: Directory containing isolated git worktree checkouts spawned for concurrent campaign nodes.
+* **`ledger/deposits/`**: Central folder where individual seat decision deposits are aggregated.
+* **`ledger/decision-log.json`**: The parent campaign decision ledger.
+* **`campaign-journal.lisp-expr`**: The crash-safe Campaign DAG scheduler journal.
+
+Each child harness operates within its assigned worktree workspace and manages its own local agent composition and sub-delegation loops, writing outputs that cross back over to the campaign's central ledger via the Metaharness protocol.
 
 ## 1. Abstract Harness Interface
 
@@ -116,10 +126,12 @@ A Campaign represents a high-level task structured as a directed acyclic graph (
 The Metaharness coordinates the campaign using Kahn's topological sort to group nodes into parallelizable layers:
 
 1. **Partition**: For each layer, group nodes into a `parallel` set (nodes with disjoint `file_surface` lists and no serialization flag) and a `serial` set.
-2. **Dispatch**: Spawn a dedicated `harness` instance for each parallel node inside its own git worktree (`.scratch/worktrees/<node-id>`), isolated from other nodes.
+2. **Dispatch**: Spawn a dedicated `harness` instance for each parallel node inside its own git worktree directory (isolated under `worktrees/<node-id>/` inside the external campaign storage path).
 3. **Await**: Monitor event streams from each active harness until they freeze or terminate.
 4. **Reconcile**: Run validation gates (linters, tests, diff authorization) on the landed work. If verification succeeds, merge the node's branch into the campaign's `shared_branch`. Otherwise, flag the node for `rework` and generate a corrective boundary.
 5. **Layer Boundary Check**: After all nodes in a layer land, perform a cumulative-diff gate (such as checking for orphaned references across the cut-set) before moving to the next layer.
+
+---
 
 ### Surface-Exceed Protocol
 
@@ -171,9 +183,9 @@ For project-specific gates, custom deposit checks, and workflow constraints, `li
 ```lisp
 (defgate check-architect-deposit (node-id)
   "Ensures the architect seat deposited a valid assessment before a plan merge."
-  (:target (format nil ".ledger/deposits/~a-architect.yaml" node-id))
+  (:target (merge-pathnames (format nil "deposits/~a-architect.json" node-id) *campaign-ledger-dir*))
   (:verify (and (probe-file target)
-                (let ((data (parse-yaml-file target)))
+                (let ((data (jzon:parse target)))
                   (string-equal (gethash "verdict" data) "approved"))))
   (:on-failure (error 'missing-architect-approval :node-id node-id)))
 
@@ -211,7 +223,7 @@ To keep multi-agent campaigns moving forward autonomously while preserving safet
 ### Campaign State Persistence
 
 To recover from supervisor process crashes or system reboots during long-running campaigns:
-* **S-Expression Journal**: The Metaharness persists campaign DAG structures, node statuses, isolated worktree bindings, and current execution layer states as a serialized S-expression journal (`.ledger/campaign-journal.lisp-expr`) under the master project's root directory.
+* **S-Expression Journal**: The Metaharness persists campaign DAG structures, node statuses, isolated worktree bindings, and current execution layer states as a serialized S-expression journal (`campaign-journal.lisp-expr`) stored centrally in the campaign's external ledger directory.
 * **Append-Only Operations**: Any scheduling state transition (such as dispatching a node or landing a branch) writes a transition record to the journal file opened in `:append` mode. The write calls `force-output` immediately to ensure the transaction is written to disk before the coordinator issues commands to child processes.
 * **State Reconstitution**: Upon process restart, the Metaharness reads the journal file, replays the transitions sequentially to reconstruct the DAG state in-memory, checks the status of active tmux panes or worktree branches, and resumes the campaign execution loop at the exact recovery boundary.
 
