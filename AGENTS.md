@@ -191,7 +191,7 @@ Each entry has a **decision/lean** and a **signpost** tracking its implementatio
 
 ### KU6 — Permission model scope
 * **Decision**: Dual implementation. A static ruleset handles headless/autonomous execution, while interactive execution uses condition-restart and condition variables to block and request user permission via the UI.
-* **Status**: Mapped in [agent-system.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/agent-system.md).
+* **Status**: Implemented and fully verified by unit and property-based tests in `t/agent-tests.lisp`.
 
 ### KU7 — Nickel contract verification
 * **Decision**: Shell out. Rather than duplicating predicate's contract verification rules, `librecode`'s gate runner executes `nickel export` directly to validate DAG changes and transition state boundaries.

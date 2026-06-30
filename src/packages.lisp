@@ -84,7 +84,20 @@
            #:permission-rule-action
            #:permission-rule-resource
            #:permission-rule-effect
-           #:evaluate-permissions))
+           #:evaluate-permissions
+           #:check-permission
+           #:*interactive-p*
+           #:*current-session-id*
+           #:*project-id*
+           #:resolve-permission-request
+           #:*pending-requests*
+           #:*pending-requests-lock*
+           #:permission-request
+           #:permission-request-id
+           #:permission-request-action
+           #:permission-request-resource
+           #:permission-request-decision
+           #:permission-request-resolved-p))
 
 (defpackage #:librecode-runner.session
   (:use #:cl)
