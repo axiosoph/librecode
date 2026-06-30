@@ -130,10 +130,17 @@
   (:use #:cl)
   (:documentation "Tool registry, capability filtering, and settlement.")
   (:export #:tool
+           #:tool-name
+           #:tool-description
+           #:tool-parameters
+           #:tool-capabilities
+           #:tool-handler
            #:tool-registry
            #:register-tool
            #:materialize-tools
-           #:execute-tool))
+           #:execute-tool
+           #:execute-tool-async
+           #:deep-merge-plists))
 
 ;; --- metaharness layer ---
 

@@ -19,7 +19,8 @@
     :components
     ((:file "event-store-tests")
      (:file "agent-tests")
-     (:file "audit-tests"))))
+     (:file "audit-tests")
+     (:file "tool-tests"))))
   :perform (asdf:test-op (op c)
                          (let ((results (append
                                          (uiop:symbol-call :fiveam :run
@@ -27,7 +28,9 @@
                                          (uiop:symbol-call :fiveam :run
                                                            (uiop:find-symbol* :agent-suite :librecode-test.agent))
                                          (uiop:symbol-call :fiveam :run
-                                                           (uiop:find-symbol* :audit-suite :librecode-test.audit)))))
+                                                           (uiop:find-symbol* :audit-suite :librecode-test.audit))
+                                         (uiop:symbol-call :fiveam :run
+                                                           (uiop:find-symbol* :tool-suite :librecode-test.tool)))))
                            (uiop:symbol-call :fiveam :explain! results)
                            (unless (every (lambda (r)
                                             (typep r (uiop:find-symbol* :test-passed :fiveam)))
