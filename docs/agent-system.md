@@ -71,7 +71,7 @@ A ruleset is a list of rule structures:
   (effect nil :type keyword)) ; :allow, :deny, :ask
 ```
 
-Rules are evaluated using a **last-match-wins** algorithm within a flat list of rules. The metaharness searches from the end of the rules list for the first rule whose `action` and `resource` match the request via wildcard pattern matching (e.g. `git*` matches `git commit`, `*` matches anything).
+Rules are evaluated using a **last-match-wins** algorithm within a flat list of rules. The runner searches from the end of the rules list for the first rule whose `action` and `resource` match the request via wildcard pattern matching (e.g. `git*` matches `git commit`, `*` matches anything).
 
 If no matching rule is found in the ruleset, the evaluation falls back to a default:
 `(:action "*" :resource "*" :effect :ask)`
