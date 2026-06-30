@@ -265,3 +265,77 @@ This architecture decouples execution from monitoring: the campaign runs autonom
 * **Webhook/Matrix [Optional]**: Optional general purpose HTTP POST adapters to plug the Metaharness into Matrix rooms or chat integrations.
 
 This decoupled layer ensures the campaign runs cheaply and autonomously in the background, but remains bound to the developer's final gate authority.
+
+---
+
+## 7. Metaharness Native TUI (librecode-meta-tui) Design
+
+The native TUI (`librecode-meta-tui`) is built on **Croatoan** to provide a real-time, pane-partitioned campaign dashboard.
+
+### 7.1 Panel Layout Grid
+
+The terminal screen is split into three main Croatoan window panels:
+
+```
++-----------------------------------------------------------------------+
+|                         DAG VIEW PANEL (Top 40%)                      |
+|                                                                       |
+|  [Node A: Accepted] --+--> [Node B: Running] --> [Node D: Pending]    |
+|                       |                                               |
+|                       +--> [Node C: Landed]  --> [Node E: Pending]    |
++---------------------------------------------------+-------------------+
+|               LOG VIEW PANEL (Bottom-Left 60%)    | INTERACT PANEL    |
+|                                                   | (Bottom-Right 40%)|
+| [Node B] src/main.lisp: compiled successfully     | Node: Node C      |
+| [Node B] test: 12 tests passed, 0 failed          | Gate: Co-Sign     |
+| [Node C] linter: warning: unused symbol *val*     |                   |
+|                                                   | [A] Approve       |
+|                                                   | [R] Rework        |
+|                                                   | [T] Attach Tmux   |
++---------------------------------------------------+-------------------+
+```
+
+1. **DAG View Panel (Top, 40% height)**: Displays the campaign task graph. Nodes are rendered as interactive boxes with Unicode boundary lines. Colors indicate lifecycle status:
+   * **Green**: Accepted (successfully merged).
+   * **Yellow**: Running (actively executing child agent).
+   * **Blue**: Landed/Reconciled (awaiting gate verification or merge authorization).
+   * **Red**: Rework (gate failed, generating correction loop).
+   * **Grey**: Pending (waiting for dependencies to satisfy).
+2. **Log View Panel (Bottom-Left, 60% width, 60% height)**: A scrolling viewport displaying combined, color-coded stdout/stderr streams from all active subprocesses and child harnesses.
+3. **Interaction Panel (Bottom-Right, 40% width, 60% height)**: Context-aware interactive prompt panel showing details of the currently selected DAG node, validation diagnostics, council votes, and key-activated options.
+
+### 7.2 Thread-Safe Rendering Architecture
+
+Because `ncurses` is not thread-safe, all drawing operations must run strictly within the main TUI event loop thread. 
+
+* **UI Event Mailbox**: The TUI initializes a thread-safe `sb-concurrency:mailbox` named `*tui-mailbox*`.
+* **State Updates**: When background Metaharness daemon threads process campaign state changes (e.g. node dispatches, log outputs, gate results), they push a structured UI update event to `*tui-mailbox*`:
+  ```lisp
+  (defstruct ui-event
+    (type nil :type symbol) ; :node-state-change, :log-append, :prompt-gate
+    (node-id nil :type (or null string))
+    (payload nil))
+  ```
+* **Event Dispatch Loop**: The main thread runs a Croatoan loop that blocks on `sb-concurrency:receive-mailbox` with a non-blocking timeout (e.g., 50ms). When an event arrives, it updates the in-memory UI model, triggers a targeted panel redraw, and calls `croatoan:refresh`.
+
+### 7.3 Tmux Attachment Subprocess Handshake
+
+When a user selects a running node in the DAG View Panel and triggers the **Attach Tmux** command (key `T`):
+
+1. **Suspend Ncurses**: The TUI suspends ncurses mode and restores the normal terminal screen using:
+   ```lisp
+   (croatoan:end-screen)
+   ```
+2. **Launch Subprocess**: It runs the local tmux attach command inside the foreground shell process:
+   ```lisp
+   (uiop:run-program "tmux attach-session -t librecode-<node-id>"
+                     :input :interactive
+                     :output :interactive
+                     :error-output :interactive)
+   ```
+   This hands raw terminal control and keystrokes directly over to tmux.
+3. **Restore Ncurses**: When the user detaches (`Ctrl-b d`), the subprocess exits, and the TUI executes:
+   ```lisp
+   (croatoan:refresh)
+   ```
+   This rebuilds the panel grid and redraws the TUI dashboard at its exact pre-suspension state.
