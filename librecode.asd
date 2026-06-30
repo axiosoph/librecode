@@ -11,7 +11,8 @@
                #:bordeaux-threads
                #:com.inuoe.jzon
                #:dexador
-               #:trivial-signal)
+               #:trivial-signal
+               #:alexandria)
   :serial t
   :components
   ((:file "src/packages")

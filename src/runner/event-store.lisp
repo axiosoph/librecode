@@ -65,12 +65,14 @@ Rolls back completely if an error occurs."
   (* (get-universal-time) 1000))
 
 (defun alist-p (x)
+  "Return t if x is an association list."
   (and (listp x)
        (consp x)
        (loop for cell in x
              always (consp cell))))
 
 (defun plist-p (x)
+  "Return t if x is a property list."
   (and (listp x)
        (consp x)
        (let ((len (list-length x)))

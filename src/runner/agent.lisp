@@ -8,12 +8,14 @@
 (defclass agent ()
   ((id :initarg :id :reader agent-id)
    (ruleset :initarg :ruleset :reader agent-ruleset)
-   (system-context :initarg :system-context :reader agent-system-context)))
+   (system-context :initarg :system-context :reader agent-system-context))
+  (:documentation "A multi-agent model representing an identity, its ruleset, and its system context."))
 
-(defclass permission-rule ()
-  ((action :initarg :action :reader permission-rule-action)
-   (resource :initarg :resource :reader permission-rule-resource)
-   (effect :initarg :effect :reader permission-rule-effect)))
+(defstruct permission-rule
+  "Immutable permission rule representing a policy mapping action/resource to effect."
+  (action "" :type string :read-only t)
+  (resource "" :type string :read-only t)
+  (effect :ask :type keyword :read-only t))
 
 (defvar *interactive-p* t
   "Flag indicating whether the permission ask loop runs in interactive mode (t) or headless mode (nil).")
@@ -32,7 +34,8 @@
    (lock :initarg :lock :reader permission-request-lock)
    (cv :initarg :cv :reader permission-request-cv)
    (resolved-p :initform nil :accessor permission-request-resolved-p)
-   (decision :initform nil :accessor permission-request-decision)))
+   (decision :initform nil :accessor permission-request-decision))
+  (:documentation "A thread-safe descriptor tracking a pending interactive user permission resolution."))
 
 (defvar *pending-requests* (make-hash-table :test 'equal)
   "Thread-safe registry of pending permission requests.")
@@ -93,10 +96,10 @@ If no rule matches, defaults to returning :ask."
                      *project-id*)))
           (mapcar (lambda (row)
                     (destructuring-bind (action resource effect-str) row
-                      (make-instance 'permission-rule
-                                     :action action
-                                     :resource resource
-                                     :effect (intern (string-upcase effect-str) :keyword))))
+                      (make-permission-rule
+                       :action action
+                       :resource resource
+                       :effect (intern (string-upcase effect-str) :keyword))))
                   rows))
       (error () nil))))
 
@@ -206,52 +209,55 @@ If decision is :reject or :deny, cascades rejection to all sibling requests of t
     (unless req
       (error "No pending permission request found for ID: ~S" req-id))
 
-    ;; Unblock the waiting thread
     (let ((lock (permission-request-lock req))
           (cv (permission-request-cv req)))
+      ;; 1. Set resolution status
       (bt:with-lock-held (lock)
         (setf (permission-request-decision req) decision
-              (permission-request-resolved-p req) t)
-        (bt:condition-notify cv)))
+              (permission-request-resolved-p req) t))
 
-    ;; Persist to SQLite if decision is :always
-    (when (eq decision :always)
-      (when (and (boundp 'librecode-runner.event-store:*db*)
-                 librecode-runner.event-store:*db*
-                 (boundp '*project-id*)
-                 *project-id*)
-        (librecode-runner.event-store:with-immediate-transaction (librecode-runner.event-store:*db*)
-          (sqlite:execute-non-query
-           librecode-runner.event-store:*db*
-           "INSERT OR REPLACE INTO permission_saved (project_id, action, resource, effect, timestamp)
-            VALUES (?, ?, ?, ?, ?)"
-           *project-id*
-           (permission-request-action req)
-           (permission-request-resource req)
-           "allow"
-           (librecode-runner.event-store::current-timestamp-ms)))))
+      ;; 2. Persist to SQLite if decision is :always
+      (when (eq decision :always)
+        (when (and (boundp 'librecode-runner.event-store:*db*)
+                   librecode-runner.event-store:*db*
+                   (boundp '*project-id*)
+                   *project-id*)
+          (librecode-runner.event-store:with-immediate-transaction (librecode-runner.event-store:*db*)
+            (sqlite:execute-non-query
+             librecode-runner.event-store:*db*
+             "INSERT OR REPLACE INTO permission_saved (project_id, action, resource, effect, timestamp)
+              VALUES (?, ?, ?, ?, ?)"
+             *project-id*
+             (permission-request-action req)
+             (permission-request-resource req)
+             "allow"
+             (librecode-runner.event-store::current-timestamp-ms)))))
 
-    ;; Cascading rejection if rejected/denied
-    (when (member decision '(:reject :deny))
-      (let ((sess-id (permission-request-session-id req)))
-        (when sess-id
-          (let ((sibling-reqs nil))
-            (bt:with-lock-held (*pending-requests-lock*)
-              (maphash (lambda (k r)
-                         (declare (ignore k))
-                         (when (and (equal (permission-request-session-id r) sess-id)
-                                    (not (permission-request-resolved-p r)))
-                           (push r sibling-reqs)))
-                       *pending-requests*))
-            (dolist (sib sibling-reqs)
-              (let ((sib-lock (permission-request-lock sib))
-                    (sib-cv (permission-request-cv sib)))
-                (bt:with-lock-held (sib-lock)
-                  (setf (permission-request-decision sib) :deny
-                        (permission-request-resolved-p sib) t)
-                  (bt:condition-notify sib-cv))))))))
+      ;; 3. Cascading rejection
+      (when (member decision '(:reject :deny))
+        (let ((sess-id (permission-request-session-id req)))
+          (when sess-id
+            (let ((sibling-reqs nil))
+              (bt:with-lock-held (*pending-requests-lock*)
+                (maphash (lambda (k r)
+                           (declare (ignore k))
+                           (when (and (equal (permission-request-session-id r) sess-id)
+                                      (not (permission-request-resolved-p r)))
+                             (push r sibling-reqs)))
+                         *pending-requests*))
+              (dolist (sib sibling-reqs)
+                (let ((sib-lock (permission-request-lock sib))
+                      (sib-cv (permission-request-cv sib)))
+                  (bt:with-lock-held (sib-lock)
+                    (setf (permission-request-decision sib) :deny
+                          (permission-request-resolved-p sib) t)
+                    (bt:condition-notify sib-cv))))))))
 
-    ;; Remove from the registry
-    (bt:with-lock-held (*pending-requests-lock*)
-      (remhash req-id *pending-requests*))
-    t))
+      ;; 4. Remove from registry
+      (bt:with-lock-held (*pending-requests-lock*)
+        (remhash req-id *pending-requests*))
+
+      ;; 5. Safely notify cv last
+      (bt:with-lock-held (lock)
+        (bt:condition-notify cv))
+      t)))

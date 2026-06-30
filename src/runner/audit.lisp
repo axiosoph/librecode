@@ -27,21 +27,6 @@
     (values (uiop:merge-pathnames* #p".ledger/log/audit.lisp-expr" root)
             (uiop:merge-pathnames* #p".ledger/log/audit.jsonl" root))))
 
-(defun alist-p (x)
-  (and (listp x)
-       (consp x)
-       (loop for cell in x
-             always (consp cell))))
-
-(defun plist-p (x)
-  (and (listp x)
-       (consp x)
-       (let ((len (list-length x)))
-         (and len
-              (evenp len)
-              (loop for k in x by #'cddr
-                    always (symbolp k))))))
-
 (defun key-to-string (key)
   (if (symbolp key)
       (string-downcase (symbol-name key))
@@ -59,13 +44,13 @@
                         (coerce-to-json-compatible v)))
                 val)
        new-ht))
-    ((alist-p val)
+    ((librecode-runner.event-store:alist-p val)
      (let ((ht (make-hash-table :test 'equal)))
        (dolist (pair val)
          (setf (gethash (key-to-string (car pair)) ht)
                (coerce-to-json-compatible (cdr pair))))
        ht))
-    ((plist-p val)
+    ((librecode-runner.event-store:plist-p val)
      (let ((ht (make-hash-table :test 'equal)))
        (loop for (k v) on val by #'cddr
              do (setf (gethash (key-to-string k) ht)
@@ -110,25 +95,42 @@
   (bt:with-lock-held (*audit-lock*)
     (when (and *audit-thread* (bt:thread-alive-p *audit-thread*))
       (return-from init-audit-logger t))
-    (multiple-value-bind (lisp-path json-path) (get-audit-paths)
-      (ensure-directories-exist lisp-path)
-      (ensure-directories-exist json-path)
-      (setf *lisp-stream* (open lisp-path
+    (let ((success nil)
+          (lisp-s nil)
+          (json-s nil))
+      (unwind-protect
+           (multiple-value-bind (lisp-path json-path) (get-audit-paths)
+             (ensure-directories-exist lisp-path)
+             (ensure-directories-exist json-path)
+             (setf lisp-s (open lisp-path
                                 :direction :output
                                 :if-exists :append
                                 :if-does-not-exist :create
                                 :external-format :utf-8))
-      (setf *json-stream* (open json-path
+             (setf json-s (open json-path
                                 :direction :output
                                 :if-exists :append
                                 :if-does-not-exist :create
                                 :external-format :utf-8))
-      (setf *audit-mailbox* (sb-concurrency:make-mailbox :name "audit-logger-mailbox"))
-      (setf *audit-thread*
-            (bt:make-thread
-             (lambda () (audit-logger-loop))
-             :name "audit-logger-thread"))
-      t)))
+             (setf *lisp-stream* lisp-s
+                   *json-stream* json-s)
+             (setf *audit-mailbox* (sb-concurrency:make-mailbox :name "audit-logger-mailbox"))
+             (setf *audit-thread*
+                   (bt:make-thread
+                    (lambda () (audit-logger-loop))
+                    :name "audit-logger-thread"))
+             (setf success t))
+        ;; Cleanup on failure
+        (unless success
+          (when lisp-s
+            (close lisp-s)
+            (setf *lisp-stream* nil))
+          (when json-s
+            (close json-s)
+            (setf *json-stream* nil))
+          (setf *audit-mailbox* nil)
+          (setf *audit-thread* nil))))))
+
 
 (defun shutdown-audit-logger ()
   "Gracefully stop the background audit logger thread and close file streams."

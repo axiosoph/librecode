@@ -80,10 +80,10 @@
 
 (test test-static-deny-precedence
   "Static agent ruleset :deny effect must reject immediately."
-  (let* ((rule (make-instance 'permission-rule
-                              :action "rm"
-                              :resource "*"
-                              :effect :deny))
+  (let* ((rule (make-permission-rule
+                               :action "rm"
+                               :resource "*"
+                               :effect :deny))
          (agent (make-instance 'agent
                                :id "agent-deny"
                                :ruleset (list rule)
@@ -335,7 +335,7 @@
                       (string :min-length 1 :max-length 20)))
     (lambda (inputs)
       (destructuring-bind (action resource) inputs
-        (let* ((rule (make-instance 'permission-rule
+        (let* ((rule (make-permission-rule
                                     :action "*"
                                     :resource "*"
                                     :effect :allow))
@@ -373,15 +373,19 @@
     (generator
      (tuple (string :min-length 1 :max-length 10)
             (string :min-length 1 :max-length 10)
-            (or (constantly :allow) (constantly :deny) (constantly :ask))
-            (or (constantly :allow) (constantly :deny) (constantly :ask))))
+            (or (map (lambda (x) (declare (ignore x)) :allow) (boolean))
+                (map (lambda (x) (declare (ignore x)) :deny) (boolean))
+                (map (lambda (x) (declare (ignore x)) :ask) (boolean)))
+            (or (map (lambda (x) (declare (ignore x)) :allow) (boolean))
+                (map (lambda (x) (declare (ignore x)) :deny) (boolean))
+                (map (lambda (x) (declare (ignore x)) :ask) (boolean)))))
     (lambda (inputs)
       (destructuring-bind (action resource prior-effect new-effect) inputs
-        (let* ((prior-rule (make-instance 'permission-rule
+        (let* ((prior-rule (make-permission-rule
                                           :action "*"
                                           :resource "*"
                                           :effect prior-effect))
-               (new-rule (make-instance 'permission-rule
+               (new-rule (make-permission-rule
                                         :action action
                                         :resource resource
                                         :effect new-effect))

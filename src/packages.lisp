@@ -76,7 +76,9 @@
            #:commit-event
            #:apply-projectors
            #:*workspace-root*
-           #:*db*))
+           #:*db*
+           #:alist-p
+           #:plist-p))
 
 (defpackage #:librecode-runner.agent
   (:use #:cl)
@@ -86,6 +88,7 @@
            #:agent-ruleset
            #:agent-system-context
            #:permission-rule
+           #:make-permission-rule
            #:permission-rule-action
            #:permission-rule-resource
            #:permission-rule-effect
