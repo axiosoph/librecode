@@ -73,6 +73,9 @@ The implementation of `librecode` is divided into key modules, each documented e
   * **R6 — Full-Mesh P2P Agent Mailboxes**: Dynamic extent mailbox relay pattern for thread-safe error propagation.
   * **R7 — Append-Only Audit Trail**: Thread-safe S-expression log writing, crash-safe force-output, and JSONL interop writer.
 
+* **[user-workflows.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/user-workflows.md)**
+  * **User Stories & Workflows**: Campaign initiation, asynchronous mobile messaging integration, REPL SLIME/Sly intervention flow, and UI/TUI connection layout.
+
 ## Invariants
 
 The system enforces the following core architectural invariants:
