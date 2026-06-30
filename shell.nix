@@ -1,9 +1,20 @@
 { pkgs ? import <nixpkgs> {} }:
 
+let
+  sbclEnv = pkgs.sbcl.withPackages (ps: with ps; [
+    bordeaux-threads
+    sqlite
+    com_dot_inuoe_dot_jzon
+    dexador
+    hunchentoot
+    clack
+    fiveam
+  ]);
+in
 pkgs.mkShell {
   buildInputs = with pkgs; [
     # Compiler & Lisp environment
-    sbcl
+    sbclEnv
     rlwrap
     cl-launch
 
