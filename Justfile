@@ -30,3 +30,13 @@ repl:
 # Clean system fasl compiler caches
 clean:
     rm -rf ~/.cache/common-lisp/sbcl-*$(pwd)*
+
+# Start the HTTP server bridge on specified PORT
+run port="4096":
+    sbcl --eval '(require :asdf)' \
+         --eval '(push (truename "./") asdf:*central-registry*)' \
+         --eval '(asdf:load-system :librecode-runner)' \
+         --eval '(librecode-runner.http:start-http-bridge :port {{port}})' \
+         --eval '(format t "Server listening on port {{port}}...~%") (force-output)' \
+         --eval '(loop (sleep 1))'
+
