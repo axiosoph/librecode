@@ -1,36 +1,24 @@
 # librecode CLOS Agent & Permission System
 
-`librecode` replaces ad-hoc flags and structural checks with polymorphic generic dispatch over CLOS classes for agent definitions, tool permissions, and dynamic behaviors.
+`librecode` replaces ad-hoc flags and structural checks with a unified agent class and polymorphic generic dispatch over tool permissions and dynamic behaviors.
 
-## 1. CLOS Agent Hierarchy
+## 1. Unified Agent Class
 
-Instead of managing agent modes via boolean flags (e.g. `isBuildMode`), agents are modeled as distinct CLOS classes inheriting from a common base class.
+Instead of maintaining a rigid compiled hierarchy of agent subclasses (e.g. `build-agent`, `plan-agent`), all agents are represented by a single, flexible `agent` class. Their capabilities and behavioral constraints are parameterized dynamically using ruleset plists or hash-tables.
 
 ```lisp
 (defclass agent ()
   ((id :initarg :id :reader agent-id :type string)
-   (permissions :initarg :permissions :accessor agent-permissions :type list)
+   (ruleset :initarg :ruleset :accessor agent-ruleset :initform nil) ; Plist or hash-table of action rules
    (system-context :initarg :system-context :accessor agent-system-context :type string)))
-
-(defclass build-agent (agent) ()
-  (:documentation "Highly privileged agent class authorized to execute modifying shell commands, write files, and run test suites."))
-
-(defclass plan-agent (agent) ()
-  (:documentation "Read-only planning agent focused on analyzing codebase structure, drawing task DAGs, and writing text specs."))
-
-(defclass explore-agent (agent) ()
-  (:documentation "Search and research agent focused on semantic searches, prior-art surveys, and code diagnostics."))
-
-(defclass general-agent (agent) ()
-  (:documentation "Fallback agent with standard interactive capabilities."))
 ```
 
-### Dynamic Mode Switching
-Mode switching is implemented by instantiating a new agent class with different permission rulesets. Polymorphic methods dispatch directly on the agent's class type:
+### Dynamic Behavior Dispatch
+Behavior is evaluated dynamically by querying the agent's ruleset configuration during turn execution:
 
 ```lisp
 (defgeneric execute-agent-turn (agent session-id)
-  (:documentation "Runs a single turn loop, checking permissions and tool definitions specific to the agent class."))
+  (:documentation "Runs a single turn loop, checking permissions and tool definitions specific to the agent's active ruleset."))
 ```
 
 ---
