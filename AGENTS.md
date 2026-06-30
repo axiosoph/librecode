@@ -56,95 +56,43 @@ TypeScript implementation.
   (R6) for in-process agents while retaining the event-store-mediated pattern
   for cross-process child harness sessions.
 
-## Requirements
+## Requirements & Specifications
 
-### R1 — Run Coordinator with Wake Coalescing
-Faithful port of OpenCode's `SessionRunCoordinator`: per-key serialized execution,
-coalesced advisory wakes, successor drain chaining, join-existing-drain semantics.
-Built on `sb-concurrency:mailbox` + `bt:condition-variable`.
+The implementation of `librecode` is divided into key modules, each documented exhaustively in the `docs/` folder:
 
-### R2 — Event-Sourced Session State
-Durable event log in SQLite with aggregate sequencing, synchronous projectors
-inside the commit transaction, and PubSub notification after commit. Events are
-the source of truth; all read models are projections.
+* **[coordination-protocol.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/coordination-protocol.md)**
+  * **R1 — Run Coordinator with Wake Coalescing**: Serialized execution per key, wake coalescing, join semantics.
+  * **R2 — Event-Sourced Session State**: Durable log in SQLite, aggregate versioning, WAL mode, atomic projection transaction constraint.
+  * **R8 — LLM Provider Turn Execution**: dexador `:want-stream t` incremental chunk SSE reading, parallel tool execution, unwind-protect settlement, compaction.
+  * **R9 — Two-Phase Input Admission**: Decoupled `admit` (durable inbox) and `promote` (model-visible delivery) phases.
+  * **R10 — Context Epochs**: Session-start system context snapshots, diff updates, and baseline resets.
 
-### R3 — Condition-Restart Failure Recovery
-Custom conditions (`harness-failure`, `provider-error`, `context-overflow`,
-`tool-timeout`, `process-hang`) with multi-tiered restarts (`retry-with-backup-provider`,
-`compact-and-retry`, `inject-corrected-payload`, `drop-to-repl-intervention`,
-`skip-and-continue`). The stack freezes at the failure point — no unwinding
-unless a restart explicitly chooses to.
+* **[metaharness.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/metaharness.md)**
+  * **R4 — Metaharness Supervision**: Decoupled abstract harness interface (generic functions) and terminal multiplexer protocol. Initial tmux transport backend.
+  * **Campaign DAG Engine**: Kahn scheduling scheduler, parallel node worktree isolation, surface-exceed protocol, and boundary check.
+  * **Cross-Process Council**: Multi-seat deliberation (composer, maintainer, auditor, architect), consensus/assent rules.
 
-### R4 — Metaharness Supervision via Multiplexer Protocol
-Spawn and monitor child harness processes (including native OpenCode CLI instances)
-through an abstract multiplexer protocol (`defgeneric`). The initial concrete
-implementation targets tmux, but the protocol must not leak tmux-specific
-concepts — other multiplexers (zellij, screen, direct PTY management) must be
-implementable without changing the supervisor. Continuously scrape pane buffers
-for health/output. Supervisor loop uses the condition-restart engine for
-recovery. Track global state in SQLite or in-memory hash table.
+* **[agent-system.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/agent-system.md)**
+  * **R5 — Agent Type Hierarchy via CLOS**: Build, plan, explore, and general agent classes. Generic dispatch mode-switching.
+  * **Permission Model**: Last-match-wins wildcard rulesets, allow/deny/ask resolution, project-saved database rules, and interactive/headless workflow.
+  * **Tool Registry**: Materialization, capability filtering, schema compilation.
 
-### R5 — Agent Type Hierarchy via CLOS
-Agent types (`build-agent`, `plan-agent`, `explore-agent`, `general-agent`) as
-CLOS classes. Tool availability and permission enforcement dispatch on agent type
-via `defgeneric`. Mode switching (build ↔ plan) is agent switching with different
-permission rulesets — no hardcoded guards.
-
-### R6 — Full-Mesh P2P Agent Mailboxes
-Replace the central async bus. Each agent gets an `sb-concurrency:mailbox`.
-Agents communicate peer-to-peer via direct `send-message` / `receive-message`.
-Auto-wake via `bt:condition-variable` — no polling.
-
-### R7 — O(1) Append-Only Audit Trail
-Thread-safe streaming to S-expression log files (native format) with JSONL
-writer for cross-system interop. Every event, condition signal, restart
-invocation, and sub-harness lifecycle transition is logged.
-
-### R8 — LLM Provider Turn Execution
-Single explicit `llm.stream(request)` call per provider turn. Load projected
-history before each turn. Parallel tool execution via threads with
-`unwind-protect` settlement. Compaction when context budget overflows.
-
-### R9 — Two-Phase Input Admission
-Separate `admit` (durable inbox record) from `promote` (model-visible delivery).
-Steer inputs promote at the next safe provider-turn boundary. Queue inputs
-promote one-at-a-time when the session would otherwise go idle.
-
-### R10 — Context Epochs
-Snapshot system context at session start. On subsequent turns, diff against the
-snapshot and emit only delta `context-updated` events. Post-compaction: replace
-the epoch entirely with a fresh baseline.
+* **[resilience-and-audit.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/resilience-and-audit.md)**
+  * **R3 — Condition-Restart Failure Recovery**: Dynamic bindings (`handler-bind`), stack-freezing error interception. Conditions (`harness-failure`, `provider-error`, etc.) and multi-tiered restarts (`retry-with-backup`, `compact-and-retry`, `drop-to-repl-intervention`).
+  * **R6 — Full-Mesh P2P Agent Mailboxes**: Dynamic extent mailbox relay pattern for thread-safe error propagation.
+  * **R7 — Append-Only Audit Trail**: Thread-safe S-expression log writing, crash-safe force-output, and JSONL interop writer.
 
 ## Invariants
 
-### I1 — One provider call per turn
-The runner issues exactly one streaming LLM call per turn. The loop continues
-only when tool calls require continuation or pending inputs need promotion.
+The system enforces the following core architectural invariants:
 
-### I2 — Events are committed atomically with projections
-A durable event and its projector(s) execute inside the same SQLite transaction.
-The read model is never behind the event log.
-
-### I3 — Conditions do not unwind unless a restart chooses to
-`handler-bind` is the default, not `handler-case`. The stack is preserved at the
-signal site. A restart may choose to unwind, but the default posture is repair
-in place.
-
-### I4 — Different session keys run concurrently; same key is serialized
-The coordinator permits unbounded concurrency across session keys. Within a
-single key, execution is strictly serial with coalesced wakes.
-
-### I5 — No polling for message receipt
-Agent mailboxes wake blocked receivers via condition variables. The event loop
-blocks on `bt:condition-wait`, not `sleep`+check.
-
-### I6 — Child harness processes are opaque
-The metaharness interacts with child processes only through the multiplexer
-protocol (pane I/O and exit codes). It does not link to or share memory with
-child process internals.
-
-### I7 — Audit trail is append-only and crash-safe
-`force-output` after every audit write. No in-place mutation of log entries.
+* **I1 — One provider call per turn**: The session runner performs exactly one LLM call per turn; continuation is only triggered by tool calls or promoted inputs.
+* **I2 — Events are committed atomically with projections**: A durable event and its projections run inside the same SQLite transaction.
+* **I3 — Conditions do not unwind unless a restart chooses to**: dynamic handlers (`handler-bind`) preserve stack execution contexts at the error signaling site.
+* **I4 — Different session keys run concurrently; same key is serialized**: Run coordinator serializes drains per key. Interrupting a session uses a dynamic `stopping` flag + condition notification (avoiding raw thread interrupts).
+* **I5 — No polling for message receipt**: Threads block on `bt:condition-wait` or mailbox semaphores, waking up on event arrival.
+* **I6 — Child harness processes are opaque**: The Metaharness coordinates child processes strictly through the abstract harness/multiplexer interfaces, with no shared memory access.
+* **I7 — Audit trail is append-only and crash-safe**: Log writes use append mode and force-output immediately.
 
 ## Architecture
 
@@ -153,31 +101,37 @@ child process internals.
 ```
 src/
   packages.lisp          — package definitions
-  conditions.lisp        — condition types, restart framework
-  protocol.lisp          — mailboxes, run coordinator, event loop
-  event-store.lisp       — durable event sourcing (SQLite)
-  agent.lisp             — CLOS agent hierarchy, permissions
-  session.lisp           — session state machine, history, input model
-  runner.lisp            — LLM provider turn execution
+  conditions.lisp        — condition types, restart framework (R3)
+  protocol.lisp          — mailboxes, run coordinator, event loop (R1, R6)
+  event-store.lisp       — durable event sourcing, SQLite (R2)
+  agent.lisp             — CLOS agent hierarchy, permissions (R5)
+  session.lisp           — session state machine, history, input model (R9)
+  runner.lisp            — LLM provider turn execution (R8)
   compaction.lisp        — context compaction engine
   tool.lisp              — tool registry, execution, settlement
+  audit.lisp             — append-only S-expression audit trail (R7)
+
+  ;; --- metaharness layer ---
+  harness.lisp           — abstract harness interface (defgeneric)
+  harness-librecode.lisp — self-hosting: librecode as a managed harness
+  harness-opencode.lisp  — OpenCode CLI harness adapter
   multiplexer.lisp       — abstract multiplexer protocol (defgeneric)
   multiplexer-tmux.lisp  — tmux implementation of multiplexer protocol
-  metaharness.lisp       — supervisor entry point
+  campaign.lisp          — campaign DAG, Kahn layering, dispatch/reconcile loop
+  council.lisp           — council protocol, delegation table, assent validation
+  conditioning.lisp      — conditioning composition + per-harness delivery
+  gate.lisp              — gate runner: shell-out, exit-code routing, scope dispatch
+  metaharness.lisp       — supervisor entry point (R4)
 ```
 
 ### Dependency Edges (load order)
 
 ```
-packages → conditions → protocol → event-store → agent → session → runner
-                                                              ↓
-                                                          compaction
-                                                              ↓
-                                                            tool
-                                                              ↓
-                                              multiplexer → metaharness
-                                                   ↑
-                                            multiplexer-tmux
+packages → conditions → protocol → event-store → agent → session → runner → compaction → tool
+  ↓
+multiplexer → multiplexer-tmux → harness → (harness-opencode, harness-librecode)
+  ↓
+campaign → gate → council → audit → conditioning → metaharness
 ```
 
 ### Technology Stack
@@ -208,111 +162,49 @@ packages → conditions → protocol → event-store → agent → session → r
 | `Effect.addFinalizer(...)` | `(unwind-protect ... (cleanup))` |
 | `Effect.uninterruptibleMask(...)` | `(without-interrupts ...)` (sb-sys) |
 
-## Known Unknowns
+## Known Unknowns & Architectural Decisions
 
-Each entry has a **signpost** — the specific action that resolves it.
+Each entry has a **decision/lean** and a **signpost** tracking its implementation status.
 
 ### KU1 — LLM provider scope
-**Question**: Does librecode make its own LLM API calls (reimplementing the
-provider abstraction with dexador/SSE), or does it delegate all LLM work to
-managed OpenCode child instances and only orchestrate?
-
-**Source finding**: OpenCode's LLM pipeline is a `Route` composing four axes
-(Protocol + Endpoint + Auth + Framing). The `fromCatalogModel()` bridge maps
-`api.package` strings to protocol routes. Reimplementing the streaming pipeline
-with dexador/SSE is ~500 LoC; reimplementing the full catalog/model-resolution
-layer on top is another ~300 LoC.
-
-**Signpost**: nrd decision. If librecode makes its own calls, we reimplement
-Route construction and SSE streaming. If it delegates, the runner module
-becomes a child-session dispatcher. The cleanest delegation boundary is at the
-session level — let a child process own model resolution, config, permissions,
-MCP, and system context; the parent creates sessions and observes events.
-
-**Current lean**: Both — librecode has a native LLM client for direct use,
-*and* can orchestrate child OpenCode instances for cases where the full
-OpenCode tool/plugin ecosystem is needed.
+* **Decision**: Both (Model C - Layered Bootstrap). `librecode` will support delegating model resolution and execution to child OpenCode harness sessions, but will also implement a native LLM provider wrapper using `dexador` + hand-rolled SSE stream parsing.
+* **Status**: High-level design complete. Detailed stream parsing specification defined in [coordination-protocol.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/coordination-protocol.md).
 
 ### KU2 — Session identity across process boundaries
-**Question**: Does the metaharness have its own session concept that wraps child
-harness sessions? Is there a parent-child session hierarchy across the process
-boundary, or are they flat/independent?
-
-**Signpost**: Resolve by deciding the metaharness's coordination model. If it
-runs its own sessions that spawn child harness tasks (like OpenCode's `task`
-tool spawns subagent sessions), the hierarchy is natural. If the metaharness is
-purely a process supervisor with no session concept, sessions live only inside
-children.
+* **Decision**: Parent-child hierarchy. The Metaharness maintains parent session contexts which manage one or more child process harness sessions.
+* **Status**: Mapped in [metaharness.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/metaharness.md).
 
 ### KU3 — Tool registry scope
-**Question**: Does the metaharness expose its own tool set to agents it runs
-directly, or does it purely supervise child instances that have their own tools?
-
-**Signpost**: Follows from KU1. If librecode runs its own LLM sessions, it
-needs a tool registry. If it only orchestrates children, tools live in children.
+* **Decision**: Separated tool scopes. The Metaharness exposes its own high-level orchestrator tools (such as workspace file operations, git branch creation, and gate execution), while child harnesses run their own lower-level tools natively.
+* **Status**: Documented in [agent-system.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/agent-system.md).
 
 ### KU4 — MCP integration
-**Question**: Does librecode need to connect to MCP servers directly, or does
-it delegate MCP to child OpenCode instances?
-
-**Source finding**: MCP lives in `packages/opencode` (not `core`) — ~1000 lines
-of client lifecycle, transport setup (stdio/SSE/StreamableHTTP), OAuth, and tool
-conversion. It is purely a tool-discovery and execution mechanism. MCP
-instructions are injected as system context. No V2 tool registry integration yet
-(still V1 path). `40ants/mcp` exists as a CL MCP server implementation if we
-need the server side.
-
-**Signpost**: nrd decision. Delegating MCP to child OpenCode instances is the
-path of least resistance. Reimplementing MCP natively requires a CL MCP client
-library (none exists for the client side — `40ants/mcp` is server-only). Build
-a client only if librecode needs MCP tools without a child process.
+* **Decision**: Delegated. `librecode` will not directly implement an MCP client or OAuth flow. All MCP interactions are delegated to child OpenCode process harnesses, which naturally populate context maps.
+* **Status**: Design locked.
 
 ### KU5 — Config document model
-**Question**: What config formats does librecode support? Does it read
-OpenCode's config format for compatibility, define its own, or both?
-
-**Source finding**: OpenCode config is JSONC (`opencode.json`/`opencode.jsonc`),
-discovered by walking upward from CWD to project root + global config dir.
-Merge is simple last-write-wins per top-level field. The schema (`Config.Info`)
-has ~25 top-level fields covering shell, model, agents, MCP, permissions,
-providers, plugins, etc. V1 migration is built in.
-
-**Signpost**: If librecode reads OpenCode configs for compatibility, it needs a
-JSONC parser (jzon handles standard JSON; trailing-comma JSONC needs a small
-preprocessor or a different parser). If it defines its own, S-expressions or a
-CL-native format. Resolve after KU1.
+* **Decision**: S-expressions + JSONC compatibility. `librecode` uses S-expressions for native configuration, but implements a thin parser (wrapping `jzon`) to read and parse OpenCode's JSON/JSONC documents for workspace compatibility.
+* **Status**: Config loading specification defined in [coordination-protocol.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/coordination-protocol.md).
 
 ### KU6 — Permission model scope
-**Question**: Does librecode need the interactive ask/reply permission flow, or
-is a static ruleset sufficient?
+* **Decision**: Dual implementation. A static ruleset handles headless/autonomous execution, while interactive execution uses condition-restart and condition variables to block and request user permission via the UI.
+* **Status**: Mapped in [agent-system.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/agent-system.md).
 
-**Source finding**: OpenCode's `PermissionV2` uses a last-match-wins evaluation
-with three effects: `allow`, `deny`, `ask`. The `ask` flow creates a pending
-`Deferred`, publishes an event, and blocks until the TUI sends a reply.
-Rejection cascades to all pending requests for the same session. Saved
-"always allow" decisions persist to SQLite per project.
+### KU7 — Nickel contract verification
+* **Decision**: Shell out. Rather than duplicating predicate's contract verification rules, `librecode`'s gate runner executes `nickel export` directly to validate DAG changes and transition state boundaries.
+* **Status**: Gate integration mapped in [metaharness.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/metaharness.md).
 
-**Signpost**: If librecode runs headless/autonomous, supply a static ruleset
-resolving everything to `allow` (or per-tool deny) — the ask/deferred mechanism
-is unnecessary. If it has a REPL or TUI, the interactive flow needs
-reimplementation. The condition/restart system is a natural fit for the
-ask-and-block pattern.
+### KU8 — Cross-process gate evaluation
+* **Decision**: Isolated worktree execution. Metaharness runs project gates and contracts against the isolated git worktree directories assigned to campaign nodes.
+* **Status**: Documented in [metaharness.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/metaharness.md).
+
+### KU9 — Harness capability discovery
+* **Decision**: Polymorphic method dispatch. Each `harness` CLOS subclass exposes its available tools and model capacities. The campaign scheduler maps node requirements to matching harness backends.
+* **Status**: Outlined in [metaharness.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/metaharness.md).
 
 ## Filed Unknown-Unknowns
 
-- Performance characteristics of `sb-concurrency:mailbox` under high
-  contention with many agent threads (>50). May need benchmarking.
-- SBCL's behavior when `bt:interrupt-thread` targets a thread blocked on
-  `bt:condition-wait`. Need to verify this works reliably for coordinator
-  interrupt semantics.
-- Whether `cl-sqlite` supports WAL mode and concurrent readers during a write
-  transaction, which the event store's projector-in-transaction pattern requires.
-- Whether the `cl-sse` client library handles reconnection and partial-line
-  buffering correctly for long-running LLM streams, or whether we need a
-  hand-rolled SSE reader.
-- Whether `calispel` (CSP channels with blocking `select`/`fair-alt`) would
-  complement raw mailboxes for structured inter-component pipelines, or whether
-  the added abstraction is unjustified complexity at this scale.
+* Performance and contention characteristics of `sb-concurrency:mailbox` under high thread volume (>50 concurrent agent mailboxes). Benchmarking required during Phase 1.
 
 ## Style
 
