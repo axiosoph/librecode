@@ -216,7 +216,9 @@
               (librecode-runner.protocol:register-worker-mailbox session-id worker-mbox)
               (bt:make-thread
                (lambda ()
-                 (let ((self (bt:current-thread)))
+                 (let ((self (bt:current-thread))
+                       (librecode-runner.agent:*current-session-id* session-id))
+                   (declare (special librecode-runner.agent:*current-session-id*))
                    (librecode-runner.protocol:register-worker-thread session-id self)
                    (unwind-protect
                         (handler-case

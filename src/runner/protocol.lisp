@@ -119,7 +119,9 @@ Blocks if another thread is already draining this session."
 
            ;; 2. Run the execution turn loop with dynamic variables for coordinator state tracking
            (let ((*session-stopping* nil)
-                 (*session-mailbox* mbox))
+                 (*session-mailbox* mbox)
+                 (librecode-runner.agent:*current-session-id* session-id))
+             (declare (special librecode-runner.agent:*current-session-id*))
              (unwind-protect
                   (loop
                     (when (session-stopping-p session-id)
