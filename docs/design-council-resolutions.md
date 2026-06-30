@@ -232,6 +232,6 @@ The Council votes unanimously to **REJECT** the current specifications until the
 * **Process Auditor**: REJECTED (Pending DDL schemas & dynamic collision clarity).
 
 ### Action Plan
-1. Open a refinement worktree on `agent/reconcile-council-resolutions`.
+1. Open a refinement worktree on `reconcile-resolutions`.
 2. Apply these resolutions across the spec documents.
-3. Commit and merge back to `master` and `document-architecture`.
+3. Commit and merge back to `dev`.

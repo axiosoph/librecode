@@ -42,12 +42,14 @@ When a condition is signaled, the system offers targeted restarts:
 
 Because tool execution runs on separate threads and independent child harnesses execute in external processes, conditions must be propagated across dynamic extent boundaries.
 
-### In-Process: Stack-Preserving Debugging
+### In-Process: Stack-Preserving Debugging & Asynchronous Handshake
 
-Within `librecode-runner` (the single-session harness), tool execution runs in separate background worker threads. To transport conditions back to the main runner thread without unwinding:
+Within `librecode-runner` (the single-session harness), tool execution runs in separate background worker threads. Since restarts are dynamically bound to a thread's control stack, a coordinator thread cannot invoke a restart directly on a worker thread's stack. To transport conditions back to the main thread and invoke restarts cleanly:
 1. **Intercept**: The worker thread wraps its execution block in a `handler-bind` that intercepts any unhandled `serious-condition`.
-2. **Freeze & Mail**: Rather than unwinding the stack, the handler packages the condition diagnostic metadata and writes a message to the coordinator's mailbox. It then freezes the worker thread, blocking it via a condition variable (`bt:condition-wait` on a thread-local CV). This preserves the execution stack frame at the exact error site.
-3. **Inspect**: The coordinator thread reads the mailbox at its turn boundary. Finding the error message, it halts execution and alerts the developer. The developer connects via SLIME/Sly, inspects the active frozen stack frames, hot-patches definitions if needed, and triggers a restart directly at the origin of the error (RES-06).
+2. **Handshake Message**: Rather than unwinding the stack, the handler creates an ephemeral worker-local mailbox. It packages the condition, the diagnostic metadata, and this reply mailbox, then sends a `(:worker-error :condition c :reply-to reply-mailbox)` message to the coordinator's mailbox.
+3. **Freeze & Block**: The worker thread blocks by executing a receive on its local reply mailbox. This preserves the worker execution stack frame at the exact error site.
+4. **Deliberation & Restart**: The coordinator thread reads the mailbox at its turn boundary. Upon detecting the error, it halts execution and alerts the developer (who can connect via SLIME/Sly to run `(invoke-debugger c)` inside the worker thread by sending an eval command) or automatically chooses a restart. The coordinator then sends `(restart-name args)` back to the worker's reply mailbox.
+5. **Resume**: The worker thread wakes, reads the chosen restart from its reply mailbox, and executes `invoke-restart` natively on its own stack (RES-06). If the coordinator thread itself exits or is interrupted, its `unwind-protect` must drain/terminate all registered worker threads to prevent orphan thread leaks.
 
 ### Cross-Process: Subprocess Event/Exit Mapping
 
@@ -88,6 +90,7 @@ The native format is S-expressions, which allows direct reading and writing with
 
 ### Safety Invariants
 
-* **Crash-Safe**: The system calls `force-output` after every write to guarantee that data is flushed to disk before the program proceeds.
+* **Thread-Safe Queue Logging**: To prevent syntax corruption on concurrent stream writes from multiple threads, all audit events are pushed to a thread-safe `sb-concurrency:queue` consumed by a single background logging thread.
+* **Single-Pass dual logging**: Rather than tailing and parsing the S-expression file (which is prone to reader races on incomplete writes), the background logging thread writes directly to *both* `audit.lisp-expr` (S-expressions) and `audit.jsonl` (JSON Lines) files in a single pass.
+* **Crash-Safe**: The logging thread calls `force-output` on both file streams immediately after writing each event.
 * **Append-Only**: Log files are opened exclusively in append mode (`:if-exists :append :if-does-not-exist :create`). In-place modification of existing entries is strictly prohibited.
-* **JSONL Exporter**: A background thread or utility reads the S-expression log and serializes it to JSON Lines (JSONL) to support cross-system diagnostic interop with OpenCode's monitoring tools.

@@ -23,13 +23,14 @@ The coordinator tracks active sessions using a hash table protected by a global 
   (cv (bt:make-condition-variable) :read-only t)
   (pending-wake nil :type boolean)
   (stopping nil :type boolean)
+  (waiters-count 0 :type integer) ; Reference counter to prevent idle deletion races
   (active-thread nil))
 ```
 
 To interrupt a session:
 1. Set the `stopping` flag to `t` on its `coordinator-entry`.
-2. Notify the condition variable to wake the draining thread if it is blocked on tool execution.
-3. The draining thread intercepts the flag, cleans up resources via `unwind-protect`, and exits, allowing the next queued request to acquire the session lock. (Note: Async thread interrupts like `bt:interrupt-thread` are strictly forbidden to prevent mutex corruption).
+2. Post an explicit control message `(:interrupt)` to the session's dynamic event mailbox. This immediately wakes the coordinator thread if it is blocked on its mailbox waiting for events.
+3. The draining thread intercepts the flag, cleans up resources via `unwind-protect` (including terminating any running child tool threads), and exits, allowing the next queued request to acquire the session lock. (Note: Async thread interrupts like `bt:interrupt-thread` are strictly forbidden to prevent mutex corruption).
 
 ---
 
@@ -41,6 +42,7 @@ Every change in a session's state is modeled as a sequence of immutable events w
 
 Events are stored in a SQLite database. The event store enforces sequencing using aggregate versioning.
 * Database connections must be scoped **per thread** (one connection per thread) to ensure thread-safety.
+* **Foreign Keys**: Every connection establishment hook must execute `PRAGMA foreign_keys = ON;` immediately to enforce cascading DDL constraints.
 * **WAL Mode**: The database operates with `PRAGMA journal_mode=WAL` to allow concurrent readers to query the state while a writer transaction is active.
 * **Busy Timeout**: All connections assert `PRAGMA busy_timeout=5000` to handle transient lock contentions gracefully.
 
@@ -48,23 +50,44 @@ Events are stored in a SQLite database. The event store enforces sequencing usin
 
 To guarantee that read models are never behind the event log:
 * A durable event and its corresponding projection updates must be executed **inside the same SQLite transaction**.
-* Every transaction begins with `BEGIN IMMEDIATE` to prevent deadlocks under concurrent write contentions.
+* Every transaction begins with `BEGIN IMMEDIATE` to prevent deadlocks under concurrent write contentions. In Common Lisp, since the default `sqlite:with-transaction` issues a `DEFERRED` transaction, we use a custom `with-immediate-transaction` macro:
 
 ```lisp
+(defmacro with-immediate-transaction ((db) &body body)
+  `(let ((ok nil))
+     (sqlite:execute-non-query ,db "BEGIN IMMEDIATE TRANSACTION")
+     (unwind-protect
+          (multiple-value-prog1
+              (progn ,@body)
+            (sqlite:execute-non-query ,db "COMMIT")
+            (setf ok t))
+       (unless ok
+         (sqlite:execute-non-query ,db "ROLLBACK")))))
+
 (defun commit-event (session-id event type version)
-  (sqlite:with-transaction (db)
+  (with-immediate-transaction (db)
     (sqlite:execute-non-query db "INSERT INTO event_log ...")
     (apply-projectors db session-id event type version)))
 ```
 
 ---
 
-## 3. Two-Phase Input Admission
+## 3. Two-Phase Input Admission & Retry Reconciliation
 
 To manage user steering and queued inputs in an asynchronous environment, input delivery is decoupled into two phases:
 
 ### Phase 1: Input Admission (`admit`)
 Inputs arriving from the user (via HTTP, terminal, or peer mailboxes) are written immediately to a durable `session_input` record in the database. This ensures no input is lost in the event of a system crash.
+
+#### Prompt ID Reuse and Retry Reconciliation
+To satisfy OpenCode's retry policy without database primary key conflicts on `session_input.id`:
+* When a prompt is admitted, if its ID already exists in the `session_input` table:
+  1. Retrieve the existing row.
+  2. If the `session_id`, `prompt_text`, and `delivery_mode` match the existing row:
+     * If the status is `PROMOTED`, return the existing session state and resume the connection (allowing client reconnection to active streams).
+     * If the status is `PENDING`, treat as a no-op (the input is already admitted and awaiting promotion).
+     * If the status is `EXPIRED` or the transaction crashed, update the status to `PENDING` to reschedule it.
+  3. If the fields do not match (a conflicting message ID reuse), the admission handler must fail immediately and reject the request.
 
 ### Phase 2: Input Promotion (`promote`)
 Admitted inputs are promoted to become visible to the LLM model at precise turn boundaries:
@@ -77,11 +100,14 @@ Admitted inputs are promoted to become visible to the LLM model at precise turn 
 
 A single session execution drain consists of a sequence of turns. The loop enforces strict invariants on LLM invocations and tool execution.
 
-### Single Provider Call Invariant & Concurrency Interrupts
+### Single Provider Call Invariant & Unified Mailbox Event Loop
 
-* The runner issues **exactly one** streaming LLM call per turn using `dexador` with `:want-stream t` for incremental line-by-line SSE chunk parsing.
-* **Socket Interrupts**: Socket connections are configured with explicit read timeouts. The SSE chunk line-read iteration loop must check the thread-local `stopping` flag at each step to respond immediately to interruption signals.
-* **Subprocess Interrupts**: All external subprocesses (e.g. CLI tools) are spawned asynchronously (using `uiop:launch-program`). The coordinator thread blocks on a condition variable with a timeout, checking the `stopping` flag on wakeup. If an interrupt is signaled, the coordinator issues an OS signal (e.g., `SIGTERM`) to the child process handle to terminate it immediately.
+To eliminate polling latency and solve socket-read blocking issues, the coordinator thread runs a unified event loop blocking exclusively on its mailbox. All I/O and process waiting is delegated to helper threads:
+
+* **SSE Streaming Reader**: The coordinator spawns a dedicated reader thread that performs blocking reads (e.g. `read-line`) on the `dexador` stream (with `:want-stream t`). For every chunk or line read, it posts `(:sse-line line)` to the coordinator mailbox.
+* **Socket Interrupts**: To interrupt a blocking socket read, the coordinator thread explicitly calls `close` on the dexador stream. This immediately signals a stream error in the reader thread, causing it to terminate cleanly.
+* **Subprocess Waiters**: All external subprocesses (e.g. CLI tools) are spawned asynchronously via `uiop:launch-program` (using absolute binary paths). The coordinator spawns a waiter thread that calls `uiop:wait-process` and posts `(:process-exited exit-code)` to the coordinator mailbox upon completion.
+* **Subprocess Interrupts**: If an interrupt is signaled to the session, the coordinator issues an OS signal (e.g. `SIGTERM` or `SIGKILL`) to the child process handle to terminate it immediately.
 * Loop continuation is only permitted if the model returned tool calls requiring execution, or if new steering inputs require immediate promotion.
 
 ### Parallel Tool Execution & Settlement
@@ -96,6 +122,7 @@ When the model emits multiple tool calls:
 
 * **Context Epochs**: To conserve context budget, `librecode` snapshots the system context at the start of a session. On subsequent turns, it computes a diff against this snapshot and transmits only a `context-updated` delta event.
 * **Compaction**: When the context size exceeds a threshold, the compaction engine runs a summarization pass (folding older context while preserving recent messages) and replaces the epoch baseline entirely.
+* **Event Replay Self-Containment Invariant**: Every baseline snapshot and compaction summary payload must be saved to the database as a `context-baseline-updated` event inside the immutable `event_log`. This ensures the session state can be fully replayed from sequence 0 without losing historical baselines. The `context_epoch` database table is strictly a fast read-projection cache of the latest baseline.
 
 ---
 
@@ -138,32 +165,22 @@ The runner initiates a lightweight multi-threaded HTTP server (powered by `Clack
 
 All endpoints validate authorization parameters and route requests to the matching session mailbox or key lock (R1, R6).
 
-#### SSE Chunk Line Buffer
+#### SSE Character Line Processing
+Because the streaming reader runs in a dedicated thread as described in Section 4, we offload character decoding and line buffering entirely to standard character streams. Using `read-line` natively resolves character fragments, eliminating the need for custom chunk-splitting or buffer-searching logic. The Hunchentoot event-streaming endpoints (`GET /session/:id/events`) must handle `stream-error` (broken pipes or client disconnects) explicitly to prevent thread and socket leaks:
+```lisp
+(handler-case
+    (loop for event = (sb-concurrency:receive-message event-mailbox)
+          do (write-event-to-client stream event)
+             (force-output stream))
+  (stream-error ()
+    (cleanup-session-subscription session-id)))
+```
 
-Because streaming data via `dexador:post` with `:want-stream t` returns arbitrary character fragments, the client and server must implement robust chunk buffering:
-* The reader loop reads bytes or characters from the socket stream into a local dynamic buffer.
-* It searches for newline sequence split boundaries (`\n` or `\r\n`).
-* If found, the pre-split substring is combined with any previously buffered fragment and pushed to the parser. The remaining substring is retained in the buffer.
-* The parser only processes complete lines starting with `data: `, ignoring empty lines or keep-alive comment lines (lines starting with `:`).
-
-#### P2P Mailbox Lookup Registry
-
-To resolve peer-to-peer mailboxes for concurrent agent threads (R6) without database lookups:
-* **Registry Structure**: The package `librecode-runner.protocol` defines a global, thread-safe hash table `*agent-mailboxes*` protected by a recursive bordeaux lock.
-* **Registration**: Upon thread instantiation, every CLOS agent registers its `id` and local `sb-concurrency:mailbox` object:
-  ```lisp
-  (bt:with-lock-held (*agent-mailboxes-lock*)
-    (setf (gethash (agent-id agent) *agent-mailboxes*) mailbox))
-  ```
-* **Routing**: Sibling agents look up target mailboxes natively:
-  ```lisp
-  (let ((target-mailbox (bt:with-lock-held (*agent-mailboxes-lock*)
-                          (gethash target-id *agent-mailboxes*))))
-    (if target-mailbox
-        (sb-concurrency:send-message target-mailbox message)
-        (error 'mailbox-not-found-error :target-id target-id)))
-  ```
-* **Cleanup**: On thread termination or session teardown, the entry is explicitly removed from `*agent-mailboxes*` to prevent memory leaks.
+#### Session-Local Mailbox Bindings & Dependency Injection
+To resolve peer-to-peer mailboxes for concurrent agent threads (R6) without global lock bottlenecks or registry memory leaks:
+* We avoid a global agent mailbox lookup table.
+* Sibling agents spawned within the same session receive their peer mailboxes directly via constructor injection (slots in the CLOS `agent` class).
+* Alternatively, we bind a session-local registry plist `*session-mailboxes*` dynamically using a thread-local special variable. Sibling threads spawned within that session inherit this registry via `:initial-bindings` (see the Guidelines specification).
 
 ### Interactive REPL Boundary
 
@@ -186,7 +203,7 @@ In interactive execution mode, `librecode-runner` provides a REPL listener:
   :version "0.1.0"
   :author "nrd"
   :depends-on ("bordeaux-threads" "cl-sqlite" "com.inuoe.jzon" "dexador" "uiop" "clack" "hunchentoot")
-  :pathname "src/"
+  :pathname "src/runner/"
   :serial t
   :components ((:file "packages")
                (:file "conditions")
@@ -204,7 +221,7 @@ In interactive execution mode, `librecode-runner` provides a REPL listener:
   :version "0.1.0"
   :author "nrd"
   :depends-on ("librecode-runner" "trivial-signal")
-  :pathname "src/"
+  :pathname "src/meta/"
   :serial t
   :components ((:file "multiplexer")
                (:file "multiplexer-tmux")

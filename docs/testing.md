@@ -17,7 +17,7 @@ To ensure that the Common Lisp reimplementation matches the behavior of the orig
 Lisp integration tests reside in the `librecode-test` ASDF system. We implement native macros to replicate OpenCode's test context setup.
 
 ### 2.1 Temporary Directory Sandbox (`with-tmp-sandbox`)
-Replaces OpenCode's `tmpdir` fixture. It creates a temporary directory, optionally initializes a git repository, and cleans it up after execution.
+Replaces OpenCode's `tmpdir` fixture. It creates a temporary directory, optionally initializes a git repository, and cleans it up after execution. To prevent cleanup failures (e.g. file lock contention) from masking the primary test assertion failures, the cleanup handler suppresses directory deletion errors:
 
 ```lisp
 (defmacro with-tmp-sandbox ((path-var &key git config-plist) &body body)
@@ -30,11 +30,13 @@ Replaces OpenCode's `tmpdir` fixture. It creates a temporary directory, optional
             (when ,config-plist
               (write-sandbox-config ,path-var ,config-plist))
             ,@body)
-       (delete-directory-and-files ,path-var))))
+       (handler-case
+           (delete-directory-and-files ,path-var)
+         (serious-condition () nil)))))
 ```
 
 ### 2.2 Mock LLM Server (`with-mock-llm-server`)
-Replaces OpenCode's `provideTmpdirServer`. It boots an ephemeral, thread-local HTTP mock server (using Clack) that streams predefined JSON chunk SSE streams on-demand, allowing deterministic testing of LLM client timeouts, retry logic, and tool call interrupts.
+Replaces OpenCode's `provideTmpdirServer`. It boots an ephemeral, thread-local HTTP mock server (using Clack) that streams predefined JSON chunk SSE streams on-demand, allowing deterministic testing of LLM client timeouts, retry logic, and tool call interrupts. Returning a flat body list in Clack consolidates the output, so we must use Clack's dynamic callback API to stream chunks progressively:
 
 ```lisp
 (defmacro with-mock-llm-server ((port-var &key response-chunks) &body body)
@@ -43,12 +45,15 @@ Replaces OpenCode's `provideTmpdirServer`. It boots an ephemeral, thread-local H
           (handler (clack:clackup
                     (lambda (env)
                       (declare (ignore env))
-                      '(200 (:content-type "text/event-stream")
-                            (stream-event-chunks ,response-chunks)))
+                      (lambda (responder)
+                        (let ((writer (funcall responder '(200 (:content-type "text/event-stream")))))
+                          (dolist (chunk ,response-chunks)
+                            (funcall writer chunk)
+                            (sleep 0.05))))) ; Simulate network latency between chunks
                     :port ,port-var :silent t)))
      (unwind-protect
           (progn ,@body)
-       (clack:stop handler))))
+        (clack:stop handler))))
 ```
 
 ---
@@ -95,3 +100,4 @@ OpenCode's Playwright-based E2E smoke tests (located in `packages/app/e2e/`) run
 * **No Root Execution**: Tests must never be executed from the repository root. Run tests from the package directories (e.g. `packages/librecode-runner` or system test loader).
 * **Isolation**: All tests must use `with-tmp-sandbox`. Mutating the global directory or test databases outside the sandbox is strictly forbidden.
 * **ACID Event store tests**: Event sourcing tests must verify that events and read projections are committed inside a single database transaction.
+* **Database Isolation**: Since SQLite WAL mode restricts writes to a single thread at a time, tests run in parallel will fail on `sqlite-busy-error` if they share a database file. All tests must target in-memory database connection configurations (`:memory:`) or private database files situated inside their respective sandboxes.

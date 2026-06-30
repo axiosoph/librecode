@@ -42,11 +42,12 @@ To support heterogeneous agent systems, the Metaharness decouples itself entirel
 (defgeneric harness-terminate (instance)
   (:documentation "Sends a termination signal to end the harness process gracefully."))
 
-(defgeneric harness-prepare-workspace (harness-class repository-path target-directory)
-  (:documentation "Prepares the isolated git worktree and storage directories before a harness instance is spawned. Evaluated as a class-level/generic method before harness-spawn to avoid circular worktree dependencies (RES-02)."))
+(defgeneric harness-prepare-workspace (harness-class-symbol repository-path target-directory)
+  (:documentation "Prepares the isolated git worktree and storage directories before a harness instance is spawned.
+   Since generic functions cannot dispatch on class symbols in CLOS directly without instantiating them, we use `eql` specializers on class symbols (e.g. (harness-class-symbol (eql 'harness-opencode))) (RES-02)."))
 
-(defgeneric harness-cleanup-workspace (harness-class repository-path target-directory &key force)
-  (:documentation "Cleans up the isolated workspace and worktree directory after execution completes."))
+(defgeneric harness-cleanup-workspace (harness-class-symbol repository-path target-directory &key force)
+  (:documentation "Cleans up the isolated workspace and worktree directory after execution completes. Specializes on class symbols."))
 ```
 
 ### Harness Class Hierarchy
@@ -60,9 +61,10 @@ Each supported backend is implemented as a subclass of `harness`:
    (status :initform :idle :accessor %harness-status)))
 
 (defclass harness-opencode (harness)
-  ((port :initarg :port :reader harness-port :initform 3000)
+  ((port :initarg :port :reader harness-port :initform nil :documentation "Dynamically allocated port to prevent parallel collision.")
    (pane :initarg :pane :reader harness-pane :initform nil :documentation "Optional tmux pane for developer visualization helper."))
-  (:documentation "OpenCode CLI adapter communicating strictly via OpenCode's native HTTP REST and SSE APIs (POST /session/:id/admit, GET /session/:id/events, and POST /session/:id/interrupt). Tmux is demoted to an optional local developer visualization helper (RES-03)."))
+  (:documentation "OpenCode CLI adapter communicating strictly via OpenCode's native HTTP REST and SSE APIs.
+   To prevent parallel port collisions under concurrency, the Metaharness leases unique ports from an ephemeral range and injects them on spawn."))
 
 (defclass harness-librecode (harness)
   ((thread :initarg :thread :reader harness-thread)
@@ -130,26 +132,29 @@ A Campaign represents a high-level task structured as a directed acyclic graph (
 
 ### Scheduling & Execution Loop
 
-The Metaharness coordinates the campaign using Kahn's topological sort to group nodes into parallelizable layers:
+The Metaharness coordinates campaign execution using a **dynamic graph-based scheduling** model derived from the Campaign DAG, resolving dependencies node-by-node to maximize parallel execution while preventing head-of-line blocking:
 
-1. **Partition**: For each layer, group nodes into a `parallel` set (nodes with disjoint `file_surface` lists and no serialization flag) and a `serial` set.
-2. **Workspace Preparation & Dispatch**:
-   * First, prepare the isolated workspace/git worktree directories by calling the class-level `harness-prepare-workspace` generic method prior to spawning the harness instance (avoiding circular dependency loops where workspace functions depend on active instances) (RES-02).
-   * Once prepared, spawn the corresponding `harness` instance mapped to that directory (located under `worktrees/<node-id>/` inside the campaign storage path).
-   * **CWD Safety Invariant**: To ensure process-global CWD safety (RES-01), the scheduling loop and parent Lisp engine are strictly prohibited from mutating the process-global CWD via `chdir`. All operations, git commands, and launched subprocesses must explicitly specify their target directory (e.g., passing `:directory` to `uiop:launch-program` or executing Git commands with absolute or explicit relative path arguments).
-3. **Await**: Monitor event streams from each active harness until they freeze or terminate.
-4. **Reconcile**: Run validation gates (linters, tests, diff authorization) on the landed work. If verification succeeds, merge the node's branch into the campaign's `shared_branch`. Otherwise, flag the node for `rework` and generate a corrective boundary.
-5. **Layer Boundary Check**: After all nodes in a layer land, perform a cumulative-diff gate (such as checking for orphaned references across the cut-set) before moving to the next layer.
+1. **Topological Initialization**: The Campaign DAG is parsed and node dependencies are loaded. An in-memory scheduler tracks the status of each node (:pending, :dispatched, :landed, :accepted, :rework).
+2. **Dynamic Dispatch Loop**:
+   * The scheduler runs continuously. A node is eligible for dispatch as soon as all of its parent dependencies are marked `:accepted`.
+   * **Collision Check**: Eligible nodes are grouped. If two eligible nodes have overlapping `file_surface` scopes, the node with higher priority or fewer dependencies is dispatched in parallel, while the conflicting node is deferred and flagged for serialization.
+   * **Workspace Preparation**: Prior to spawning, the class-level `harness-prepare-workspace` generic method is called using the class symbol (e.g. `'harness-librecode).
+   * **Worktree Synchronization**: If a node was previously deferred (due to collision or rework) and is now dispatched, the Metaharness performs a sync step, merging or rebasing the latest campaign `shared_branch` into the node's private worktree branch to prevent working on stale checkouts.
+   * **Spawn**: Spawn the harness instance mapping to its prepared workspace folder (located under `worktrees/<node-id>/`).
+   * **CWD Safety Invariant**: To ensure process-global CWD safety (RES-01), the scheduling loop and parent Lisp engine must never mutate the process-global CWD via `chdir`. All file utilities and launched subprocesses must resolve relative pathnames against the thread-local `*workspace-root*` or pass the path explicitly.
+3. **Await**: Monitor the session mailbox / event streams of dispatched child harnesses.
+4. **Reconcile**: Run validation gates on landed work. If verification succeeds, merge the node's private branch into the campaign's `shared_branch`. Otherwise, compile linter/compiler stderr diagnostics into the node's Initial Boundary Conditions (IBC) and mark it for `:rework` to guide the agent in the next turn.
 
 ---
 
 ### Surface-Exceed Protocol
 
 To enforce strict boundary isolation:
-* A child harness is only authorized to edit files declared in its `file_surface`.
-* If the child agent attempts to edit a file outside its surface, the Metaharness intercepts the request.
-* **Collision Check**: If the target path does not overlap with any concurrent node's surface, the Metaharness widens the node's `file_surface` dynamically and resumes the run.
-* **Serialization fallback**: If the path conflicts with a concurrent node, the node is halted, marked for serialization, and rescheduled to run in the serial phase after its conflict satisfies.
+* A child harness is initialized with a ruleset where writing to any resource *outside* its authorized `file_surface` is treated as a `:ask` permission constraint.
+* When the child agent attempts to edit an unauthorized file, the tool execution loop blocks, and the harness posts an `event-permission-asked` event.
+* **Collision Check**: The Metaharness intercepts this request via the event stream. If the target path does not overlap with any concurrent node's surface, the Metaharness widens the node's `file_surface` dynamically, persists the permission update to SQLite, and approves the write, resuming the tool execution.
+* **Serialization Fallback**: If the path conflicts with a concurrent running node's surface, the Metaharness denies the write, signals a collision, halts the child harness process, and marks the node for serial rescheduling. Once the conflicting node lands and is accepted, the deferred node undergoes a worktree sync and is dispatched sequentially.
+* **Context Realignment**: When a halted node is resumed after a collision sync, the Metaharness appends a `context-epoch-reset` event or system update message into its event store to realign the agent's LLM context with the newly merged file contents.
 
 ---
 
@@ -166,8 +171,12 @@ The Council model governs high-stakes architectural transitions (e.g., DAG struc
 To maintain decorrelation and avoid group-think across isolated workspaces:
 1. **Independent-First Deposits**: Each seat (running in a separate, isolated child harness worktree) writes its assessment and commits it as a structured **JSON or JSONC** document (e.g. `.ledger/deposits/<seat-id>.json`) *before* reading any sibling's deposit. Using JSON/JSONC allows `librecode` to parse deposits natively using the `com.inuoe.jzon` library, avoiding external C-bindings and libraries like `libyaml`.
 2. **Broker Transport**: Since workspaces are physically isolated on disk under `.scratch/worktrees/<node-id>/`, seats cannot read each other's local deposits. The Metaharness Composer acts as a transport broker: as each child harness completes its task, the Metaharness copies its deposit file from the worktree directory into the parent campaign's central `.ledger/deposits/` directory.
-3. **Recorded Decisions**: Once all seat deposits are collected centrally, the Metaharness Composer parses the files, verifies consensus requirements based on the decision type, and appends a structured entry to the parent campaign decision ledger (`.ledger/decision-log.json`).
-4. **Assent Validation**: Merging or closing is gated by the assent ruleset:
+3. **Multi-Phase Deliberation (Auditor Verification)**: To resolve the Auditor's temporal paradox (where the auditor cannot audit a decision before it is made):
+   * **Phase 1: Voting**: Active seats (Architect, Maintainer) write and sign their deposits independently.
+   * **Phase 2: Moderation**: The Metaharness Composer parses the deposits, compiles the decision, and writes a proposed entry to the parent campaign decision ledger (`.ledger/decision-log.json`).
+   * **Phase 3: Verification**: The Auditor seat is dispatched to verify the Composer's moderation against the decision log. It deposits its sign-off deposit, completing the gate.
+4. **Recorded Decisions**: Once all seat deposits and Auditor verification are collected centrally, the decision is locked and appended to the ledger.
+5. **Assent Validation**: Merging or closing is gated by the assent ruleset:
    * `:single` — Owner assent is sufficient for routine forward progress.
    * `:subset` — Quorum threshold required for qualitative judgments.
    * `:full` — Unanimous machine consensus (Composer, Architect, Maintainer, Auditor) required.
@@ -180,7 +189,7 @@ To enforce the verification dual, `librecode-meta` implements a dedicated gate r
 #### Inherent Protocol Invariants (Native CL Verification)
 
 The core safety rules of the multi-agent coordination protocol are enforced natively inside the Lisp execution engine (`council.lisp` and `campaign.lisp`):
-* **Deposit Validation**: When a council seat writes an assessment to `.ledger/`, the Lisp engine directly parses the deposit document (YAML/JSONC) and validates its schema (verifying present fields like `seat-id`, `verdict`, and `rationale`).
+* **Deposit Validation**: When a council seat writes an assessment to `.ledger/`, the Lisp engine directly parses the deposit document (JSON/JSONC), validates its schema (verifying fields like `seat-id`, `verdict`, and `rationale`), and verifies its cryptographic signature. Each seat signs its deposit using a private SSH or GPG key linked to the agent's identity, which the Metaharness validates against the registered agent public keys in SQLite.
 * **Consensus Check**: The engine evaluates the assent ruleset (e.g., verifying that `:full` consensus has matching unanimous positive verdicts from all active seats) before allowing any merge gate transitions.
 * **Surface Constraints**: The engine checks the git diff and compares it against the node's `file-surface` in-memory. 
 
