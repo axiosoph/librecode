@@ -28,6 +28,7 @@ pkgs.mkShell {
 
     # Developer tools & dependencies
     git
+    just
     tmux
     nickel
   ];
