@@ -212,6 +212,97 @@
         (is (equal "CONTEXT-BASELINE-UPDATED"
                    (sqlite:execute-single db "SELECT event_type FROM event_log WHERE session_id = ? AND sequence = 2" session-id)))))))
 
+(test test-compaction-replayability
+  "Verify that replaying a compaction event from sequence 0 reproduces the identical database state."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    ;; Create two separate test databases (db1 and db2) in the same sandbox
+    (let ((db1-path (merge-pathnames "db1.sqlite" dir))
+          (db2-path (merge-pathnames "db2.sqlite" dir))
+          (session-id "session-replay"))
+      (sqlite:with-open-database (db1 db1-path)
+        (init-db db1)
+        ;; Setup session state in db1
+        (sqlite:execute-non-query db1
+          "INSERT INTO session_state (session_id, agent_id, version, status, last_updated)
+           VALUES (?, ?, 1, 'active', ?)"
+          session-id "agent-1" (librecode-runner.event-store::current-timestamp-ms))
+        ;; Commit a dummy session started event to establish sequence 1
+        (let ((*db* db1))
+          (declare (special *db*))
+          (commit-event session-id '((:agent-id . "agent-1")) :session-started 1))
+        ;; Insert 4 historical messages in db1
+        (sqlite:execute-non-query db1
+          "INSERT INTO session_history (id, session_id, role, content, created_at)
+           VALUES (?, ?, 'user', 'Message number one', ?)"
+          "msg-1" session-id 1000)
+        (sqlite:execute-non-query db1
+          "INSERT INTO session_history (id, session_id, role, content, created_at)
+           VALUES (?, ?, 'assistant', 'Message number two', ?)"
+          "msg-2" session-id 2000)
+        (sqlite:execute-non-query db1
+          "INSERT INTO session_history (id, session_id, role, content, created_at)
+           VALUES (?, ?, 'user', 'Message number three', ?)"
+          "msg-3" session-id 3000)
+        (sqlite:execute-non-query db1
+          "INSERT INTO session_history (id, session_id, role, content, created_at)
+           VALUES (?, ?, 'assistant', 'Message number four', ?)"
+          "msg-4" session-id 4000)
+
+        ;; Compact in db1 with max-tokens = 5.
+        (let ((*db* db1))
+          (declare (special *db*))
+          (compact-context session-id :max-tokens 5))
+
+        ;; Extract final database state of db1
+        (let* ((db1-session-state (sqlite:execute-to-list db1 "SELECT version, status FROM session_state WHERE session_id = ?" session-id))
+               (db1-context-epoch (sqlite:execute-to-list db1 "SELECT epoch_id, baseline_text FROM context_epoch WHERE session_id = ?" session-id))
+               (db1-history (sqlite:execute-to-list db1 "SELECT id, role, content FROM session_history WHERE session_id = ? ORDER BY created_at ASC" session-id))
+               (db1-events (sqlite:execute-to-list db1 "SELECT sequence, event_type, payload FROM event_log WHERE session_id = ? ORDER BY sequence ASC" session-id)))
+
+          ;; Initialize db2
+          (sqlite:with-open-database (db2 db2-path)
+            (init-db db2)
+            ;; Insert the identical initial 4 historical messages in db2
+            (sqlite:execute-non-query db2
+              "INSERT INTO session_history (id, session_id, role, content, created_at)
+               VALUES (?, ?, 'user', 'Message number one', ?)"
+              "msg-1" session-id 1000)
+            (sqlite:execute-non-query db2
+              "INSERT INTO session_history (id, session_id, role, content, created_at)
+               VALUES (?, ?, 'assistant', 'Message number two', ?)"
+              "msg-2" session-id 2000)
+            (sqlite:execute-non-query db2
+              "INSERT INTO session_history (id, session_id, role, content, created_at)
+               VALUES (?, ?, 'user', 'Message number three', ?)"
+              "msg-3" session-id 3000)
+            (sqlite:execute-non-query db2
+              "INSERT INTO session_history (id, session_id, role, content, created_at)
+               VALUES (?, ?, 'assistant', 'Message number four', ?)"
+              "msg-4" session-id 4000)
+
+            ;; Replay the events from db1 onto db2 using apply-projectors
+            (dolist (evt db1-events)
+              (let ((seq (first evt))
+                    (type-str (second evt))
+                    (payload (third evt)))
+                ;; We insert the event into db2's event_log first to replicate event logs
+                (sqlite:execute-non-query db2
+                  "INSERT INTO event_log (session_id, sequence, event_type, payload, timestamp)
+                   VALUES (?, ?, ?, ?, ?)"
+                  session-id seq type-str payload (librecode-runner.event-store::current-timestamp-ms))
+                ;; Apply projection onto db2
+                (apply-projectors db2 session-id payload type-str seq)))
+
+            ;; Extract final database state of db2
+            (let ((db2-session-state (sqlite:execute-to-list db2 "SELECT version, status FROM session_state WHERE session_id = ?" session-id))
+                  (db2-context-epoch (sqlite:execute-to-list db2 "SELECT epoch_id, baseline_text FROM context_epoch WHERE session_id = ?" session-id))
+                  (db2-history (sqlite:execute-to-list db2 "SELECT id, role, content FROM session_history WHERE session_id = ? ORDER BY created_at ASC" session-id)))
+
+              ;; Assert that final states are identical
+              (is (equalp db1-session-state db2-session-state))
+              (is (equalp db1-context-epoch db2-context-epoch))
+              (is (equalp db1-history db2-history)))))))))
+
 (test test-worker-thread-termination
   "Assert that worker threads are terminated when the session coordinator is aborted/interrupted."
   (let* ((session-id "session-terminate-test")

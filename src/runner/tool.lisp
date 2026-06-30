@@ -3,14 +3,13 @@
 ;;; tool.lisp — Tool execution, registry, and deep plist merging
 ;;;
 
-(in-package #:librecode-runner.tool)
-
-(defclass tool ()
+(in-package #:librecode-runner.tool)(defclass tool ()
   ((name :initarg :name :reader tool-name :type string)
    (description :initarg :description :reader tool-description :type string)
    (parameters :initarg :parameters :reader tool-parameters :type list)
    (capabilities :initarg :capabilities :reader tool-capabilities :type list :initform nil)
-   (handler :initarg :handler :reader tool-handler :type function))
+   (handler :initarg :handler :reader tool-handler :type function)
+   (parsed-schema :reader tool-parsed-schema :initform nil))
   (:documentation "A dynamic executable tool definition."))
 
 (defclass tool-registry ()
@@ -48,34 +47,61 @@ Returns the index of the key if found, or nil."
       (string-downcase (symbol-name key))
       (format nil "~A" key)))
 
-(defun coerce-to-hash-table (val)
+(defun coerce-to-hash-table (val &optional schema)
   (cond
     ((eq val nil) nil)
     ((eq val t) t)
     ((or (eq val :null) (eq val 'null)) 'null)
+    ((stringp val) val)
     ((hash-table-p val)
      (let ((new-ht (make-hash-table :test 'equal)))
        (maphash (lambda (k v)
-                  (setf (gethash (key-to-string k) new-ht)
-                        (coerce-to-hash-table v)))
+                  (let* ((k-str (key-to-string k))
+                         (k-keyword (intern (string-upcase k-str) :keyword))
+                         (sub-schema (and (listp schema) (getf (getf schema :properties) k-keyword))))
+                    (setf (gethash k-str new-ht)
+                          (coerce-to-hash-table v sub-schema))))
                 val)
        new-ht))
+    ((and (listp schema) (equal (getf schema :type) "array"))
+     (let ((items-schema (getf schema :items)))
+       (map 'vector (lambda (item) (coerce-to-hash-table item items-schema)) val)))
     ((plist-p val)
      (let ((ht (make-hash-table :test 'equal)))
        (loop for (k v) on val by #'cddr
-             do (setf (gethash (key-to-string k) ht)
-                      (coerce-to-hash-table v)))
+             do (let* ((k-str (key-to-string k))
+                       (k-keyword (intern (string-upcase k-str) :keyword))
+                       (sub-schema (and (listp schema) (getf (getf schema :properties) k-keyword))))
+                  (cond
+                    ((and (member k-keyword '(:required :enum)) (listp v))
+                     (setf (gethash k-str ht)
+                           (map 'vector (lambda (item)
+                                          (if (symbolp item)
+                                              (key-to-string item)
+                                              (coerce-to-hash-table item)))
+                                v)))
+                    (t
+                     (setf (gethash k-str ht)
+                           (coerce-to-hash-table v sub-schema))))))
        ht))
     ((vectorp val)
-     (if (stringp val)
-         val
-         (map 'vector #'coerce-to-hash-table val)))
+     (map 'vector (lambda (item) (coerce-to-hash-table item)) val))
     ((listp val)
      ;; Represent JSON arrays as Lisp vectors in coerced output
-     (map 'vector #'coerce-to-hash-table val))
+     (map 'vector (lambda (item) (coerce-to-hash-table item)) val))
     ((and (symbolp val) (not (member val '(t nil null))))
      (key-to-string val))
     (t val)))
+
+(defmethod initialize-instance :after ((self tool) &key)
+  "Pre-parse and cache the schema on the tool."
+  (let* ((params (slot-value self 'parameters))
+         (schema-ht (if params (coerce-to-hash-table params) nil))
+         (schema-json (if schema-ht
+                          (com.inuoe.jzon:stringify schema-ht)
+                          "{}")))
+    (setf (slot-value self 'parsed-schema)
+          (cl-jschema:parse schema-json))))
 
 (defun coerce-arguments-by-schema (properties arguments)
   "Recursively coerce arguments plist based on the properties schema plist.
@@ -95,16 +121,16 @@ coerce it to an empty hash-table so cl-jschema can validate its required fields.
                  ((and (equal prop-type "array") (or (listp val) (vectorp val)))
                   (let* ((items-schema (getf prop-schema :items))
                          (items-type (getf items-schema :type)))
-                    (when (equal items-type "object")
-                      (let ((sub-properties (getf items-schema :properties)))
-                        (setf (getf coerced key)
-                              (map 'vector
-                                   (lambda (item)
-                                     (cond
-                                       ((null item) (make-hash-table :test 'equal))
-                                       ((plist-p item) (coerce-arguments-by-schema sub-properties item))
-                                       (t item)))
-                                   val)))))))))
+                    (setf (getf coerced key)
+                          (map 'vector
+                               (lambda (item)
+                                 (cond
+                                   ((and (equal items-type "object") (null item))
+                                    (make-hash-table :test 'equal))
+                                   ((and (equal items-type "object") (plist-p item))
+                                    (coerce-arguments-by-schema (getf items-schema :properties) item))
+                                   (t (coerce-to-hash-table item items-schema))))
+                               val)))))))
     coerced))
 
 (defun deep-merge-plists (plist1 plist2)
@@ -128,23 +154,19 @@ Otherwise, the value from plist2 overrides plist1."
                       (setf result (nconc result (list k2 v2))))))
        result))))
 
-(defun validate-arguments (schema arguments)
-  "Validate arguments against schema. schema is a plist.
-Arguments is a plist."
-  (let* ((properties (getf schema :properties))
+(defun validate-arguments (tool arguments)
+  "Validate arguments against tool parameters schema.
+Eliminates redundant JSON serialization."
+  (let* ((schema (tool-parameters tool))
+         (parsed-schema (tool-parsed-schema tool))
+         (properties (getf schema :properties))
          (coerced-args (if properties
                            (coerce-arguments-by-schema properties arguments)
                            arguments))
-         (schema-json (if schema
-                          (com.inuoe.jzon:stringify (coerce-to-hash-table schema))
-                          "{}"))
-         (arguments-json (if coerced-args
-                             (com.inuoe.jzon:stringify (coerce-to-hash-table coerced-args))
-                             "{}"))
-         (parsed-schema (cl-jschema:parse schema-json))
-         (parsed-arguments (com.inuoe.jzon:parse arguments-json)))
+         (coerced-args-ht (or (coerce-to-hash-table coerced-args schema)
+                              (make-hash-table :test 'equal))))
     (handler-case
-        (cl-jschema:validate parsed-schema parsed-arguments)
+        (cl-jschema:validate parsed-schema coerced-args-ht)
       (cl-jschema:invalid-json (c)
         (let* ((errors (cl-jschema:invalid-json-errors c))
                (msg (format nil "JSON Schema validation failed: ~{~A at ~A~^; ~}"
@@ -189,12 +211,12 @@ Arguments is a plist."
 
 (defun execute-tool (tool arguments)
   "Synchronously execute the tool with given arguments."
-  (validate-arguments (tool-parameters tool) arguments)
+  (validate-arguments tool arguments)
   (funcall (tool-handler tool) arguments))
 
 (defun execute-tool-async (tool arguments &key timeout)
   "Asynchronously execute the tool in a worker thread, blocking the current thread until completion or timeout."
-  (validate-arguments (tool-parameters tool) arguments)
+  (validate-arguments tool arguments)
   (let* ((lock (bt:make-lock "tool-execution-lock"))
          (cv (bt:make-condition-variable :name "tool-execution-cv"))
          (finished-p nil)

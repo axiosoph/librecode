@@ -254,9 +254,29 @@ Recursively coerces plists and alists into hash-tables so they serialize to JSON
 
 
 
+(defun get-event-field (parsed key)
+  "Extract a field by keyword KEY (e.g. :epoch-id) from PARSED,
+handling hash-tables (with string keys or symbols), alists, and plists."
+  (let* ((key-str (string-downcase (symbol-name key)))
+         (key-str-alt (substitute #\_ #\- key-str)))
+    (cond
+      ((hash-table-p parsed)
+       (or (gethash key-str parsed)
+           (gethash key-str-alt parsed)
+           (gethash key parsed)))
+      ((alist-p parsed)
+       (let ((cell (or (assoc key parsed)
+                       (assoc (intern (string-upcase key-str) :keyword) parsed)
+                       (assoc (intern (string-upcase key-str-alt) :keyword) parsed))))
+         (cdr cell)))
+      ((plist-p parsed)
+       (or (getf parsed key)
+           (getf parsed (intern (string-upcase key-str) :keyword))
+           (getf parsed (intern (string-upcase key-str-alt) :keyword))))
+      (t nil))))
+
 (defun apply-projectors (db session-id event type version)
   "Applies event projections to update session_state in DB."
-  (declare (ignore type))
   (let* ((parsed (parse-event-safely event))
          (agent-id (or (when (hash-table-p parsed)
                          (or (gethash "agent_id" parsed)
@@ -285,7 +305,32 @@ Recursively coerces plists and alists into hash-tables so they serialize to JSON
          version = excluded.version,
          status = excluded.status,
          last_updated = excluded.last_updated"
-      session-id agent-id version status now)))
+      session-id agent-id version status now)
+    ;; Handle context compaction baseline updates (defer queries to satisfy I2 atomicity)
+    (let ((norm-type (if (symbolp type)
+                         (intern (string-upcase (symbol-name type)) :keyword)
+                         (intern (string-upcase (format nil "~A" type)) :keyword))))
+      (when (eq norm-type :context-baseline-updated)
+        (let ((epoch-id (get-event-field parsed :epoch-id))
+              (baseline-text (get-event-field parsed :baseline-text))
+              (compacted-ids (get-event-field parsed :compacted-message-ids)))
+          (when (and epoch-id baseline-text)
+            (sqlite:execute-non-query db
+              "INSERT OR REPLACE INTO context_epoch (session_id, epoch_id, baseline_text, created_at)
+               VALUES (?, ?, ?, ?)"
+              session-id epoch-id baseline-text now))
+          (when compacted-ids
+            (cond
+              ((vectorp compacted-ids)
+               (loop for id across compacted-ids
+                     do (sqlite:execute-non-query db
+                          "DELETE FROM session_history WHERE id = ?"
+                          id)))
+              ((listp compacted-ids)
+               (loop for id in compacted-ids
+                     do (sqlite:execute-non-query db
+                          "DELETE FROM session_history WHERE id = ?"
+                          id))))))))))
 
 (defun commit-event (session-id event type version)
   "Commits an event to the event log and applies projectors inside a single transaction."
