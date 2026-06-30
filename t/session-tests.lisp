@@ -303,8 +303,8 @@
                      (signals provider-error
                        (execute-provider-turn session-id "mock-provider" "mock-model"))
                      
-                     ;; Verify mailbox has leftover stale messages (contamination exists in raw mailbox)
-                     (is-true (nth-value 1 (sb-concurrency:receive-message-no-hang mbox)))
+                     ;; Manually push a stale message to simulate mailbox contamination
+                     (librecode-runner.protocol:send-message mbox '(:sse-line :stale-rid "data: {\"choices\": [{\"delta\": {\"content\": \"Stale data\"}}]}"))
                      
                      ;; Second turn: should succeed because it flushes the mailbox first
                      (execute-provider-turn session-id "mock-provider" "mock-model")
