@@ -20,6 +20,20 @@ build:
          --eval '(asdf:load-system :librecode-runner)' \
          --eval '(asdf:load-system :librecode-meta)'
 
+# Run compiler lint checks (fails on warnings/errors within librecode files)
+lint:
+    sbcl --non-interactive \
+         --eval '(require :asdf)' \
+         --eval '(push (truename "./") asdf:*central-registry*)' \
+         --eval '(handler-bind ((warning (lambda (c) \
+                                           (when (and *compile-file-pathname* \
+                                                      (search "/librecode/" (namestring *compile-file-pathname*))) \
+                                             (format *error-output* "~&[LINT] Warning in ~A:~%~A~%" *compile-file-pathname* c) \
+                                             (uiop:quit 1))))) \
+                   (asdf:load-system :librecode-runner) \
+                   (asdf:load-system :librecode-meta))'
+
+
 # Start an interactive SBCL REPL with all packages loaded
 repl:
     rlwrap sbcl --eval '(require :asdf)' \
