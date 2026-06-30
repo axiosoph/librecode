@@ -26,7 +26,6 @@ pkgs.mkShell {
     
     echo "====================================================="
     echo "  librecode Development Shell"
-    echo "  Loaded: SBCL, SQLite, Ncurses, OpenSSL, Nickel, Tmux"
     echo "====================================================="
   '';
 }
