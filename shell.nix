@@ -33,6 +33,10 @@ pkgs.mkShell {
     just
     tmux
     nickel
+    bun
+    nodePackages.node-gyp
+    python3
+    gnumake
   ];
 
   shellHook = ''

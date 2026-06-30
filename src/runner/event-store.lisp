@@ -22,15 +22,15 @@ If *workspace-root* is nil, or if relative-path is absolute, returns relative-pa
 (defun connect-db (db-path)
   "Establish a connection to the SQLite database at DB-PATH.
 Resolves DB-PATH relative to *workspace-root*.
-Enforces journal_mode=WAL, busy_timeout=5000, and foreign_keys=ON immediately on connection."
+Enforces busy_timeout=5000, foreign_keys=ON, and journal_mode=WAL immediately on connection."
   (let* ((resolved (resolve-path db-path))
          (db (sqlite:connect resolved))
          (ok nil))
     (unwind-protect
          (progn
+           (sqlite:execute-non-query db "PRAGMA busy_timeout = 5000;")
            (sqlite:execute-non-query db "PRAGMA foreign_keys = ON;")
            (sqlite:execute-non-query db "PRAGMA journal_mode = WAL;")
-           (sqlite:execute-non-query db "PRAGMA busy_timeout = 5000;")
            (setf ok t)
            db)
       (unless ok
