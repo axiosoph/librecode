@@ -41,6 +41,12 @@ To support heterogeneous agent systems, the Metaharness decouples itself entirel
 
 (defgeneric harness-terminate (instance)
   (:documentation "Sends a termination signal to end the harness process gracefully."))
+
+(defgeneric harness-create-worktree (instance repository-path target-directory)
+  (:documentation "Requests the child harness's native Git repository service to create a detached worktree checkout at TARGET-DIRECTORY."))
+
+(defgeneric harness-remove-worktree (instance repository-path target-directory &key force)
+  (:documentation "Requests the child harness's native Git repository service to remove the worktree checkout at TARGET-DIRECTORY."))
 ```
 
 ### Harness Class Hierarchy
@@ -126,7 +132,7 @@ A Campaign represents a high-level task structured as a directed acyclic graph (
 The Metaharness coordinates the campaign using Kahn's topological sort to group nodes into parallelizable layers:
 
 1. **Partition**: For each layer, group nodes into a `parallel` set (nodes with disjoint `file_surface` lists and no serialization flag) and a `serial` set.
-2. **Dispatch**: Spawn a dedicated `harness` instance for each parallel node inside its own git worktree directory (isolated under `worktrees/<node-id>/` inside the external campaign storage path).
+2. **Dispatch**: Spawns an isolated git worktree checkout for each parallel node using the child harness's `harness-create-worktree` generic API, then spawns the corresponding `harness` instance mapped to that directory (located under `worktrees/<node-id>/` inside the campaign storage path).
 3. **Await**: Monitor event streams from each active harness until they freeze or terminate.
 4. **Reconcile**: Run validation gates (linters, tests, diff authorization) on the landed work. If verification succeeds, merge the node's branch into the campaign's `shared_branch`. Otherwise, flag the node for `rework` and generate a corrective boundary.
 5. **Layer Boundary Check**: After all nodes in a layer land, perform a cumulative-diff gate (such as checking for orphaned references across the cut-set) before moving to the next layer.
