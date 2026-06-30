@@ -27,11 +27,6 @@ repl:
                 --eval '(asdf:load-system :librecode-runner)' \
                 --eval '(asdf:load-system :librecode-meta)'
 
-# Validate campaign ledger deposits and state reconciliation logs via Nickel
-validate-ledger:
-    nickel export .ledger/deposits/validate_deposits.ncl
-    nickel export .ledger/state/reconcile_log.ncl
-
 # Clean system fasl compiler caches
 clean:
     rm -rf ~/.cache/common-lisp/sbcl-*$(pwd)*
