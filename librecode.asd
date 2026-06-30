@@ -14,7 +14,8 @@
                #:trivial-signal
                #:cl-jschema
                #:clack
-               #:hunchentoot)
+               #:hunchentoot
+               #:clack-handler-hunchentoot)
   :serial t
   :components
    ((:file "src/packages")
@@ -26,7 +27,8 @@
     (:file "src/runner/tool")
     (:file "src/runner/runner")
     (:file "src/runner/compaction")
-    (:file "src/runner/audit")))
+    (:file "src/runner/audit")
+    (:file "src/runner/http")))
 
 (asdf:defsystem #:librecode-meta
   :description "OpenCode multi-agent campaign coordinator metaharness."

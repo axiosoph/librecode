@@ -76,7 +76,9 @@
            #:*active-worker-threads*
            #:*active-worker-threads-lock*
            #:register-worker-thread
-           #:unregister-worker-thread))
+           #:unregister-worker-thread
+           #:*event-broadcast-hook*
+           #:broadcast-event))
 
 (defpackage #:librecode-runner.event-store
   (:use #:cl)
@@ -154,6 +156,12 @@
            #:execute-tool
            #:execute-tool-async
            #:deep-merge-plists))
+
+(defpackage #:librecode-runner.http
+  (:use #:cl)
+  (:documentation "HTTP server bridge for remote control and SSE coordination.")
+  (:export #:start-http-bridge
+           #:stop-http-bridge))
 
 ;; --- metaharness layer ---
 

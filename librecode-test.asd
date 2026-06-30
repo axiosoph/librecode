@@ -14,7 +14,9 @@
                #:check-it
                #:sqlite
                #:clack
-               #:hunchentoot)
+               #:hunchentoot
+               #:clack-handler-hunchentoot
+               #:usocket)
   :serial t
   :components
   ((:module "t"
@@ -23,7 +25,8 @@
      (:file "agent-tests")
      (:file "audit-tests")
      (:file "tool-tests")
-     (:file "session-tests"))))
+     (:file "session-tests")
+     (:file "http-tests"))))
   :perform (asdf:test-op (op c)
                          (let ((results (append
                                          (uiop:symbol-call :fiveam :run
@@ -35,7 +38,9 @@
                                          (uiop:symbol-call :fiveam :run
                                                            (uiop:find-symbol* :tool-suite :librecode-test.tool))
                                          (uiop:symbol-call :fiveam :run
-                                                           (uiop:find-symbol* :session-suite :librecode-test.session)))))
+                                                           (uiop:find-symbol* :session-suite :librecode-test.session))
+                                         (uiop:symbol-call :fiveam :run
+                                                           (uiop:find-symbol* :http-suite :librecode-test.http)))))
                            (uiop:symbol-call :fiveam :explain! results)
                            (unless (every (lambda (r)
                                             (typep r (uiop:find-symbol* :test-passed :fiveam)))

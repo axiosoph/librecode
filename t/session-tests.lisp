@@ -403,7 +403,9 @@
                      ;; Verify assistant message has correct content from second turn only (stale content is discarded)
                      (let ((content (sqlite:execute-single db "SELECT content FROM session_history WHERE role = 'assistant'")))
                        (is (equal "Hello world!" content))))))
-            (hunchentoot:stop acceptor)))))))
+            (progn
+              (hunchentoot:stop acceptor)
+              (setf hunchentoot:*dispatch-table* (delete dispatcher hunchentoot:*dispatch-table*)))))))))
 
 (test test-session-permission-asked-event-logging
   "Assert that interactive permission check triggers :event-permission-asked and logs to event_log."

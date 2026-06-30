@@ -203,3 +203,12 @@ Sets the stopping flag and posts an interrupt message to the event loop mailbox.
 (defun receive-message (mailbox &key timeout)
   "Wait for and receive a message from MAILBOX. Supports an optional TIMEOUT in seconds."
   (sb-concurrency:receive-message mailbox :timeout timeout))
+
+(defvar *event-broadcast-hook* nil
+  "Function of three arguments (session-id event-type data) to broadcast session events.")
+
+(defun broadcast-event (session-id event-type &optional data)
+  "Helper to broadcast a session event using *event-broadcast-hook*."
+  (when *event-broadcast-hook*
+    (funcall *event-broadcast-hook* session-id event-type data)))
+

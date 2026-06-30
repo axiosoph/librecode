@@ -82,7 +82,7 @@
                      (incf i)))))))
     out))
 
-(defun process-sse-line-data (line text-accum tools-accum)
+(defun process-sse-line-data (session-id line text-accum tools-accum)
   "Parse a single SSE streaming delta line and accumulate content and tool calls."
   (let ((trimmed (string-trim '(#\Space #\Tab #\Return #\Newline) line)))
     (when (alexandria:starts-with-subseq "data: " trimmed)
@@ -105,6 +105,7 @@
                 (when delta
                   (let ((content (gethash "content" delta)))
                     (when (stringp content)
+                      (librecode-runner.protocol:broadcast-event session-id :delta content)
                       (loop for char across content
                             do (vector-push-extend char text-accum))))
                   (let ((tool-calls (gethash "tool_calls" delta)))
@@ -214,6 +215,7 @@
             (setf (gethash call-id results) (format nil "Error: Tool ~A not found" name))
             (let ((worker-mbox (librecode-runner.protocol:make-mailbox :name (format nil "worker-mbox-~A" call-id))))
               (librecode-runner.protocol:register-worker-mailbox session-id worker-mbox)
+              (librecode-runner.protocol:broadcast-event session-id :tool-start (list :id call-id :name name :arguments arguments-str))
               (bt:make-thread
                (lambda ()
                  (let ((self (bt:current-thread))
@@ -250,9 +252,11 @@
                          :message "Session aborted during parallel tool execution."))
                  ((eq (car msg) :tool-success)
                   (destructuring-bind (call-id res-val) (cdr msg)
+                    (librecode-runner.protocol:broadcast-event session-id :tool-success (list :id call-id :result res-val))
                     (setf (gethash call-id results) res-val)))
                  ((eq (car msg) :tool-error)
                   (destructuring-bind (call-id err-msg) (cdr msg)
+                    (librecode-runner.protocol:broadcast-event session-id :tool-error (list :id call-id :error err-msg))
                     (setf (gethash call-id results) err-msg))))))
 
     (let ((res-list nil))
@@ -294,7 +298,8 @@ Enforces that exactly one provider call is made. Returns t if continuation is al
                              (dexador:post *provider-url*
                                            :headers '(("Content-Type" . "application/json"))
                                            :content request-body
-                                           :want-stream t)
+                                           :want-stream t
+                                           :keep-alive nil)
                            (error (c)
                              (error 'librecode-runner.conditions:provider-error
                                     :endpoint *provider-url*
@@ -353,7 +358,7 @@ Enforces that exactly one provider call is made. Returns t if continuation is al
                            ((eq (car msg) :sse-eof)
                             (return))
                            ((eq (car msg) :sse-line)
-                            (process-sse-line-data (third msg) text-accum tools-accum))))))
+                            (process-sse-line-data session-id (third msg) text-accum tools-accum))))))
 
                     (let ((tc-list nil))
                       (maphash (lambda (k v)

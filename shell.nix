@@ -8,6 +8,7 @@ let
     dexador
     hunchentoot
     clack
+    clack-handler-hunchentoot
     fiveam
     check-it
     trivial-signal
