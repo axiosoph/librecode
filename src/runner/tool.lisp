@@ -48,9 +48,36 @@ Returns the index of the key if found, or nil."
       (string-downcase (symbol-name key))
       (format nil "~A" key)))
 
+#+sbcl
+(sb-ext:without-package-locks
+  (defun cl-jschema::json-false-p (value)
+    (or (eq value nil) (eq value 'yason:false)))
+  (defun cl-jschema::json-true-p (value)
+    (or (eq value t) (eq value 'yason:true)))
+  (defun cl-jschema::json-null-p (value)
+    (or (eq value 'null) (eq value :null)))
+  (let ((array-spec (find "array" cl-jschema::*type-specs* :key #'cl-jschema::type-spec-name :test #'equal)))
+    (when array-spec
+      (setf (cl-jschema::type-spec-lisp-type array-spec) 'vector))))
+#-sbcl
+(progn
+  (defun cl-jschema::json-false-p (value)
+    (or (eq value nil) (eq value 'yason:false)))
+  (defun cl-jschema::json-true-p (value)
+    (or (eq value t) (eq value 'yason:true)))
+  (defun cl-jschema::json-null-p (value)
+    (or (eq value 'null) (eq value :null)))
+  (let ((array-spec (find "array" cl-jschema::*type-specs* :key #'cl-jschema::type-spec-name :test #'equal)))
+    (when array-spec
+      (setf (cl-jschema::type-spec-lisp-type array-spec) 'vector))))
+
 (defun coerce-to-hash-table (val)
   (cond
-    ((null val) nil)
+    ((eq val nil) 'yason:false)
+    ((eq val 'yason:false) 'yason:false)
+    ((eq val 'yason:true) 'yason:true)
+    ((eq val t) 'yason:true)
+    ((or (eq val :null) (eq val 'null)) :null)
     ((hash-table-p val)
      (let ((new-ht (make-hash-table :test 'equal)))
        (maphash (lambda (k v)
@@ -64,60 +91,16 @@ Returns the index of the key if found, or nil."
              do (setf (gethash (key-to-string k) ht)
                       (coerce-to-hash-table v)))
        ht))
-    ((listp val)
-     (mapcar #'coerce-to-hash-table val))
     ((vectorp val)
      (if (stringp val)
          val
          (map 'vector #'coerce-to-hash-table val)))
-    ((and (symbolp val) (not (member val '(t nil null))))
+    ((listp val)
+     ;; Represent JSON arrays as Lisp vectors in coerced output
+     (map 'vector #'coerce-to-hash-table val))
+    ((and (symbolp val) (not (member val '(t nil null yason:true yason:false))))
      (key-to-string val))
     (t val)))
-
-;; Work around cl-jschema bugs checking required and dependentRequired properties.
-;; By default, cl-jschema uses (gethash field value) which fails if the value is nil (JSON false).
-(defmethod cl-jschema::check-type-property ((keyword (eql :|required|))
-                                            required value)
-  "Check VALUE by 'required' for keys in REQUIRED, correctly handling falsy values like nil."
-  (when (and (typep value 'hash-table) required)
-    (loop
-      for field in required
-      always (multiple-value-bind (val present-p) (gethash field value)
-               (declare (ignore val))
-               (or present-p
-                   (cl-jschema::raise-invalid-json-value keyword field))))))
-
-(defmethod cl-jschema::check-type-property ((keyword (eql :|properties|))
-                                            properties value)
-  "Check VALUE properties against schemas in PROPERTIES, correctly handling falsy values like nil."
-  (when (typep value 'hash-table)
-    (maphash (lambda (field schema)
-               (multiple-value-bind (val present-p) (gethash field value)
-                 (when present-p
-                   (cl-jschema::check-schema schema val))))
-             properties)))
-
-(defmethod cl-jschema::check-type-property ((keyword (eql :|dependentRequired|))
-                                            dependent-required value)
-  "Check VALUE by 'dependentRequired' for DEPENDENT-REQUIRED, correctly handling falsy values."
-  (when (typep value 'hash-table)
-    (maphash (lambda (dependent required)
-               (multiple-value-bind (val present-p) (gethash dependent value)
-                 (declare (ignore val))
-                 (when present-p
-                   (cl-jschema::check-type-property :|required| required value))))
-             dependent-required)))
-
-(defmethod cl-jschema::check-type-property ((keyword (eql :|dependentSchemas|))
-                                            dependent-schemas value)
-  "Check VALUE by 'dependentSchemas' for DEPENDENT-SCHEMAS, correctly handling falsy values."
-  (when (typep value 'hash-table)
-    (maphash (lambda (dependent schema)
-               (multiple-value-bind (val present-p) (gethash dependent value)
-                 (declare (ignore val))
-                 (when present-p
-                   (cl-jschema::check-schema schema value))))
-             dependent-schemas)))
 
 (defun deep-merge-plists (plist1 plist2)
   "Recursively merge two property lists.
@@ -140,17 +123,37 @@ Otherwise, the value from plist2 overrides plist1."
                       (setf result (nconc result (list k2 v2))))))
        result))))
 
+(defun sanitize-parsed-arguments (val)
+  "Recursively traverse parsed JSON object, converting any vectors (except strings)
+to simple-vectors so that cl-jschema can validate them."
+  (cond
+    ((hash-table-p val)
+     (maphash (lambda (k v)
+                (setf (gethash k val) (sanitize-parsed-arguments v)))
+              val)
+     val)
+    ((vectorp val)
+     (if (stringp val)
+         val
+         (map 'simple-vector #'sanitize-parsed-arguments val)))
+    (t val)))
+
 (defun validate-arguments (schema arguments)
   "Validate arguments against schema. schema is a plist.
 Arguments is a plist."
   (let* ((schema-json (if schema
-                          (com.inuoe.jzon:stringify (coerce-to-hash-table schema))
+                          (with-output-to-string (s)
+                            (yason:encode (coerce-to-hash-table schema) s))
                           "{}"))
          (arguments-json (if arguments
-                             (com.inuoe.jzon:stringify (coerce-to-hash-table arguments))
+                             (with-output-to-string (s)
+                               (yason:encode (coerce-to-hash-table arguments) s))
                              "{}"))
          (parsed-schema (cl-jschema:parse schema-json))
-         (parsed-arguments (com.inuoe.jzon:parse arguments-json)))
+         (parsed-arguments (let ((yason:*parse-json-booleans-as-symbols* t)
+                                 (yason:*parse-json-null-as-keyword* t)
+                                 (yason:*parse-json-arrays-as-vectors* t))
+                             (sanitize-parsed-arguments (yason:parse arguments-json)))))
     (handler-case
         (cl-jschema:validate parsed-schema parsed-arguments)
       (cl-jschema:invalid-json (c)

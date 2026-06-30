@@ -13,7 +13,8 @@
                #:dexador
                #:trivial-signal
                #:alexandria
-               #:cl-jschema)
+               #:cl-jschema
+               #:yason)
   :serial t
   :components
   ((:file "src/packages")
