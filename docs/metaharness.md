@@ -148,10 +148,49 @@ To maintain decorrelation and avoid group-think:
 
 ### Gate Evaluation Mechanics
 
-To enforce the verification dual, `librecode-meta` implements a dedicated gate runner (`gate.lisp`):
-* **Nickel Contract Delegation**: For structural and consensus assertions (such as validating that a decision ledger is authorized under the constitution), the gate runner shells out to `nickel export` to execute the predicate contract files directly. This avoids duplicate validation logic and guarantees consistency between the Lisp supervisor and static project rules.
-* **Workspace Verification**: For linter checks, test suite execution, and file surface constraints, the gate runner executes shell commands or project-local scripts within the node's isolated git worktree directory.
-* **Failure Handling**: If a gate checks fails (returns a non-zero exit code), the gate runner signals a Lisp condition. If in autonomous mode, it triggers a rework loop; if in interactive mode, it notifies the user via the messaging channel.
+To enforce the verification dual, `librecode-meta` implements a dedicated gate runner (`gate.lisp`). Instead of depending on external runtimes for core protocol safety, validation is divided into native invariants and pluggable DSL-based checks.
+
+#### Inherent Protocol Invariants (Native CL Verification)
+
+The core safety rules of the multi-agent coordination protocol are enforced natively inside the Lisp execution engine (`council.lisp` and `campaign.lisp`):
+* **Deposit Validation**: When a council seat writes an assessment to `.ledger/`, the Lisp engine directly parses the deposit document (YAML/JSONC) and validates its schema (verifying present fields like `seat-id`, `verdict`, and `rationale`).
+* **Consensus Check**: The engine evaluates the assent ruleset (e.g., verifying that `:full` consensus has matching unanimous positive verdicts from all active seats) before allowing any merge gate transitions.
+* **Surface Constraints**: The engine checks the git diff and compares it against the node's `file-surface` in-memory. 
+
+If any inherent invariant is violated, the engine signals a `protocol-invariant-violation` condition directly, halting the campaign execution state-freeze immediately.
+
+#### Lisp-Based Verification DSL
+
+For project-specific gates, custom deposit checks, and workflow constraints, `librecode-meta` provides an embedded Lisp DSL to specify rules at campaign DAG boundaries:
+
+```lisp
+(defgate check-architect-deposit (node-id)
+  "Ensures the architect seat deposited a valid assessment before a plan merge."
+  (:target (format nil ".ledger/deposits/~a-architect.yaml" node-id))
+  (:verify (and (probe-file target)
+                (let ((data (parse-yaml-file target)))
+                  (string-equal (gethash "verdict" data) "approved"))))
+  (:on-failure (error 'missing-architect-approval :node-id node-id)))
+
+(defgate run-local-lint (node-id)
+  "Runs a local syntax/style check in the node's workspace."
+  (:worktree (get-node-worktree node-id))
+  (:execute "bun run lint")
+  (:on-failure (error 'lint-failure :node-id node-id :exit-code exit-code)))
+```
+
+#### User-Defined External Verification Hooks
+
+Developers can plug user-crafted checkers (e.g., custom Nickel contracts, git hooks, shell scripts, or static analysis tools) into the DAG node definition or configuration:
+
+* **Nickel Contract Integration**: Users can register Nickel contracts using the DSL's external command wrapper:
+  ```lisp
+  (defgate custom-nickel-contract (node-id contract-path)
+    (:execute "nickel" "export" "ledger.yaml" "--apply-contract" contract-path)
+    (:on-failure (error 'contract-violation :contract contract-path)))
+  ```
+* **Git Hook Delegation**: The Metaharness can delegate boundary verification to the project's existing git hooks (e.g., running `.git/hooks/pre-commit` inside the worktree workspace before merging).
+* **Execution Capturing**: The gate runner executes these commands via `uiop:launch-program`, captures stderr/stdout, parses exit codes, and wraps any command failure in a `gate-failure` Lisp condition, dropping the harness into the restart or REPL loops.
 
 ---
 
