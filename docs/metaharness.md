@@ -42,11 +42,11 @@ To support heterogeneous agent systems, the Metaharness decouples itself entirel
 (defgeneric harness-terminate (instance)
   (:documentation "Sends a termination signal to end the harness process gracefully."))
 
-(defgeneric harness-create-worktree (instance repository-path target-directory)
-  (:documentation "Requests the child harness's native Git repository service to create a detached worktree checkout at TARGET-DIRECTORY."))
+(defgeneric harness-prepare-workspace (harness-class repository-path target-directory)
+  (:documentation "Prepares the isolated git worktree and storage directories before a harness instance is spawned. Evaluated as a class-level/generic method before harness-spawn to avoid circular worktree dependencies (RES-02)."))
 
-(defgeneric harness-remove-worktree (instance repository-path target-directory &key force)
-  (:documentation "Requests the child harness's native Git repository service to remove the worktree checkout at TARGET-DIRECTORY."))
+(defgeneric harness-cleanup-workspace (harness-class repository-path target-directory &key force)
+  (:documentation "Cleans up the isolated workspace and worktree directory after execution completes."))
 ```
 
 ### Harness Class Hierarchy
@@ -60,14 +60,15 @@ Each supported backend is implemented as a subclass of `harness`:
    (status :initform :idle :accessor %harness-status)))
 
 (defclass harness-opencode (harness)
-  ((pane :initarg :pane :reader harness-pane))
-  (:documentation "OpenCode CLI wrapper communicating via tmux/terminal multiplexer."))
+  ((port :initarg :port :reader harness-port :initform 3000)
+   (pane :initarg :pane :reader harness-pane :initform nil :documentation "Optional tmux pane for developer visualization helper."))
+  (:documentation "OpenCode CLI adapter communicating strictly via OpenCode's native HTTP REST and SSE APIs (POST /session/:id/admit, GET /session/:id/events, and POST /session/:id/interrupt). Tmux is demoted to an optional local developer visualization helper (RES-03)."))
 
 (defclass harness-librecode (harness)
   ((thread :initarg :thread :reader harness-thread)
    (workspace-root :initarg :workspace-root :reader harness-workspace-root :type pathname))
   (:documentation "Self-hosting: a native librecode runner running in-process on a separate thread.
-   In-process threads must NEVER mutate the process-global current working directory (CWD) via chdir. 
+   In-process threads must NEVER mutate the process-global current working directory (CWD) via chdir (RES-01). 
    All file tools and operations must resolve paths relative to the dynamically bound `*workspace-root*` pathname.
    Subprocesses must be launched via `uiop:launch-program` using the `:directory` parameter explicitly."))
 
@@ -132,7 +133,10 @@ A Campaign represents a high-level task structured as a directed acyclic graph (
 The Metaharness coordinates the campaign using Kahn's topological sort to group nodes into parallelizable layers:
 
 1. **Partition**: For each layer, group nodes into a `parallel` set (nodes with disjoint `file_surface` lists and no serialization flag) and a `serial` set.
-2. **Dispatch**: Spawns an isolated git worktree checkout for each parallel node using the child harness's `harness-create-worktree` generic API, then spawns the corresponding `harness` instance mapped to that directory (located under `worktrees/<node-id>/` inside the campaign storage path).
+2. **Workspace Preparation & Dispatch**:
+   * First, prepare the isolated workspace/git worktree directories by calling the class-level `harness-prepare-workspace` generic method prior to spawning the harness instance (avoiding circular dependency loops where workspace functions depend on active instances) (RES-02).
+   * Once prepared, spawn the corresponding `harness` instance mapped to that directory (located under `worktrees/<node-id>/` inside the campaign storage path).
+   * **CWD Safety Invariant**: To ensure process-global CWD safety (RES-01), the scheduling loop and parent Lisp engine are strictly prohibited from mutating the process-global CWD via `chdir`. All operations, git commands, and launched subprocesses must explicitly specify their target directory (e.g., passing `:directory` to `uiop:launch-program` or executing Git commands with absolute or explicit relative path arguments).
 3. **Await**: Monitor event streams from each active harness until they freeze or terminate.
 4. **Reconcile**: Run validation gates (linters, tests, diff authorization) on the landed work. If verification succeeds, merge the node's branch into the campaign's `shared_branch`. Otherwise, flag the node for `rework` and generate a corrective boundary.
 5. **Layer Boundary Check**: After all nodes in a layer land, perform a cumulative-diff gate (such as checking for orphaned references across the cut-set) before moving to the next layer.
@@ -252,7 +256,8 @@ For headless operation, the Metaharness does not require the developer to sit at
 ### Messaging Adapters
 
 * **Standard Console (Local TUI/REPL)**: The default channel for local interactive execution, prompting the developer in the active Lisp listener or terminal window.
-* **Signal Protocol (Signal Messenger)**: A headless channel that communicates with the developer's mobile device by wrapping a local Signal daemon (`signal-cli`). The Metaharness packages gate failures or permission requests into secure messages, transmits them, blocks execution, and resumes once the user sends a response string matching one of the options.
-* **Webhook/Matrix**: General purpose HTTP POST adapters to plug the Metaharness into Matrix rooms or chat integrations.
+* **Signal Protocol (Signal Messenger) [Optional]**: An optional, headless channel that communicates with the developer's mobile device by wrapping a local Signal daemon (`signal-cli`). The Metaharness packages gate failures or permission requests into secure messages, transmits them, blocks execution, and resumes once the user sends a response string matching one of the options. If unavailable or disabled, the system automatically falls back to local console/TUI input (RES-11).
+* **Webhook/Matrix [Optional]**: Optional general purpose HTTP POST adapters to plug the Metaharness into Matrix rooms or chat integrations.
+
 
 This decoupled layer ensures the campaign runs cheaply and autonomously in the background, but remains bound to the developer's final gate authority.
