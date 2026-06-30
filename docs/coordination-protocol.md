@@ -110,11 +110,19 @@ At location context construction, `librecode` builds the configuration by walkin
 
 ### Parsing JSONC (JSON with Comments)
 
-Since Common Lisp's `com.inuoe.jzon` parses strict RFC 8259 JSON, `librecode` implements a lightweight preprocessor to load JSONC files:
-* Strip all single-line comments (`// ...`).
-* Strip all multi-line comments (`/* ... */`).
-* Strip trailing commas before closing braces `}` or brackets `]`.
-* Pass the cleaned string to `jzon:parse`.
+Since Common Lisp's `com.inuoe.jzon` parses strict RFC 8259 JSON, `librecode` preprocesses JSONC files before parsing. To prevent stripping comment symbols (like `//` or `/*`) inside string literals (e.g. `"https://example.com"`), the preprocessor implements a character-by-character lexical state machine:
+
+* **States**: `:normal`, `:string-literal`, `:escape-char`, `:slash-seen`, `:single-line-comment`, `:multi-line-comment`, `:star-seen`.
+* **Transitions**:
+  * In `:normal`: encountering `"` transitions to `:string-literal`. Encountering `/` transitions to `:slash-seen`.
+  * In `:string-literal`: encountering `\` transitions to `:escape-char`. Encountering `"` returns to `:normal`.
+  * In `:escape-char`: returns unconditionally to `:string-literal` on next character.
+  * In `:slash-seen`: encountering `/` transitions to `:single-line-comment` (discarding both slashes). Encountering `*` transitions to `:multi-line-comment` (discarding both characters). Otherwise, emits `/` and returns to `:normal`.
+  * In `:single-line-comment`: discards all characters until a newline `\n` is encountered, then returns to `:normal` and emits the newline.
+  * In `:multi-line-comment`: discards all characters until `*` is encountered, transitioning to `:star-seen`.
+  * In `:star-seen`: encountering `/` returns to `:normal`. Otherwise, returns to `:multi-line-comment`.
+* **Comma cleanup**: The preprocessor also strips trailing commas occurring directly before closing brackets `]` or braces `}`.
+* The preprocessed string is then safely passed to `jzon:parse`.
 
 ### Merge Semantics
 
@@ -140,6 +148,33 @@ The runner initiates a lightweight multi-threaded HTTP server (powered by `Clack
 
 All endpoints validate authorization parameters and route requests to the matching session mailbox or key lock (R1, R6).
 
+#### SSE Chunk Line Buffer
+
+Because streaming data via `dexador:post` with `:want-stream t` returns arbitrary character fragments, the client and server must implement robust chunk buffering:
+* The reader loop reads bytes or characters from the socket stream into a local dynamic buffer.
+* It searches for newline sequence split boundaries (`\n` or `\r\n`).
+* If found, the pre-split substring is combined with any previously buffered fragment and pushed to the parser. The remaining substring is retained in the buffer.
+* The parser only processes complete lines starting with `data: `, ignoring empty lines or keep-alive comment lines (lines starting with `:`).
+
+#### P2P Mailbox Lookup Registry
+
+To resolve peer-to-peer mailboxes for concurrent agent threads (R6) without database lookups:
+* **Registry Structure**: The package `librecode-runner.protocol` defines a global, thread-safe hash table `*agent-mailboxes*` protected by a recursive bordeaux lock.
+* **Registration**: Upon thread instantiation, every CLOS agent registers its `id` and local `sb-concurrency:mailbox` object:
+  ```lisp
+  (bt:with-lock-held (*agent-mailboxes-lock*)
+    (setf (gethash (agent-id agent) *agent-mailboxes*) mailbox))
+  ```
+* **Routing**: Sibling agents look up target mailboxes natively:
+  ```lisp
+  (let ((target-mailbox (bt:with-lock-held (*agent-mailboxes-lock*)
+                          (gethash target-id *agent-mailboxes*))))
+    (if target-mailbox
+        (sb-concurrency:send-message target-mailbox message)
+        (error 'mailbox-not-found-error :target-id target-id)))
+  ```
+* **Cleanup**: On thread termination or session teardown, the entry is explicitly removed from `*agent-mailboxes*` to prevent memory leaks.
+
 ### Interactive REPL Boundary
 
 In interactive execution mode, `librecode-runner` provides a REPL listener:
@@ -160,19 +195,19 @@ In interactive execution mode, `librecode-runner` provides a REPL listener:
   :description "The Common Lisp reimplementation of OpenCode's single-agent harness."
   :version "0.1.0"
   :author "nrd"
-  :depends-on ("bordeaux-threads" "cl-sqlite" "com.inuoe.jzon" "dexador" "uiop")
+  :depends-on ("bordeaux-threads" "cl-sqlite" "com.inuoe.jzon" "dexador" "uiop" "clack" "hunchentoot")
   :pathname "src/"
   :serial t
   :components ((:file "packages")
                (:file "conditions")
-               (:file "protocol")
-               (:file "event-store")
-               (:file "agent")
-               (:file "session")
-               (:file "runner")
-               (:file "compaction")
-               (:file "tool")
-               (:file "audit")))
+               (:file "audit")         ; Loaded early to allow immediate event logging
+               (:file "protocol")      ; Mailbox and run coordinator
+               (:file "event-store")   ; SQLite storage and EventV2 projections
+               (:file "agent")         ; CLOS agent class definitions
+               (:file "session")       ; Input queues, steering, and turn admission
+               (:file "runner")        ; LLM dexador streaming and SSE parsing
+               (:file "compaction")    ; Budget compilation and token management
+               (:file "tool")))        ; Materialization and execution
 
 (defsystem "librecode-meta"
   :description "The parent orchestrator for multi-agent campaigns (Metaharness)."
@@ -199,4 +234,58 @@ To prevent dependency cycles and maintain isolation:
 * **`librecode-runner.*`**: Standard package naming partition for harness layers (e.g. `librecode-runner.event-store` exports `commit-event` and `apply-projectors` but has no knowledge of campaigns or tmux multiplexers).
 * **`librecode-meta.*`**: Package partition for Metaharness layers (e.g. `librecode-meta.campaign` imports the abstract `harness` protocol and schedules DAG nodes).
 * All internal variables and helper functions remain unexported, forcing all components to interact exclusively through their public API functions.
+
+---
+
+## 8. SQLite DDL Schemas
+
+`librecode-runner` manages its session stores, admitted inputs, and permission history using SQLite. The following schemas define the database structures:
+
+### Event Log Table (`event_log`)
+
+Stores event-sourced EventV2 records sequentially. Atomic updates project logs onto session states inside a single transaction.
+
+```sql
+CREATE TABLE IF NOT EXISTS event_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    payload TEXT NOT NULL,          -- JSON serialized EventV2 payload
+    timestamp INTEGER NOT NULL,     -- Unix epoch in milliseconds
+    UNIQUE(session_id, sequence)
+);
+CREATE INDEX IF NOT EXISTS idx_event_log_session ON event_log(session_id);
+```
+
+### Session Input Table (`session_input`)
+
+Maintains the durable inbox for two-phase input admission (`admit` vs `promote` phases).
+
+```sql
+CREATE TABLE IF NOT EXISTS session_input (
+    id TEXT PRIMARY KEY,            -- UUID or message identity
+    session_id TEXT NOT NULL,
+    prompt_text TEXT NOT NULL,
+    delivery_mode TEXT NOT NULL,    -- 'STEER' or 'QUEUE'
+    status TEXT NOT NULL,           -- 'PENDING', 'PROMOTED', 'EXPIRED'
+    timestamp INTEGER NOT NULL      -- Unix epoch in milliseconds
+);
+CREATE INDEX IF NOT EXISTS idx_session_input_pending ON session_input(session_id, status);
+```
+
+### Permission History Table (`permission_saved`)
+
+Caches "always allow" choices made during interactive execution gates.
+
+```sql
+CREATE TABLE IF NOT EXISTS permission_saved (
+    project_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    resource TEXT NOT NULL,
+    effect TEXT NOT NULL,           -- 'ALLOW', 'DENY'
+    timestamp INTEGER NOT NULL,     -- Unix epoch in milliseconds
+    PRIMARY KEY (project_id, action, resource)
+);
+```
 

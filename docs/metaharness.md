@@ -48,8 +48,12 @@ Each supported backend is implemented as a subclass of `harness`:
   (:documentation "OpenCode CLI wrapper communicating via tmux/terminal multiplexer."))
 
 (defclass harness-librecode (harness)
-  ((thread :initarg :thread :reader harness-thread))
-  (:documentation "Self-hosting: a native librecode runner running in-process on a separate thread."))
+  ((thread :initarg :thread :reader harness-thread)
+   (workspace-root :initarg :workspace-root :reader harness-workspace-root :type pathname))
+  (:documentation "Self-hosting: a native librecode runner running in-process on a separate thread.
+   In-process threads must NEVER mutate the process-global current working directory (CWD) via chdir. 
+   All file tools and operations must resolve paths relative to the dynamically bound `*workspace-root*` pathname.
+   Subprocesses must be launched via `uiop:launch-program` using the `:directory` parameter explicitly."))
 
 (defclass harness-claude-code (harness)
   ((pane :initarg :pane :reader harness-pane))
@@ -137,10 +141,11 @@ The Council model governs high-stakes architectural transitions (e.g., DAG struc
 
 ### Decentralized Deliberation Protocol
 
-To maintain decorrelation and avoid group-think:
-1. **Independent-First Deposits**: Each seat (running in a separate, isolated harness context) writes its assessment and commits it as a structured YAML footprint (a deposit) under the `.ledger/` directory *before* reading any sibling's deposit.
-2. **Recorded Decisions**: Once all seat deposits are collected, the Metaharness Composer parses the deposits, verifies consensus requirements based on the decision type, and appends a structured entry to the decision ledger.
-3. **Assent Validation**: Merging or closing is gated by the assent ruleset:
+To maintain decorrelation and avoid group-think across isolated workspaces:
+1. **Independent-First Deposits**: Each seat (running in a separate, isolated child harness worktree) writes its assessment and commits it as a structured **JSON or JSONC** document (e.g. `.ledger/deposits/<seat-id>.json`) *before* reading any sibling's deposit. Using JSON/JSONC allows `librecode` to parse deposits natively using the `com.inuoe.jzon` library, avoiding external C-bindings and libraries like `libyaml`.
+2. **Broker Transport**: Since workspaces are physically isolated on disk under `.scratch/worktrees/<node-id>/`, seats cannot read each other's local deposits. The Metaharness Composer acts as a transport broker: as each child harness completes its task, the Metaharness copies its deposit file from the worktree directory into the parent campaign's central `.ledger/deposits/` directory.
+3. **Recorded Decisions**: Once all seat deposits are collected centrally, the Metaharness Composer parses the files, verifies consensus requirements based on the decision type, and appends a structured entry to the parent campaign decision ledger (`.ledger/decision-log.json`).
+4. **Assent Validation**: Merging or closing is gated by the assent ruleset:
    * `:single` — Owner assent is sufficient for routine forward progress.
    * `:subset` — Quorum threshold required for qualitative judgments.
    * `:full` — Unanimous machine consensus (Composer, Architect, Maintainer, Auditor) required.
@@ -202,6 +207,13 @@ To keep multi-agent campaigns moving forward autonomously while preserving safet
 * **Progress Assessment**: The coordinator loop wakes periodically (e.g., when a child harness lands its work, hits a boundary, or triggers a surface collision) to evaluate progress. It analyzes the SQLite event store and the S-expression audit trail, generating prompt updates to steer the active harnesses.
 * **Failure Analysis & Realignment**: If a child harness fails a validation gate, the parent coordinator uses the LLM to inspect compilation, test, or linter stderr traces, formulates a corrective design revision, and updates the child's target boundary for dispatching rework.
 * **Blocking Determinations**: The loop distinguishes between autonomous progress and non-negotiable checks (e.g., design-rights conflicts, missing third-party dependencies, or non-converging review cycles). If a block is encountered, the coordinator halts the campaign and delegates the decision to the human seam.
+
+### Campaign State Persistence
+
+To recover from supervisor process crashes or system reboots during long-running campaigns:
+* **S-Expression Journal**: The Metaharness persists campaign DAG structures, node statuses, isolated worktree bindings, and current execution layer states as a serialized S-expression journal (`.ledger/campaign-journal.lisp-expr`) under the master project's root directory.
+* **Append-Only Operations**: Any scheduling state transition (such as dispatching a node or landing a branch) writes a transition record to the journal file opened in `:append` mode. The write calls `force-output` immediately to ensure the transaction is written to disk before the coordinator issues commands to child processes.
+* **State Reconstitution**: Upon process restart, the Metaharness reads the journal file, replays the transitions sequentially to reconstruct the DAG state in-memory, checks the status of active tmux panes or worktree branches, and resumes the campaign execution loop at the exact recovery boundary.
 
 ---
 
