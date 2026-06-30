@@ -42,24 +42,22 @@ When a condition is signaled, the system offers targeted restarts:
 
 Because tool execution runs on separate threads and independent child harnesses execute in external processes, conditions must be propagated across dynamic extent boundaries.
 
-### In-Process: The Mailbox-Relay Pattern
+### In-Process: Stack-Preserving Debugging
 
-Within `librecode-runner` (the single-session harness), tool execution runs in separate background worker threads. To transport conditions back to the main runner thread:
-1. **Intercept**: The worker thread wraps its execution block in a `handler-case` or `handler-bind` that catches any unhandled `serious-condition`.
-2. **Package**: The condition is packaged into a Lisp structure containing diagnostic metadata and the condition type.
-3. **Queue**: The worker thread mails the package to the session coordinator's thread-safe mailbox:
-   ```lisp
-   (sb-concurrency:send-message coordinator-mailbox message)
-   ```
-4. **Re-Signal**: The main coordinator thread reads the mailbox at its turn boundary. If an error package is dequeued, it re-signals the condition in its own thread dynamic extent, invoking the active restarts (`drop-to-repl-intervention`, `retry-with-backup-provider`).
+Within `librecode-runner` (the single-session harness), tool execution runs in separate background worker threads. To transport conditions back to the main runner thread without unwinding:
+1. **Intercept**: The worker thread wraps its execution block in a `handler-bind` that intercepts any unhandled `serious-condition`.
+2. **Freeze & Mail**: Rather than unwinding the stack, the handler packages the condition diagnostic metadata and writes a message to the coordinator's mailbox. It then freezes the worker thread, blocking it via a condition variable (`bt:condition-wait` on a thread-local CV). This preserves the execution stack frame at the exact error site.
+3. **Inspect**: The coordinator thread reads the mailbox at its turn boundary. Finding the error message, it halts execution and alerts the developer. The developer connects via SLIME/Sly, inspects the active frozen stack frames, hot-patches definitions if needed, and triggers a restart directly at the origin of the error (RES-06).
 
 ### Cross-Process: Subprocess Event/Exit Mapping
 
-Within `librecode-meta` (the Metaharness), child harnesses are separate OS processes running inside tmux panes. Lisp condition structures cannot cross this boundary. Instead:
-1. **Observation**: The Metaharness monitors the child process's stdout/stderr event stream and OS exit codes.
-2. **Detection**: If the child process exits with a non-zero code or writes a fatal crash/error payload to the event database stream, the Metaharness loop detects the event.
-3. **Signal**: The Metaharness signals a `harness-failure` condition within the parent orchestrator's thread.
-4. **Restart**: This invokes parent-level restarts, allowing the campaign coordinator to trigger a rework loop (`realign-and-dispatch-rework`) or notify the developer via the Signal messaging channel.
+Dynamic Common Lisp restarts cannot cross OS process or language runtime boundaries (e.g. into TS `harness-opencode` or a separate process). Restarts are strictly bounded to the in-process execution of `librecode-runner` and the Metaharness supervisor (RES-04).
+
+For out-of-process runners:
+1. **Observation**: The Metaharness monitors the child process's HTTP/SSE event stream, stdout/stderr, and OS exit codes.
+2. **Detection**: If the child process exits with a non-zero code or writes a fatal crash/error payload to the event stream, the Metaharness loop detects the error.
+3. **Signal**: The Metaharness catches the failure event and signals a `harness-failure` condition within the parent orchestrator's thread.
+4. **Restart**: This invokes parent-level restarts, allowing the campaign coordinator to trigger a rework loop (`realign-and-dispatch-rework`) or notify the developer via the optional notification channel.
 
 ---
 
