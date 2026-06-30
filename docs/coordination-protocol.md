@@ -203,18 +203,20 @@ In interactive execution mode, `librecode-runner` provides a REPL listener:
   :version "0.1.0"
   :author "nrd"
   :depends-on ("bordeaux-threads" "cl-sqlite" "com.inuoe.jzon" "dexador" "uiop" "clack" "hunchentoot")
-  :pathname "src/runner/"
+  :pathname "src/"
   :serial t
   :components ((:file "packages")
-               (:file "conditions")
-               (:file "audit")         ; Loaded early to allow immediate event logging
-               (:file "protocol")      ; Mailbox and run coordinator
-               (:file "event-store")   ; SQLite storage and EventV2 projections
-               (:file "agent")         ; CLOS agent class definitions
-               (:file "session")       ; Input queues, steering, and turn admission
-               (:file "runner")        ; LLM dexador streaming and SSE parsing
-               (:file "compaction")    ; Budget compilation and token management
-               (:file "tool")))        ; Materialization and execution
+               (:module "runner"
+                :pathname "runner"
+                :components ((:file "conditions")
+                             (:file "audit")
+                             (:file "protocol")
+                             (:file "event-store")
+                             (:file "agent")
+                             (:file "session")
+                             (:file "runner")
+                             (:file "compaction")
+                             (:file "tool")))))        ; Materialization and execution
 
 (defsystem "librecode-meta"
   :description "The parent orchestrator for multi-agent campaigns (Metaharness)."
