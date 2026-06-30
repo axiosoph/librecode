@@ -1,10 +1,12 @@
-# librecode Metaharness Architecture
+# librecode Metaharness (librecode-meta) Architecture
 
-The Metaharness is the parent orchestrator of `librecode`. It coordinates multi-agent campaigns by spawning, monitoring, and communicating with multiple child harness instances (heterogeneous backends such as OpenCode, Claude Code, or native `librecode` sessions) across physical process boundaries.
+The Metaharness (`librecode-meta`) is the parent supervisor that coordinates multi-agent campaigns across physical process boundaries, establishing a **"Team of Teams"** topology. 
+
+Rather than executing code or communicating with LLMs directly, the Metaharness schedules parallelized tasks, executes verification gates on committed files, and runs the decision council. It delegates actual task execution to independent child harness processes (such as `librecode-runner`, `harness-opencode`, or `harness-claude-code`). Each child harness operates within its own isolated git worktree workspace and manages its own local agent composition and sub-delegation loops.
 
 ## 1. Abstract Harness Interface
 
-To support heterogeneous agent systems, the Metaharness decouples itself from any specific runner implementation. Every child agent process is managed through a uniform CLOS protocol.
+To support heterogeneous agent systems, the Metaharness decouples itself entirely from any specific runner implementation. Every child agent process is managed through a uniform CLOS protocol.
 
 ### Harness Generic Functions
 

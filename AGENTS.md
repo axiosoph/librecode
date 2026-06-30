@@ -4,24 +4,15 @@
 
 ## Goal
 
-Reimplement the core OpenCode multi-agent coordination protocol as a
-high-performance Common Lisp (SBCL) system that simultaneously serves as a
-**Metaharness** — a parent orchestrator process capable of spawning, monitoring,
-and supervising multiple child harness instances inside a multiplexed terminal
-session.
+Reimplement the core OpenCode multi-agent coordination protocol as a high-performance Common Lisp (SBCL) system (**librecode-runner**), and extend this architecture with a decoupled cross-harness parent orchestrator (**librecode-meta** or the **Metaharness**) capable of supervising multiple child agent harnesses in a "Team of Teams" topology.
 
-The system translates OpenCode's TypeScript/Effect coordination primitives into
-native CL mechanical equivalents, replacing the V8 runtime with SBCL threading,
-the Effect algebraic effect system with dynamic binding and condition/restart, and
-the central async bus with thread-safe non-blocking mailboxes.
+The project contains two independent but co-located subsystems:
+1. **`librecode-runner` (The Harness)**: The CL native reimplementation of OpenCode's single-agent execution harness (session loops, EventV2 state projection, local tools, dynamic permissions, LLM calls).
+2. **`librecode-meta` (The Metaharness)**: The parent coordinator that executes multi-agent campaigns by scheduling DAG tasks, convening councils, and dispatching work across physical process boundaries to heterogeneous child harnesses (e.g. `librecode-runner`, `harness-opencode`, `harness-claude-code`).
 
 ## Alignment to Parent
 
-librecode is a **reimplementation** of the OpenCode codebase in Common Lisp. It
-ports the coordination protocol, session execution model, event sourcing, agent
-hierarchy, and runner loop into native CL equivalents, and extends the result
-with metaharness supervisor capabilities that don't exist in the original
-TypeScript implementation.
+`librecode` is a **reimplementation and extension** of OpenCode. It ports coordination and execution primitives to native CL equivalents (replacing JS/Effect with dynamic binding, condition/restart, SBCL threads, and mailboxes), and introduces the Metaharness layer to coordinate across disparate agent harnesses.
 
 ### Ported from OpenCode (TypeScript source is the reference)
 
