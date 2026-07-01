@@ -63,17 +63,20 @@ every session a **global coherent view** into the others' ongoing work. A **hard
 blocker** — "node X cannot proceed until Alice and Bob both sign off" — is a delegation edge with
 required-assent `{alice, bob}`, enforced like any deterministic gate rather than tracked
 out-of-band. The metaharness sits *above* any single harness precisely so these stakeholders need
-not standardize on one tool.
+not standardize on one tool. **[Status: the machine-enforced assent/delegation engine —
+`convene-council`, `validate-assent`, the human-gated sign-off blockers — is design-pending →
+roadmap I; `src/meta/council.lisp` is currently a stub.]**
 
 **Convening trigger (the dual-trigger, §3 of foundations' recurring pattern):** a
 **deterministic signal** (a delegation-table decision-type · gate-non-convergence after
 N attempts · divergence-from-plan) **+ a model-articulated reason** (why *this* council,
 *what* question) — never haphazard (seats are expensive), never missed.
 
-**Decorrelation caveat:** the *ideal* seat set is **cross-model** (disparate θ). Today's
-available fallback is **lens-decorrelated personas** (same-model, different lens) — the
-degraded form; cross-model seats are **[design-pending → roadmap E]**. Every council
-record states which it used.
+**Decorrelation caveat:** real decorrelation is **cross-model** (disparate θ). Today's
+available fallback is **lens-decorrelated personas** (same-model, different lens) — which
+provide diverse *surfacing* but **not** error-decorrelation: they share the model's `θ`-floor
+(foundations §1), a difference of kind, not degree. Cross-model seats are **[design-pending →
+roadmap E]**. Every council record states which it used.
 
 ## 3 · Progress, regression, and transitions
 
@@ -92,6 +95,9 @@ grows; the working plan can move backward without that being failure.
 Selecting a regression transition is **not fully deterministic** — a deterministic
 signal detects it; a model (and, at stakes, the human) judges *where* the walk left the
 rails and *which* transition applies.
+
+`accept` / `rework` / `skip` / `escalate` are built; **`reset-to-checkpoint` and
+`cut-clean-and-decorrelate` are design-pending [→ roadmap I].**
 
 ## 4 · The actuator (adaptive attention)  [impl: design-pending → roadmap D]
 
@@ -154,6 +160,10 @@ spot-check), and confident-fast-agreement on novel work routes **to the human**.
 
 ## 7 · Design-pending (the open mechanics)
 
+- **The council assent engine** — machine-enforced delegation/sign-off (`convene-council`,
+  `validate-assent`, human-gated blockers); `src/meta/council.lisp` is a stub. **[→ roadmap I.]**
+- **The regression transitions** `reset-to-checkpoint` and `cut-clean-and-decorrelate` (§3).
+  **[→ roadmap I.]**
 - **Memory ↔ context** — the LTM (git-backed) / context-map consolidation, accuracy
   verification, retrieval structure. **[→ roadmap C; needs its own dialectic.]**
 - **The living loop** — sensor (§6) + actuator (§4) implementation. **[→ roadmap B/D.]**
@@ -169,5 +179,5 @@ spot-check), and confident-fast-agreement on novel work routes **to the human**.
 ## Doc conventions (single source of truth)
 A fact lives in one place: invariant *status* is owned by `AGENTS.md`; the transition
 ladder by §3 here; principles by `foundations.md`; the plan by `docs/roadmap.md`.
-Everything else references it. Roadmap cross-references use the workstream's stable
-letter-ID (A–G); those IDs are not renumbered.
+Everything else references it. Roadmap cross-references use each workstream's stable
+letter-ID; those IDs are never renumbered.

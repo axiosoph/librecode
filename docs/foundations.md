@@ -46,30 +46,45 @@ captured by that harness, exactly as one inside a vendor is captured by that ven
 ### Axiom — two stochastic walkers, with two asymmetries
 A **machine** (LLM) is a stochastic walker **bounded** to a model `θ` (its weights, from
 training + fine-tuning + safeguards): it samples only within `θ`'s reachable region, and
-is **abundant** in throughput. A **human** is a stochastic walker **unbounded** by any
-known `θ`, but **scarce** in throughput (attention is the limiting resource). Both
-asymmetries are load-bearing: unbounded reach drives §3, scarce throughput drives §6–7.
+is **abundant** in throughput. A **human** is a stochastic walker on a **different
+substrate whose bound cannot be written down** — not provably unbounded, but not
+characterized by any known `θ`, and correlated with the machines only weakly and
+indirectly — and is **scarce** in throughput (attention is the limiting resource). Two
+asymmetries are load-bearing and distinct: the human is a *different, un-formalizable
+substrate* (drives the decorrelation role, §3) and is *scarce* (drives the economy of
+§6–7). The claim is difference and independence, not superiority or unbounded reach; that
+the human is the better *judge* of coherence is argued in §6, not assumed here.
 
 ### 1 · Why disparate models — the decorrelation floor
-Ensemble error-correction rests on a decomposition identity, not an intuition. For
-squared error, an ensemble's error equals the average member error minus a non-negative
-**diversity** (ambiguity) term (Krogh & Vedelsby 1995); equivalently, it falls only as the
-inter-member error **covariance** falls (Ueda & Nakano 1996). Identical members contribute
-zero diversity and no gain. A model's systematic errors — gaps in training, learned biases,
-the outputs its tuning refuses — are properties of `θ`, invariant across how it is
-prompted; two promptings of one `θ` therefore have errors correlated *through* `θ`, a floor
-no reprompting crosses. Disparate `θ` have different biases that partially cancel. This is
-the operating principle of random forests, where decorrelation reduces variance down to a
-floor set by the residual correlation between trees (Breiman 2001).
+Separate what is provable from what is not. For the *average* of real-valued members under
+squared error, the ensemble's error equals the mean member error minus a non-negative
+**diversity** term (Krogh & Vedelsby 1995), and falls only as the inter-member error
+**covariance** falls (Ueda & Nakano 1996); identical members contribute zero diversity.
+That much is an identity — but it signs the *averaged ensemble against its own mean member*,
+and the quantity it reduces is **variance**, not **bias** (likewise the random-forest floor,
+Breiman 2001, where decorrelation cuts variance down to the residual inter-tree correlation).
 
-Two honest bounds. First, a single model's reach is not one prompt but its whole
-conditioning envelope `⋃_c` (in-context learning, chain-of-thought, retrieval, tools), so
-disparate models buy less than a naive single-prompt comparison suggests; the claim is that
-they buy something *material* on the model-bias term, which is empirical for a given domain,
-not entailed — and cross-model error correlation appears to *grow* with capability (Goel et
-al. 2025), so the margin is not guaranteed to widen. Second, "reachable region" means a
-high-probability set, not literal support; the union of regions `⋃_θ` (across all available
-models) is a useful informal model, not set algebra.
+librecode's claim rests one level deeper, on `θ` itself. A model's systematic errors —
+training gaps, learned biases, the outputs its tuning refuses — are properties of `θ`,
+invariant across how it is prompted: two promptings of one `θ` have errors correlated
+*through* `θ`, a floor no reprompting crosses. Disparate `θ` have *different* floors, so
+where one is blind another may see. This is the decorrelation the architecture is built on,
+and it is why members must differ at the **weight level** — not in prompt or persona. The
+ensemble identities earn their keep for exactly one thing — diversity is the *only* source
+of gain, so identical members buy nothing (Wood, Mu, Reid & Brown 2023 carry this across
+loss functions) — and we lean on them for no more: the composition is not an average but
+role-differentiated production under gates and a human (§3, §7). By *how much* disparate `θ`
+beat the best single model is therefore not a theorem but the empirical claim this project
+exists to test — expected on principle (the `θ`-floor is real and its blind spots differ),
+and measured rather than asserted.
+
+The picture this licenses is a **union of reach**, `⋃_θ`: the combined region disparate
+models cover, made coherent by the governance layer — more than any single `θ` commands
+alone. (A model's own conditioning envelope `⋃_c` — in-context learning, chain-of-thought,
+retrieval, tools — widens *its* reach but leaves *its* `θ`-level blind spots intact, which
+is exactly why covering those needs a different `θ`, not more prompting.) That the composed
+whole exceeds the sum of its parts is the thesis; §3 gives the honest reason it is
+bounded — shared `θ`-priors — and where the human enters.
 
 ### 2 · Why the composing layer must be *libre* — capture-resistance
 One might expect freedom to be what makes the disparate-model union reachable. It is not:
@@ -82,14 +97,18 @@ the next lock-in: it captures the coordination layer everyone comes to depend on
 reliance on one such layer is itself a correlated-failure and welfare risk (Kleinberg &
 Raghavan 2021; Bommasani et al. 2021). The layer that *governs* disparate production (§4–5)
 into coherent, verifiable output, and that holds the community and its people (§4), must
-itself be **un-capturable** — which is what libre licensing provides. Freedom is the
-enabling condition of a **trustable, capture-resistant governance layer**, not of the
-composition mathematics. (Our scope rule — proprietary models allowed as arms-length members
-— is consistent only under this reading.)
+itself be **un-capturable**. A libre license is *necessary* for that but not sufficient —
+open-source-yet-captured is a familiar outcome (single-steward lock-in, open-core). What
+secures it is the license **plus** governance no one can quietly enclose: the collective
+right to fork, re-steward, and revise the rules (§5). Freedom is the enabling condition of a
+**trustable, capture-resistant governance layer**, not of the composition mathematics. (Our
+scope rule — proprietary models allowed as arms-length members — is consistent only under
+this reading.)
 
 ### 3 · The human/machine division — and the correlated-bias floor
-Being unbounded, the human reaches outside any model's region (genuine novelty), is a
-different-substrate check, and is the best judge of coherence and meaning. So the **human
+As a different substrate, the human's failures are not correlated *through* any `θ`: it is
+the natural check on the machine floor, the reach into genuine novelty (work outside `⋃_θ`),
+and — argued in §6, not assumed — the better judge of coherence and meaning. So the **human
 operates ON the basin** (the basin of attraction — the region of outcomes a walk settles
 into: sets it, moves it, overrides, judges), and the **machine walks WITHIN it**. Precisely:
 - **No perfect judge.** The human errs too — the justification for measurement (§6).
@@ -99,26 +118,47 @@ into: sets it, moves it, overrides, judges), and the **machine walks WITHIN it**
   underspecified, and the machine's failure mode is *acting on insufficient information* →
   drift. The IBC converts underspecified intent into a *sufficient boundary* a raw agent
   executes without drift.
-- **The second, higher floor.** Disparate `θ` share training corpora, architectures, and
-  tuning conventions, so their errors are *positively correlated*: they can confidently
-  **agree and be jointly wrong**, and this shared error grows with capability (Goel et al.
-  2025). Failures transfer across vendors (Zou et al. 2023), and a model judging others
-  favors its own kind (Panickssery et al. 2024). Disparate models therefore do **not fully**
-  break the floor; the only genuinely different substrate is the human — and a *single*
-  human is itself one correlated basin, so governance is **plural-human** (multiple stewards
-  are the human-side decorrelation), and novel or high-stakes work stays in the human loop
-  even on ensemble agreement. This directly constrains §6.
+- **The second floor — why oversight cannot be model-on-model.** Disparate `θ` share
+  training corpora, architectures, and tuning conventions, so their errors are *positively
+  correlated*: they can confidently **agree and be jointly wrong**. This floor is not
+  hypothetical and it is *widening*: measuring error overlap across 39 models on identical
+  tasks, Goel et al. (2025) find that mistakes grow **more** similar as capability rises,
+  and that a model judging others favors models similar to itself (also Panickssery et al.
+  2024) — a direct result *against* model-on-model oversight; failures also transfer across
+  vendors (Zou et al. 2023). Note the regime those results measure: models answering the
+  **same** task and grading **the same** answers — homogeneous voting. librecode's response
+  is to *not* verify that way. It composes disparate `θ` in **differentiated roles**, under
+  **substrate-independent deterministic gates** and a **human**, because a shared blind spot
+  survives both reprompting *and* role assignment (if reviewer and author share the bias,
+  the review misses it). So more models cannot break the residual floor — the only genuinely
+  different substrate is the human. And the human basin is itself imperfectly independent: a
+  reviewer who reads the machine's output before judging inherits its framing (automation
+  bias), and stewards from one community share priors — the same correlation argument, run
+  honestly against ourselves. The mitigations are structural, not magical: **judge before
+  being shown the machine's answer** where it matters, and govern **plural** with
+  *deliberately unlike* stewards (diverse problem-solvers can outperform more-able
+  homogeneous ones — Hong & Page 2004). Novel or high-stakes work stays in the human loop
+  even on ensemble agreement. This deliberately spends the scarcest resource — human
+  attention — where it is decisive, which is the cost the economy of §6–7 manages and the
+  determinization ratchet shrinks as work moves from novel to routine.
 
 ### 4 · The coordination mechanics — why a deterministic bounding layer
-Uncoordinated stochastic walkers on a shared resource is a **defection-dominant
-equilibrium**: each, optimizing locally, has no incentive to preserve the shared good, so it
-is depleted — the free-rider result underlying the tragedy of the commons (Hardin 1968, as
-the game-theoretic null; Ostrom's program below shows the *inevitability* claim is false).
-The shared resource is **dual**: the **coherence of the artifact** (drift depletes it) and
-the **robustness of the commons and its people** (capture/exclusion deplete it).
+Coordination on a shared resource, under many uncoordinated walkers, degrades it — and the
+resource is genuinely **rivalrous**, which is what lets common-pool-resource theory apply:
+the scarce, subtractive good is the stewards' **attention and review capacity** (spent here,
+gone there) and the **robustness of the commons and its people** (capture and exclusion
+deplete it); the artifact's **coherence** is the derived good these protect, drained by
+drift. Two depletion modes, not one. Where the walkers are *rational human contributors*,
+the failure is **strategic**: each optimizing locally has no incentive to preserve the
+shared good — the free-rider result underlying the tragedy of the commons (Hardin 1968 as
+the game-theoretic null; Ostrom's program below shows its *inevitability* claim false).
+Where the walker is a *machine*, the failure is **not** strategic — an LLM gains nothing
+from incoherence — but **entropic**: open-loop generation drifts by default, depleting the
+same resource with no intent to. The layer must bound both.
 
-The fix is mechanism design: change the payoff so cooperation is stable — make defection
-**detectable**, **costly and bounded** (a graduated response that cannot propagate), and
+The fix is mechanism design: change the payoff so cooperation is stable (the logic of
+graduated reciprocity; Axelrod 1984) — make defection **detectable**, **costly and bounded**
+(a graduated response that cannot propagate), and
 **individually irrational** (contribution proportional to benefit), and make the game
 **decomposable**. Realized as a deterministic bounding layer whose state is an **append-only,
 immutable, replayable statespace** — an established coordination-friendly substrate (Helland
@@ -135,20 +175,21 @@ The bounding layer reifies the §4 mechanisms as **machine-enforced state**, com
 the disparate-`θ` production of §1–3: *governance ⊕ decorrelated production*; neither alone
 is the layer. That these mechanisms durably stabilize a real commons is an empirical result:
 Ostrom's (1990) eight design principles for long-enduring common-pool-resource institutions,
-validated across a 91-study meta-analysis (Cox et al. 2010) and extended to polycentric,
-nested governance (Ostrom 2010). We cite this as *validation of the mechanism*; the argument
-is the mechanism (§4), not the name.
+empirically supported across a 91-study meta-analysis (Cox et al. 2010 — which also proposes
+refining three of the principles) and extended to polycentric, nested governance (Ostrom
+2010). We cite this as *validation of the mechanism*; the argument is the mechanism (§4), not
+the name. (What is built versus designed is tracked in `AGENTS.md` and the roadmap, not here.)
 
-| Coordination mechanism (§4) | Reified as | Ostrom instance | Status |
-|---|---|---|---|
-| Detectable boundaries | IBC + `file_surface`; authority gate | clear boundaries | built |
-| Costly, bounded defection | recovery ladder | graduated sanctions | built |
-| Detection | gates + auditor + maintainer + hooks | monitoring | built/partial |
-| Decomposition | goal-nesting; alignment-to-parent | nested/polycentric | built |
-| Rules fit the game | DAG (directed-acyclic work graph) amendment; stewards revise the IBC | collective-choice | partial |
-| Contain escalation | delegation table; decorrelated review | conflict-resolution | partial |
-| Cost ∝ benefit | ceremony ∝ task; gate strength ∝ drift-risk | congruence | partial |
-| Un-capturable | freedom; runner stands alone; no lock-in (§2) | right to organize | stance |
+| Coordination mechanism (§4) | Reified as | Ostrom instance |
+|---|---|---|
+| Detectable boundaries | IBC + `file_surface`; authority gate | clear boundaries |
+| Costly, bounded defection | recovery ladder | graduated sanctions |
+| Detection | gates + auditor + maintainer + hooks | monitoring |
+| Decomposition | goal-nesting; alignment-to-parent | nested/polycentric |
+| Rules fit the game | DAG (directed-acyclic work graph) amendment; stewards revise the IBC | collective-choice |
+| Contain escalation | delegation table; decorrelated review | conflict-resolution |
+| Cost ∝ benefit | ceremony ∝ task; gate strength ∝ drift-risk | congruence |
+| Un-capturable | freedom; runner stands alone; no lock-in (§2) | right to organize |
 
 **Scope is plural.** The governed unit is a **commons** (stewards + its many projects); the
 metaharness may govern more than one at once, under **plural-human** governance.
@@ -164,10 +205,10 @@ Bob both sign off" is not a special case; it is a delegation edge with required-
 `{alice, bob}` — a hard, human-gated dependency in the work graph, enforced like any deterministic
 gate rather than tracked out-of-band. Disparate isolated sessions (each stakeholder on their own
 harness) become a **single coherent view** into ongoing work through the shared append-only
-statespace (§4). The same composition shape recurs at two scales: decorrelated machine `θ` (§1)
-and heterogeneous human stakeholders — both composed under one governance layer. The metaharness
-is heterogeneity-tolerant *by necessity*, because homogeneity across real contributors cannot be
-enforced.
+statespace (§4). Machine and human contributors meet the same **governance substrate**, though
+for different reasons: disparate `θ` are composed to *exploit* their difference (§1);
+heterogeneous human stakeholders, because their difference cannot be *eliminated* — you cannot
+make real contributors homogeneous. One layer governs both.
 
 This coordination — managing the dependencies among many contributors' activities (Malone &
 Crowston 1994) — is not overhead incidental to the work; in large efforts it is frequently the
@@ -200,11 +241,11 @@ information theory (Kalai & Vempala 2024).
 Human and machine compose through a **message-first medium that surfaces exactly the genuine
 seams and nothing else** (throughput is scarce): novelty-bounding, divergence-alert,
 coherence-judgment. The composition is **heterogeneous + externally verified**: aggregating
-*different* models under external checks measurably improves output (Mixture-of-Agents, Wang
-et al. 2024), whereas naive multi-agent debate does not reliably beat cheaper baselines
-(Smit et al. 2024) and models cannot self-correct without an external signal (Huang et al.
-2024) — which is precisely why librecode verifies with deterministic gates and a human, not
-with agents grading themselves. Agents are primed to know their arsenal and owe *generative*
+*different* models measurably improves output (Mixture-of-Agents, Wang et al. 2024), while
+naive multi-agent debate does not reliably beat cheaper baselines (Smit et al. 2024) and
+models cannot self-correct without an external signal (Huang et al. 2024) — which is why the
+*verification* is deterministic gates and a human, not agents grading themselves. Aggregation
+supplies candidates; the external checks decide. Agents are primed to know their arsenal and owe *generative*
 reports (trade-offs, decisions-and-why, goal-fit, suggestions that spark), which makes the
 human's catch of a correlated hallucination cheap. Concrete transport and UI are design, not
 principle.
@@ -222,6 +263,11 @@ threshold — and is deferred to a machine-checked spec grounded against the run
 metaharness (roadmap A). Until then "stable" is only half-checkable, and the missing half is
 the distinctively living-commons claim.
 
+Read *decorrelated composition* at the `θ` level (§1): it means composing disparate models,
+or the gates and the human — not lens-variation on a single `θ`, which sits below §1's floor
+and does not count. Which mechanisms are built versus designed is tracked in the roadmap and
+`AGENTS.md`, not here; this document defines the target, not the current state.
+
 ---
 
 ## The novelty boundary
@@ -230,13 +276,15 @@ prior art is the **system-level synthesis**: composing disparate `θ` under a de
 machine-enforced governance layer that reifies commons mechanisms as append-only state and
 *measures its own coherence health, adapting scaffolding inversely to certainty*. Four
 elements are specifically unverified — contributions, not citations:
-1. **The determinization ratchet** (below): that hunting for new deterministic gates makes
-   the uncertain frontier monotonically recede as the commons matures.
+1. **The determinization ratchet** (below): that *hunting new gates* grows the deterministic
+   surface and recedes the uncertain frontier as the commons matures. The static half —
+   defer-uncertain-to-human — has prior art; the ratcheting dynamic, to our search, does not.
 2. **The dynamic-stability metric** (§8): the living-commons half, which we concede is not
    yet checkable — the single largest unverified claim.
 3. **Transfer of Ostrom's principles** from human institutions to a human+machine commons.
-4. **The magnitude of §1's benefit** for long-horizon software specifically (the sign is an
-   identity; the magnitude is empirical, and Goel et al. 2025 suggests it is under pressure).
+4. **The magnitude of §1's benefit** for long-horizon software specifically — that disparate
+   `θ` beat the best single model, and by how much. The direction is well-motivated by the
+   `θ`-floor; the magnitude is what measurement must settle.
 
 Each mechanism is grounded; the synthesis is the hypothesis this project exists to verify.
 
@@ -244,9 +292,13 @@ Each mechanism is grounded; the synthesis is the hypothesis this project exists 
 Scaffolding is deployed inversely to certainty (a dynamic form of "cost ∝ benefit", §5).
 Where certainty is lowest — novel, near the reach boundary, high divergence — deploy the
 maximum: full decorrelation, every applicable check, and a meta-review that hunts for a new
-deterministic gate that converts the uncertainty into a permanent check. The intended effect
-is compounding: the deterministic surface grows, the uncertain frontier recedes. Where
-certainty is high, ceremony collapses.
+deterministic gate that converts the uncertainty into a permanent check. Routing uncertain
+cases to heavier scrutiny and to the human is itself established (selective prediction and
+learning-to-defer; El-Yaniv & Wiener 2010; Mozannar & Sontag 2020); what is ours is the
+*ratchet* — that the meta-review hunts *new* gates, so the deterministic surface grows and
+the uncertain frontier recedes as the commons matures. That surface has a ceiling: some
+coherence properties are undecidable in principle (Rice), so the frontier recedes toward a
+floor, not to zero. Where certainty is high, ceremony collapses.
 
 ## The recurring pattern (self-similarity)
 Wherever a boundary is inherently undecidable deterministically, the system uses one shape —
@@ -287,24 +339,29 @@ machine; and, for review, ideally cross-model).
 - Krogh & Vedelsby (1995). Neural Network Ensembles, Cross Validation, and Active Learning. *NIPS 7*.
 - Ueda & Nakano (1996). Generalization error of ensemble estimators. *ICNN'96*.
 - Breiman (2001). Random Forests. *Machine Learning* 45(1).
-- Goel, Prabhakar, Bardes, et al. (2025). Great Models Think Alike and this Undermines AI Oversight. *ICML 2025* (arXiv:2502.04313).
+- Wood, Mu, Reid & Brown (2023). A Unified Theory of Diversity in Ensemble Learning. *JMLR* 24.
+- Goel, Strüber, Auzina, et al. (2025). Great Models Think Alike and this Undermines AI Oversight. *ICML 2025* (arXiv:2502.04313).
 - Bommasani, Hudson, Adeli, et al. (2021). On the Opportunities and Risks of Foundation Models. arXiv:2108.07258 (§ Homogenization).
 - Kleinberg & Raghavan (2021). Algorithmic monoculture and social welfare. *PNAS* 118(22).
 - Zou, Wang, Kolter & Fredrikson (2023). Universal and Transferable Adversarial Attacks on Aligned Language Models. arXiv:2307.15043.
 - Panickssery, Bowman & Feng (2024). LLM Evaluators Recognize and Favor Their Own Generations. *NeurIPS 2024*.
-- Wang, Mao, Guo, et al. (2024). Mixture-of-Agents Enhances Large Language Model Capabilities. arXiv:2406.04692.
-- Smit, Grinsztajn, Bou-Ammar, et al. (2024). Should We Be Going MAD? A Look at Multi-Agent Debate Strategies for LLMs. *ICML 2024* (arXiv:2311.17371).
+- Wang, Wang, Athiwaratkun, et al. (2024). Mixture-of-Agents Enhances Large Language Model Capabilities. arXiv:2406.04692.
+- Smit, Duckworth, Grinsztajn, et al. (2024). Should We Be Going MAD? A Look at Multi-Agent Debate Strategies for LLMs. *ICML 2024* (arXiv:2311.17371).
 - Huang, Chen, Mishra, et al. (2024). Large Language Models Cannot Self-Correct Reasoning Yet. *ICLR 2024* (arXiv:2310.01798).
 - Ostrom (1990). *Governing the Commons*. Cambridge University Press.
 - Cox, Arnold & Villamayor-Tomás (2010). A Review of Design Principles for Community-Based Natural Resource Management. *Ecology and Society* 15(4):38.
 - Ostrom (2010). Beyond Markets and States: Polycentric Governance of Complex Economic Systems. *American Economic Review* 100(3).
 - Malone & Crowston (1994). The Interdisciplinary Study of Coordination. *ACM Computing Surveys* 26(1).
 - Brooks (1975). *The Mythical Man-Month*. Addison-Wesley.
-- Conway (1968). How Do Committees Invent? *Datamation* 14(4).
+- Conway (1968). How Do Committees Invent? *Datamation*, April 1968.
 - DeChurch & Mesmer-Magnus (2010). The Cognitive Underpinnings of Effective Teamwork: A Meta-Analysis. *Journal of Applied Psychology* 95(1).
+- Hong & Page (2004). Groups of Diverse Problem Solvers Can Outperform Groups of High-Ability Problem Solvers. *PNAS* 101(46).
 - Hardin (1968). The Tragedy of the Commons. *Science* 162(3859).
+- Axelrod (1984). *The Evolution of Cooperation*. Basic Books.
 - Kalai & Vempala (2024). Calibrated Language Models Must Hallucinate. *STOC 2024* (arXiv:2311.14648).
 - Ovadia, Fertig, Ren, et al. (2019). Can You Trust Your Model's Uncertainty? *NeurIPS 2019*.
+- El-Yaniv & Wiener (2010). On the Foundations of Noise-free Selective Classification. *JMLR* 11.
+- Mozannar & Sontag (2020). Consistent Estimators for Learning to Defer to an Expert. *ICML 2020*.
 - Helland (2015). Immutability Changes Everything. *CIDR 2015* / *ACM Queue* 13(9).
 - Pitman (2001). Condition Handling in the Lisp Language Family.
 - Elnozahy, Alvisi, Wang & Johnson (2002). A Survey of Rollback-Recovery Protocols in Message-Passing Systems. *ACM Computing Surveys* 34(3).

@@ -114,9 +114,12 @@ stabilize an elegant, minimal-but-capable runner API before broadening the code 
 ### I · The multi-stakeholder commons *(the concrete coordination mechanism — prioritized)*
 Make the commons literal — many humans + many sessions under one governance layer — because the
 commons is only compelling once concrete (`foundations.md` Positioning, §5; `design.md §2`).
-- **Human seats + human-gated blockers.** Generalize the council/delegation table so arbitrary
-  humans are first-class seats, and a node can carry a hard sign-off gate ("X waits on Alice AND
-  Bob") enforced like any deterministic gate — not tracked out-of-band.
+- **Build the assent engine.** `src/meta/council.lisp` is a stub (`convene-council`,
+  `validate-assent` are no-ops); implement machine-enforced delegation and sign-off, then
+  generalize the table so arbitrary humans are first-class seats and a node can carry a hard
+  sign-off gate ("X waits on Alice AND Bob") enforced like any deterministic gate.
+- **The regression transitions.** Implement `reset-to-checkpoint` and
+  `cut-clean-and-decorrelate` (`design.md §3`), currently design-only.
 - **Cross-instance coherent view.** Disparate isolated sessions (each stakeholder on their own
   harness) share the append-only statespace as a single global view into ongoing work — the
   substrate that makes long-horizon multi-stakeholder alignment enforceable, not aspirational.
@@ -141,8 +144,7 @@ is always first), and the exact interleave of I with H/A is the head's call. **E
 core is stable per §8 — and G's full compatibility comes only after H's bounded floor.
 
 ## Immediate next
-1. Council convened (4 seats) + remediation applied on the `foundations` branch.
-2. **Commit** the remediated set on the head's final sign-off.
-3. **First post-foundation campaign:** B's **I4 fix** (a proven invariant regressed — fix
+1. Land the remediated foundation set on the `foundations` branch (council + head review).
+2. **First post-foundation campaign:** B's **I4 fix** (a proven invariant regressed — fix
    before building on it), then H (**runner capability floor**) toward A (**formalize
    stable**).

@@ -39,20 +39,23 @@ detail; it is the thing being built.
 
 ## What librecode is
 
-A coordination layer built as a commons — literally: a network of independent sessions, run
-by different people using different tools, cross-coordinating on shared long-horizon goals
-through one governing layer that none of them owns. It composes disparate models under
-deterministic gates that separate progress from regression without ambiguity; keeps every
-result in an append-only record so nothing proven is silently lost — and so every session sees
-one coherent view of the whole, including the hard blockers ("no progress here until these
-people sign off") that hold a large group together; recovers a line of work that goes wrong
-instead of letting it propagate; and keeps the human at the two points machines cannot reach —
-the genuinely novel, and the judgment of what is actually good.
+A coordination layer built as a commons, and the commons is literal: a network of independent
+sessions, run by different people using different tools, coordinating on shared long-horizon
+goals through one governing layer that none of them owns. It composes disparate models under
+deterministic gates, so progress and regression are never confused. It keeps every result in
+an append-only record, so nothing proven is quietly lost and every session sees one coherent
+view of the whole. That view includes the hard blockers ("no progress here until these people
+sign off") that hold a large group together. When a line of work goes wrong, it recovers that
+line rather than letting the damage spread. And it leaves the human the two decisions a
+machine cannot reach: what is genuinely new, and what is actually good.
 
 The composition may *use* proprietary models. It must not *depend* on any of them, and the
-governing layer itself must stay un-capturable. That is the entire freedom argument here:
-not a slogan, but the one property that keeps a coordination commons from being enclosed by
-whoever operates it.
+governing layer itself must stay un-capturable. A libre license makes that possible but does
+not by itself guarantee it — open-source projects get captured too, by whoever ends up
+holding the keys. What guarantees it is the license together with governance no single
+operator can quietly enclose: the collective right to fork, re-steward, and rewrite the
+rules. That is the freedom argument here — not a slogan, but the property that keeps a
+coordination commons from being enclosed by whoever runs it.
 
 ## Who it is for
 
@@ -66,5 +69,5 @@ way, by the same people, for the same reasons.
 Early, and honest about it. The runner and the cross-process supervision core work; the
 governance and the measured-coherence loop are argued and partly built. The full argument,
 including the places where it is motivated rather than proven, is in
-[foundations](docs/foundations.md). If the reasoning holds, help build it. If it does not,
-attacking it is the fastest way to find out.
+[foundations](docs/foundations.md). It is there to be scrutinized: if the reasoning holds,
+the work is worth building; if it doesn't, showing where is itself the contribution.
