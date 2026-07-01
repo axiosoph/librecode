@@ -5,11 +5,74 @@
 
 (defpackage #:librecode-test.journal
   (:use #:cl #:fiveam)
+  (:import-from #:librecode-meta.campaign
+                #:campaign-node
+                #:make-campaign-node
+                #:campaign-node-id
+                #:campaign-node-status
+                #:campaign-node-ibc
+                #:campaign-node-file-surface
+                #:campaign-dag
+                #:make-campaign-dag
+                #:campaign-dag-nodes
+                #:write-journal-entry
+                #:replay-journal)
   (:export #:journal-suite))
 (in-package #:librecode-test.journal)
 
 (def-suite journal-suite :description "Test campaign journal tracking")
 (in-suite journal-suite)
 
-(test dummy-journal-test
-  (is-true t))
+(test test-journal-replay-and-crash-safety
+  (let* ((nodes (list (make-campaign-node :id "A" :dependencies nil :goal "Goal A" :file-surface '("src/a.lisp"))
+                      (make-campaign-node :id "B" :dependencies '("A") :goal "Goal B" :file-surface '("src/b.lisp"))))
+         (dag (make-campaign-dag :nodes nodes :shared-branch "main"))
+         (journal-file "test-campaign-journal.lisp-expr"))
+    ;; Ensure clean state
+    (when (probe-file journal-file)
+      (delete-file journal-file))
+    
+    (unwind-protect
+         (progn
+           ;; 1. Replay empty journal should return initial dag with no updates
+           (with-open-file (s journal-file :direction :output :if-exists :supersede :if-does-not-exist :create)
+             (declare (ignore s))) ; just touch
+           (let ((replayed (replay-journal journal-file dag)))
+             (is (equal :pending (campaign-node-status (first (campaign-dag-nodes replayed)))))
+             (is (equal :pending (campaign-node-status (second (campaign-dag-nodes replayed))))))
+
+           ;; 2. Write valid events in append mode
+           (with-open-file (s journal-file :direction :output :if-exists :append :if-does-not-exist :create)
+             (write-journal-entry s '(:node-dispatched "A"))
+             (write-journal-entry s '(:node-landed "A"))
+             (write-journal-entry s '(:node-accepted "A"))
+             (write-journal-entry s '(:node-dispatched "B"))
+             (write-journal-entry s '(:surface-widened "B" ("src/b.lisp" "src/c.lisp")))
+             (write-journal-entry s '(:node-rework "B" "Linter error on line 42")))
+
+           ;; 3. Replay journal and verify DAG state
+           (let ((replayed (replay-journal journal-file dag)))
+             (is (equal :accepted (campaign-node-status (find "A" (campaign-dag-nodes replayed) :key #'campaign-node-id :test #'string=))))
+             (let ((node-b (find "B" (campaign-dag-nodes replayed) :key #'campaign-node-id :test #'string=)))
+               (is (equal :rework (campaign-node-status node-b)))
+               (is (equal "Linter error on line 42" (campaign-node-ibc node-b)))
+               (is (equal '("src/b.lisp" "src/c.lisp") (campaign-node-file-surface node-b)))))
+
+           ;; 4. Simulate a partial write (crash mid-write)
+           (with-open-file (s journal-file :direction :output :if-exists :append)
+             ;; Write a partial S-expression (missing closing paren)
+             (format s "~&(:node-dispatched \"B\"")
+             (force-output s))
+
+           ;; 5. Replay must succeed by ignoring the trailing malformed entry
+           (let ((replayed (replay-journal journal-file dag)))
+             (is (equal :accepted (campaign-node-status (find "A" (campaign-dag-nodes replayed) :key #'campaign-node-id :test #'string=))))
+             (let ((node-b (find "B" (campaign-dag-nodes replayed) :key #'campaign-node-id :test #'string=)))
+               (is (equal :rework (campaign-node-status node-b)))
+               (is (equal "Linter error on line 42" (campaign-node-ibc node-b)))
+               (is (equal '("src/b.lisp" "src/c.lisp") (campaign-node-file-surface node-b))))))
+      
+      ;; Cleanup
+      (when (probe-file journal-file)
+        (delete-file journal-file)))))
+
