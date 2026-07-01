@@ -63,6 +63,13 @@ original design intent: **[BUILT]**, **[PARTIAL]**, **[STUB]**.
   must never be assumed or tightly coupled.
 - **[BUILT]** S-expression audit trail (R7) — `audit.lisp`, dual s-expr + JSONL
   writer, append-only, `force-output` per event.
+- **[BUILT]** The reference state-machine model (roadmap workstream A's first
+  piece, workstream J's spine) — `src/model/`, a pure applicative Common Lisp
+  model (dag/status/phase/deposit/event-log/transitions) with the four
+  crown-jewel invariants (phase monotonicity, no-pending-proven,
+  tamper-evidence, DAG soundness) as `check-it` property tests. Not the
+  runtime; defines the conformance seam the runtime will later be checked
+  against. See [model.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/model.md).
 
 ### Not ported (deliberately excluded)
 
@@ -113,6 +120,9 @@ The implementation of `librecode` is divided into key modules, each documented e
 * **[cl-guidelines.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/cl-guidelines.md)**
   * **Common Lisp Developer Guidance**: Style constraints, approved library dependencies, and dynamic binding/restarts guidelines.
 
+* **[model.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/model.md)**
+  * **The Reference State Machine (roadmap A/J)**: The pure applicative DAG/phase/deposit/gate model, its four crown-jewel invariants, the three decided degraded-mode edge cases, and the conformance seam to the runtime.
+
 ## Invariants
 
 The system enforces the following core architectural invariants (status verified
@@ -157,8 +167,9 @@ against `src/`):
 
 ### Module Structure
 
-The tree below mirrors the two ASDF systems: `librecode-runner.asd`
-(`src/packages.lisp` + `src/runner/`) and `librecode-meta.asd` (`src/meta/`).
+The tree below mirrors the three ASDF systems: `librecode-runner.asd`
+(`src/packages.lisp` + `src/runner/`), `librecode-meta.asd` (`src/meta/`),
+and `librecode-model.asd` (`src/model/`).
 
 ```
 src/
@@ -187,6 +198,11 @@ src/
     council.lisp               — council protocol, assent validation [stub]
     conditioning.lisp          — conditioning composition [stub]
     metaharness.lisp           — supervisor entry point (R4)
+  model/                       — librecode-model.asd (dependency-free; no CLOS, no threads)
+    packages.lisp              — the librecode-model package
+    dag.lisp                   — work DAG: validity, Kahn layering
+    state-machine.lisp         — node status/phase/deposit, transitions, event log, replay
+    invariants.lisp            — the four crown-jewel invariants as pure predicates
 ```
 
 ### Dependency Edges (load order)
@@ -202,6 +218,11 @@ librecode-meta.asd (depends-on librecode-runner):
   meta/multiplexer → multiplexer-tmux → harness → harness-subprocess
            → harness-opencode → harness-librecode → journal → campaign
            → gate → council → conditioning → metaharness
+
+librecode-model.asd (no depends-on — deliberately independent of both the
+above; it is the reference model the runtime will later be conformance-
+tested against, not a consumer of it):
+  model/packages → dag → state-machine → invariants
 ```
 
 ### Technology Stack

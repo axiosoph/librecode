@@ -9,6 +9,7 @@
   :license "MIT"
   :depends-on (#:librecode-runner
                #:librecode-meta
+               #:librecode-model
                #:fiveam
                #:check-it
                #:sqlite
@@ -38,7 +39,8 @@
      (:file "provider-tests")
      (:file "builtin-tools-tests")
      (:file "child-tests")
-     (:file "e2e-tests"))))
+     (:file "e2e-tests")
+     (:file "model-tests"))))
   :perform (asdf:test-op (op c)
                          (let ((results (append
                                          (uiop:symbol-call :fiveam :run
@@ -78,7 +80,9 @@
                                          (uiop:symbol-call :fiveam :run
                                                            (uiop:find-symbol* :child-suite :librecode-test.child))
                                          (uiop:symbol-call :fiveam :run
-                                                           (uiop:find-symbol* :e2e-suite :librecode-test.e2e)))))
+                                                           (uiop:find-symbol* :e2e-suite :librecode-test.e2e))
+                                         (uiop:symbol-call :fiveam :run
+                                                           (uiop:find-symbol* :model-suite :librecode-test.model)))))
                            (uiop:symbol-call :fiveam :explain! results)
                            (unless (every (lambda (r)
                                             (typep r (uiop:find-symbol* :test-passed :fiveam)))

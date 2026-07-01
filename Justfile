@@ -18,7 +18,8 @@ build:
          --eval '(require :asdf)' \
          --eval '(push (truename "./") asdf:*central-registry*)' \
          --eval '(asdf:load-system :librecode-runner)' \
-         --eval '(asdf:load-system :librecode-meta)'
+         --eval '(asdf:load-system :librecode-meta)' \
+         --eval '(asdf:load-system :librecode-model)'
 
 # Run compiler lint checks (fails on warnings/errors within librecode files)
 lint:
@@ -31,14 +32,15 @@ lint:
                                              (format *error-output* "~&[LINT] Warning in ~A:~%~A~%" *compile-file-pathname* c) \
                                              (uiop:quit 1))))) \
                    (asdf:load-system :librecode-runner) \
-                   (asdf:load-system :librecode-meta))'
+                   (asdf:load-system :librecode-meta) \
+                   (asdf:load-system :librecode-model))'
 
 
 # Start an interactive SBCL REPL with all packages loaded
 repl:
     rlwrap sbcl --eval '(require :asdf)' \
                 --eval '(push (truename "./") asdf:*central-registry*)' \
-                --eval "(handler-bind ((warning #'muffle-warning)) (asdf:load-system :librecode-runner) (asdf:load-system :librecode-meta))"
+                --eval "(handler-bind ((warning #'muffle-warning)) (asdf:load-system :librecode-runner) (asdf:load-system :librecode-meta) (asdf:load-system :librecode-model))"
 
 # Clean system fasl compiler caches
 clean:
