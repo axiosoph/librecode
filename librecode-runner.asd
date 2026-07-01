@@ -32,4 +32,7 @@
        (:file "runner")
        (:file "compaction")
        (:file "audit")
-       (:file "http")))))))
+       (:file "http")
+       (:file "provider")
+       (:file "builtin-tools")
+       (:file "child")))))))
