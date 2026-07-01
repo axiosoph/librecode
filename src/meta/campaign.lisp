@@ -16,7 +16,7 @@
   (file-surface nil :type list)        ; Paths (files or directories) this node is authorized to touch
   (dependencies nil :type list)        ; List of parent node IDs
   (sequential-p nil :type boolean)     ; Must run sequentially, cannot be parallelized
-  (status :pending :type keyword)      ; :pending, :dispatched, :landed, :accepted, :rework
+  (status :pending :type keyword)      ; :pending, :dispatched, :landed, :accepted, :rework, :skipped
   (harness-type nil :type symbol)      ; Class name of harness (e.g., 'harness-opencode)
   (harness-instance nil)               ; Reference to the active CLOS harness-instance
   (ibc nil :type (or null string)))    ; Initial Boundary Condition text (instructions/goals)
@@ -433,8 +433,8 @@ or if any dependency is unresolved."
                                                action))))
                               (cond
                                 ((and choice (symbolp choice) (string-equal choice "SKIP-NODE"))
-                                 (setf (campaign-node-status failed-node) :accepted)
-                                 (safe-write-journal-entry campaign journal-stream (list :node-accepted node-id))
+                                 (setf (campaign-node-status failed-node) :skipped)
+                                 (safe-write-journal-entry campaign journal-stream (list :node-skipped node-id))
                                  (prune-node-branch campaign failed-node))
                                 ((and choice (symbolp choice) (string-equal choice "RETRY-NODE"))
                                  (setf (campaign-node-status failed-node) :pending))
@@ -449,8 +449,8 @@ or if any dependency is unresolved."
                                (safe-write-journal-entry campaign journal-stream (list :node-rework node-id (campaign-node-ibc failed-node)))
                                (setf (campaign-node-status failed-node) :rework))
                               ((and (>= count 3) (< count (1- limit)))
-                               (setf (campaign-node-status failed-node) :accepted)
-                               (safe-write-journal-entry campaign journal-stream (list :node-accepted node-id))
+                               (setf (campaign-node-status failed-node) :skipped)
+                               (safe-write-journal-entry campaign journal-stream (list :node-skipped node-id))
                                (prune-node-branch campaign failed-node))
                               (t
                                (setf (campaign-node-status failed-node) :pending)))))
@@ -485,8 +485,8 @@ or if any dependency is unresolved."
                           ((eq choice :retry)
                            (setf (campaign-node-status failed-node) :pending))
                           ((eq choice :skip)
-                           (setf (campaign-node-status failed-node) :accepted)
-                           (safe-write-journal-entry campaign journal-stream (list :node-accepted node-id))
+                           (setf (campaign-node-status failed-node) :skipped)
+                           (safe-write-journal-entry campaign journal-stream (list :node-skipped node-id))
                            (prune-node-branch campaign failed-node)))))))
           ;; No failures! Merge all nodes in the batch
           (progn
@@ -524,8 +524,10 @@ or if any dependency is unresolved."
                                             :key #'campaign-node-id
                                             :test #'string=))
                                     layer-node-ids))
-               ;; Eligible nodes in this layer (not accepted yet)
-               (eligible-nodes (remove :accepted layer-nodes :key #'campaign-node-status)))
+               ;; Eligible nodes in this layer (not accepted or skipped yet)
+               (eligible-nodes (remove-if (lambda (status) (member status '(:accepted :skipped)))
+                                          layer-nodes
+                                          :key #'campaign-node-status)))
           (when eligible-nodes
             (safe-write-journal-entry campaign journal-stream (list :layer-advanced layer-idx))
             (let ((batches (group-nodes-for-scheduling eligible-nodes)))

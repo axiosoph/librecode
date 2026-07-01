@@ -19,7 +19,7 @@ and immediately forces output to ensure crash-safety."
   (when (and (listp entry) (keywordp (first entry)))
     (destructuring-bind (event-type &rest args) entry
       (case event-type
-        ((:node-dispatched :node-landed :node-accepted :node-rework :surface-widened)
+        ((:node-dispatched :node-landed :node-accepted :node-skipped :node-rework :surface-widened)
          (let* ((node-id (first args))
                 (node (find node-id (campaign-dag-nodes dag) :key #'campaign-node-id :test #'string=)))
            (unless node
@@ -33,6 +33,8 @@ and immediately forces output to ensure crash-safety."
               (setf (campaign-node-status node) :landed))
              (:node-accepted
               (setf (campaign-node-status node) :accepted))
+             (:node-skipped
+              (setf (campaign-node-status node) :skipped))
              (:node-rework
               (let ((ibc (second args)))
                 (setf (campaign-node-status node) :rework)

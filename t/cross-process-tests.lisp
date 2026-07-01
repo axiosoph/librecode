@@ -76,7 +76,7 @@ which is strictly stronger than asserting a clean working tree."
                                     :max-retries 5)))
       (run-campaign campaign)
       ;; The supervisor recovered the failed CROSS-PROCESS node autonomously.
-      (is (eq :accepted (campaign-node-status node)))
+      (is (eq :skipped (campaign-node-status node)))
       (is (= 3 (gethash "node-subproc-fail" (campaign-failure-counts campaign))))
       ;; It drove REAL OS subprocess children — one genuine subprocess-harness per attempt.
       (is (= 3 (length *integration-spawns*)))

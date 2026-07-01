@@ -142,9 +142,9 @@
         (let ((res (librecode-runner.protocol:join-thread-with-timeout campaign-thread 5.0)))
           (is (eq t res)))
         
-        ;; Verify both nodes have transitioned to :accepted
+        ;; Verify nodes have transitioned to correct statuses
         (is (eq :accepted (campaign-node-status (first nodes))))
-        (is (eq :accepted (campaign-node-status (second nodes))))))))
+        (is (eq :skipped (campaign-node-status (second nodes))))))))
 
 (test test-journal-resumption
   "Crash/kill a supervisor mid-execution, reconstruct pre-crash state, and resume at recovery boundary."
@@ -214,9 +214,9 @@
           (let ((res (librecode-runner.protocol:join-thread-with-timeout campaign-thread-new 5.0)))
             (is (eq t res)))
           
-          ;; Verify both are completed now
+          ;; Verify nodes are completed now
           (is (eq :accepted (campaign-node-status (first nodes-new))))
-          (is (eq :accepted (campaign-node-status (second nodes-new)))))))))
+          (is (eq :skipped (campaign-node-status (second nodes-new)))))))))
 
 (test test-multi-failure-sequencing
   "Verify that when multiple nodes in a batch fail concurrently, they are processed sequentially by the supervisor."
@@ -266,8 +266,8 @@
         (let ((res (librecode-runner.protocol:join-thread-with-timeout campaign-thread 5.0)))
           (is (eq t res)))
         
-        (is (eq :accepted (campaign-node-status (first nodes))))
-        (is (eq :accepted (campaign-node-status (second nodes))))))))
+        (is (eq :skipped (campaign-node-status (first nodes))))
+        (is (eq :skipped (campaign-node-status (second nodes))))))))
 
 (test test-hierarchical-surface-overlaps
   "Assert that hierarchical directory surface overlaps are correctly detected."

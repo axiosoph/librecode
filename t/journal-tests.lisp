@@ -25,7 +25,8 @@
 
 (test test-journal-replay-and-crash-safety
   (let* ((nodes (list (make-campaign-node :id "A" :dependencies nil :goal "Goal A" :file-surface '("src/a.lisp"))
-                      (make-campaign-node :id "B" :dependencies '("A") :goal "Goal B" :file-surface '("src/b.lisp"))))
+                      (make-campaign-node :id "B" :dependencies '("A") :goal "Goal B" :file-surface '("src/b.lisp"))
+                      (make-campaign-node :id "C" :dependencies '("B") :goal "Goal C" :file-surface '("src/c.lisp"))))
          (dag (make-campaign-dag :nodes nodes :shared-branch "main"))
          (journal-file "test-campaign-journal.lisp-expr"))
     ;; Ensure clean state
@@ -38,8 +39,9 @@
            (with-open-file (s journal-file :direction :output :if-exists :supersede :if-does-not-exist :create)
              (declare (ignore s))) ; just touch
            (let ((replayed (replay-journal journal-file dag)))
-             (is (equal :pending (campaign-node-status (first (campaign-dag-nodes replayed)))))
-             (is (equal :pending (campaign-node-status (second (campaign-dag-nodes replayed))))))
+             (is (equal :pending (campaign-node-status (find "A" (campaign-dag-nodes replayed) :key #'campaign-node-id :test #'string=))))
+             (is (equal :pending (campaign-node-status (find "B" (campaign-dag-nodes replayed) :key #'campaign-node-id :test #'string=))))
+             (is (equal :pending (campaign-node-status (find "C" (campaign-dag-nodes replayed) :key #'campaign-node-id :test #'string=)))))
 
            ;; 2. Write valid events in append mode
            (with-open-file (s journal-file :direction :output :if-exists :append :if-does-not-exist :create)
@@ -48,7 +50,9 @@
              (write-journal-entry s '(:node-accepted "A"))
              (write-journal-entry s '(:node-dispatched "B"))
              (write-journal-entry s '(:surface-widened "B" ("src/b.lisp" "src/c.lisp")))
-             (write-journal-entry s '(:node-rework "B" "Linter error on line 42")))
+             (write-journal-entry s '(:node-rework "B" "Linter error on line 42"))
+             (write-journal-entry s '(:node-dispatched "C"))
+             (write-journal-entry s '(:node-skipped "C")))
 
            ;; 3. Replay journal and verify DAG state
            (let ((replayed (replay-journal journal-file dag)))
@@ -56,7 +60,8 @@
              (let ((node-b (find "B" (campaign-dag-nodes replayed) :key #'campaign-node-id :test #'string=)))
                (is (equal :rework (campaign-node-status node-b)))
                (is (equal "Linter error on line 42" (campaign-node-ibc node-b)))
-               (is (equal '("src/b.lisp" "src/c.lisp") (campaign-node-file-surface node-b)))))
+               (is (equal '("src/b.lisp" "src/c.lisp") (campaign-node-file-surface node-b))))
+             (is (equal :skipped (campaign-node-status (find "C" (campaign-dag-nodes replayed) :key #'campaign-node-id :test #'string=)))))
 
            ;; 4. Simulate a partial write (crash mid-write)
            (with-open-file (s journal-file :direction :output :if-exists :append)
@@ -70,7 +75,8 @@
              (let ((node-b (find "B" (campaign-dag-nodes replayed) :key #'campaign-node-id :test #'string=)))
                (is (equal :rework (campaign-node-status node-b)))
                (is (equal "Linter error on line 42" (campaign-node-ibc node-b)))
-               (is (equal '("src/b.lisp" "src/c.lisp") (campaign-node-file-surface node-b))))))
+               (is (equal '("src/b.lisp" "src/c.lisp") (campaign-node-file-surface node-b))))
+             (is (equal :skipped (campaign-node-status (find "C" (campaign-dag-nodes replayed) :key #'campaign-node-id :test #'string=))))))
       
       ;; Cleanup
       (when (probe-file journal-file)

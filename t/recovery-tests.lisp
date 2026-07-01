@@ -56,7 +56,7 @@
       (run-campaign campaign)
       
       ;; The node should have gone through retry -> rework -> skip (accepted)
-      (is (eq :accepted (campaign-node-status node)))
+      (is (eq :skipped (campaign-node-status node)))
       ;; Verify that the IBC was updated during the rework step with the error trace
       (is (not (null (campaign-node-ibc node))))
       (is (search "Error trace from failure:" (campaign-node-ibc node)))
@@ -90,9 +90,9 @@
       
       (run-campaign campaign)
       
-      ;; Verify both nodes have transitioned to :accepted
+      ;; Verify nodes have transitioned to correct statuses
       (is (eq :accepted (campaign-node-status success-node)))
-      (is (eq :accepted (campaign-node-status fail-node))))))
+      (is (eq :skipped (campaign-node-status fail-node))))))
 
 (test c-escalate-seam
   "The escalation hook/condition fires correctly with node context."
@@ -135,7 +135,7 @@
       (run-campaign campaign)
       
       (is-true hook-called-p)
-      (is (eq :accepted (campaign-node-status node))))))
+      (is (eq :skipped (campaign-node-status node))))))
 
 (test c-escalate-max-retries-4
   "Verify escalation is triggered at exactly max-retries when set to 4."
@@ -176,4 +176,4 @@
       (run-campaign campaign)
       
       (is-true hook-called-p)
-      (is (eq :accepted (campaign-node-status node))))))
+      (is (eq :skipped (campaign-node-status node))))))
