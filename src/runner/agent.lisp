@@ -149,10 +149,15 @@ If no rule matches, defaults to returning :ask."
 
     ;; Block current thread on condition variable
     (bt:with-lock-held (lock)
-      (loop until (permission-request-resolved-p req)
-            do (bt:condition-wait cv lock)))
+      (loop until (or (permission-request-resolved-p req)
+                      (librecode-runner.protocol:session-stopping-p *current-session-id*))
+            do (bt:condition-wait cv lock :timeout 0.1)))
 
     ;; Return status or signal denied-error
+    (when (librecode-runner.protocol:session-stopping-p *current-session-id*)
+      (error 'librecode-runner.conditions:harness-failure
+             :message "Session stopped while waiting for permission."))
+
     (let ((decision (permission-request-decision req)))
       (cond
         ((member decision '(:allow :accept :always))

@@ -140,7 +140,7 @@ Blocks if another thread is already draining this session."
                    (ignore-errors (sb-concurrency:send-message m '(:abort))))
                  (setf (coordinator-entry-active-worker-mailboxes entry) nil)
                  (dolist (thr (coordinator-entry-active-worker-threads entry))
-                   (ignore-errors (bt:destroy-thread thr)))
+                   (ignore-errors (join-thread-with-timeout thr 2.0)))
                  (setf (coordinator-entry-active-worker-threads entry) nil)))))
       ;; 3. Release entry ownership and notify next thread
       (unwind-protect
@@ -211,4 +211,31 @@ Sets the stopping flag and posts an interrupt message to the event loop mailbox.
   "Helper to broadcast a session event using *event-broadcast-hook*."
   (when *event-broadcast-hook*
     (funcall *event-broadcast-hook* session-id event-type data)))
+
+(defun join-thread-with-timeout (thread timeout)
+  "Join THREAD with a TIMEOUT in seconds. Returns :timeout if the timeout is reached."
+  #+sbcl (sb-thread:join-thread thread :timeout timeout :default :timeout)
+  #-sbcl (bt:join-thread thread))
+
+(defmacro with-session-context-captured (&body body)
+  "Captures the dynamic variables (*db*, *workspace-root*, *current-session-id*, *session-mailbox*)
+lexically and returns a lambda that rebinds them and executes BODY."
+  (let ((db-val (gensym "DB"))
+        (workspace-val (gensym "WORKSPACE"))
+        (session-val (gensym "SESSION"))
+        (mailbox-val (gensym "MAILBOX")))
+    `(let ((,db-val (and (boundp 'librecode-runner.event-store:*db*) librecode-runner.event-store:*db*))
+           (,workspace-val (and (boundp 'librecode-runner.event-store:*workspace-root*) librecode-runner.event-store:*workspace-root*))
+           (,session-val (and (boundp 'librecode-runner.agent:*current-session-id*) librecode-runner.agent:*current-session-id*))
+           (,mailbox-val (and (boundp 'librecode-runner.protocol:*session-mailbox*) librecode-runner.protocol:*session-mailbox*)))
+       (lambda ()
+         (let ((librecode-runner.event-store:*db* ,db-val)
+               (librecode-runner.event-store:*workspace-root* ,workspace-val)
+               (librecode-runner.agent:*current-session-id* ,session-val)
+               (librecode-runner.protocol:*session-mailbox* ,mailbox-val))
+           (declare (special librecode-runner.event-store:*db*
+                             librecode-runner.event-store:*workspace-root*
+                             librecode-runner.agent:*current-session-id*
+                             librecode-runner.protocol:*session-mailbox*))
+           ,@body)))))
 

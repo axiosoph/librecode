@@ -309,15 +309,16 @@
          (worker-thread nil)
          (drain-fn (lambda ()
                      ;; Spawn a worker thread and block on mailbox
-                     (bt:make-thread
-                      (lambda ()
-                        (let ((this (bt:current-thread)))
-                          (setf worker-thread this)
-                          (librecode-runner.protocol:register-worker-thread session-id this)
-                          (unwind-protect
-                               (loop (sleep 0.1))
-                            (librecode-runner.protocol:unregister-worker-thread session-id this))))
-                      :name "mock-infinite-worker")
+                      (bt:make-thread
+                       (lambda ()
+                         (let ((this (bt:current-thread)))
+                           (setf worker-thread this)
+                           (librecode-runner.protocol:register-worker-thread session-id this)
+                           (unwind-protect
+                               (loop until (librecode-runner.protocol:session-stopping-p session-id)
+                                     do (sleep 0.1))
+                             (librecode-runner.protocol:unregister-worker-thread session-id this))))
+                       :name "mock-infinite-worker")
                      (loop
                        (let ((msg (librecode-runner.protocol:receive-message librecode-runner.protocol:*session-mailbox*)))
                          (when (eq (car msg) :interrupt)
@@ -486,3 +487,106 @@
               (is (equal action (gethash "action" payload)))
               (is (equal resource (gethash "resource" payload)))
               (is (equal "asked" (gethash "status" payload))))))))))
+
+(test test-parallel-tool-context-propagation
+  "Verify that tool workers executed via execute-parallel-tools inherit *db*, *workspace-root*, etc. and can write events/query db."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (librecode-test.event-store::with-test-db (db dir)
+      (let* ((session-id "session-parallel-context-test")
+             (agent-id "agent-parallel-context")
+             (registry (make-instance 'librecode-runner.tool:tool-registry))
+             (captured-db nil)
+             (captured-workspace nil)
+             (captured-session nil)
+             (captured-mailbox nil)
+             (test-tool (make-instance 'librecode-runner.tool:tool
+                                       :name "db-checking-tool"
+                                       :description "Checks if db binding is inherited"
+                                       :parameters '(:type "object" :properties (:dummy (:type "string")))
+                                       :capabilities nil
+                                       :handler (lambda (args)
+                                                  (declare (ignore args))
+                                                  (setf captured-db (and (boundp 'librecode-runner.event-store:*db*)
+                                                                         librecode-runner.event-store:*db*))
+                                                  (setf captured-workspace (and (boundp 'librecode-runner.event-store:*workspace-root*)
+                                                                                librecode-runner.event-store:*workspace-root*))
+                                                  (setf captured-session (and (boundp 'librecode-runner.agent:*current-session-id*)
+                                                                              librecode-runner.agent:*current-session-id*))
+                                                  (setf captured-mailbox (and (boundp 'librecode-runner.protocol:*session-mailbox*)
+                                                                              librecode-runner.protocol:*session-mailbox*))
+                                                  ;; Attempt to ask permission to trigger database logging from inside tool
+                                                  (let ((agent (make-instance 'librecode-runner.agent:agent
+                                                                             :id agent-id
+                                                                             :ruleset (list (librecode-runner.agent:make-permission-rule :action "*" :resource "*" :effect :ask))
+                                                                             :system-context "")))
+                                                    ;; Let's temporarily bind *interactive-p* to T so it triggers resolve-ask-permission
+                                                    (let ((librecode-runner.agent:*interactive-p* t))
+                                                      (handler-case
+                                                          (librecode-runner.agent:check-permission agent "test-action" "test-resource")
+                                                        (error () nil))))
+                                                  "done"))))
+        
+        ;; Register the custom tool
+        (librecode-runner.tool:register-tool registry test-tool)
+
+        ;; Initialize database session state
+        (sqlite:execute-non-query db
+          "INSERT INTO session_state (session_id, agent_id, version, status, last_updated)
+           VALUES (?, ?, 1, 'active', ?)"
+          session-id agent-id (librecode-runner.event-store::current-timestamp-ms))
+
+        ;; Run coordinator with db bound
+        (let ((librecode-runner.agent:*interactive-p* t))
+          ;; Clear pending requests
+          (bt:with-lock-held (librecode-runner.agent::*pending-requests-lock*)
+            (clrhash librecode-runner.agent::*pending-requests*))
+          
+          (let ((coord-thread
+                  (bt:make-thread
+                   (lambda ()
+                     (let ((librecode-runner.event-store:*db* db)
+                           (librecode-runner.event-store:*workspace-root* dir))
+                       (declare (special librecode-runner.event-store:*db*
+                                         librecode-runner.event-store:*workspace-root*))
+                       (run-coordinator session-id
+                                        (lambda ()
+                                          ;; Execute parallel tool call
+                                          (librecode-runner.runner::execute-parallel-tools session-id
+                                                                  `((:id "call-1" :name "db-checking-tool" :arguments "{}"))
+                                                                  registry)))))
+                   :name "coordinator-parallel-context-thread")))
+            
+            ;; Wait for a pending permission request to appear (indicating worker ran check-permission)
+            (loop repeat 20
+                  while (= (hash-table-count librecode-runner.agent::*pending-requests*) 0)
+                  do (sleep 0.05))
+
+            ;; Resolve it
+            (let ((req-id (first (let ((keys nil))
+                                   (bt:with-lock-held (librecode-runner.agent::*pending-requests-lock*)
+                                     (maphash (lambda (k v) (declare (ignore v)) (push k keys))
+                                              librecode-runner.agent::*pending-requests*))
+                                   keys))))
+              (is-true req-id)
+              (librecode-runner.agent:resolve-permission-request req-id :allow))
+
+            ;; Wait for coordinator to finish
+            (loop repeat 20
+                  while (bt:thread-alive-p coord-thread)
+                  do (sleep 0.05))
+
+            ;; Assertions
+            ;; c-db-inherited:
+            (is-true captured-db)
+            (is (eq db captured-db))
+            (is (equal dir captured-workspace))
+            (is (equal session-id captured-session))
+            (is-true captured-mailbox)
+            
+            ;; c-perm-event-from-worker:
+            (let ((event-row (sqlite:execute-to-list db
+                               "SELECT event_type FROM event_log WHERE session_id = ? ORDER BY sequence DESC LIMIT 1"
+                               session-id)))
+              (is-true event-row)
+              (is (equal "EVENT-PERMISSION-ASKED" (caar event-row))))))))))
+

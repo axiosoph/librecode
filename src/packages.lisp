@@ -78,7 +78,9 @@
            #:register-worker-thread
            #:unregister-worker-thread
            #:*event-broadcast-hook*
-           #:broadcast-event))
+           #:broadcast-event
+           #:join-thread-with-timeout
+           #:with-session-context-captured))
 
 (defpackage #:librecode-runner.event-store
   (:use #:cl)

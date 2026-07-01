@@ -217,10 +217,8 @@
               (librecode-runner.protocol:register-worker-mailbox session-id worker-mbox)
               (librecode-runner.protocol:broadcast-event session-id :tool-start (list :id call-id :name name :arguments arguments-str))
               (bt:make-thread
-               (lambda ()
-                 (let ((self (bt:current-thread))
-                       (librecode-runner.agent:*current-session-id* session-id))
-                   (declare (special librecode-runner.agent:*current-session-id*))
+               (librecode-runner.protocol:with-session-context-captured
+                 (let ((self (bt:current-thread)))
                    (librecode-runner.protocol:register-worker-thread session-id self)
                    (unwind-protect
                         (handler-case
@@ -313,24 +311,23 @@ Enforces that exactly one provider call is made. Returns t if continuation is al
                     (let ((mbox librecode-runner.protocol:*session-mailbox*)
                           (rid (format nil "reader-~A" (random 1000000))))
                       (bt:make-thread
-                       (lambda ()
-                         (let ((librecode-runner.protocol:*session-mailbox* mbox))
-                           (handler-case
-                               (loop
-                                 (let ((line (read-line dex-stream nil :eof)))
-                                   (if (eq line :eof)
-                                       (progn
-                                         (librecode-runner.protocol:send-message
-                                          librecode-runner.protocol:*session-mailbox*
-                                          `(:sse-eof ,rid))
-                                         (return))
+                       (librecode-runner.protocol:with-session-context-captured
+                         (handler-case
+                             (loop
+                               (let ((line (read-line dex-stream nil :eof)))
+                                 (if (eq line :eof)
+                                     (progn
                                        (librecode-runner.protocol:send-message
                                         librecode-runner.protocol:*session-mailbox*
-                                        `(:sse-line ,rid ,line)))))
-                             (error (c)
-                               (librecode-runner.protocol:send-message
-                                librecode-runner.protocol:*session-mailbox*
-                                `(:sse-error ,rid ,c))))))
+                                        `(:sse-eof ,rid))
+                                       (return))
+                                     (librecode-runner.protocol:send-message
+                                      librecode-runner.protocol:*session-mailbox*
+                                      `(:sse-line ,rid ,line)))))
+                           (error (c)
+                             (librecode-runner.protocol:send-message
+                              librecode-runner.protocol:*session-mailbox*
+                              `(:sse-error ,rid ,c)))))
                        :name "sse-reader-thread")
 
                      ;; Unified Event Loop on *session-mailbox*

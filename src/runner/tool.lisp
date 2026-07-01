@@ -225,7 +225,7 @@ Eliminates redundant JSON serialization."
          (worker-thread nil))
     (setf worker-thread
           (bt:make-thread
-           (lambda ()
+           (librecode-runner.protocol:with-session-context-captured
              (multiple-value-bind (val err)
                  (handler-case
                      (funcall (tool-handler tool) arguments)
@@ -267,5 +267,5 @@ Eliminates redundant JSON serialization."
       ;; Cleanup: safely terminate worker thread if it is still running
       (when (and worker-thread (bt:thread-alive-p worker-thread))
         (handler-case
-            (bt:destroy-thread worker-thread)
+            (librecode-runner.protocol:join-thread-with-timeout worker-thread 1.0)
           (error () nil))))))
