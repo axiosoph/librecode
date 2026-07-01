@@ -103,19 +103,6 @@ If no rule matches, defaults to returning :ask."
                   rows))
       (error () nil))))
 
-(defun get-next-event-sequence (session-id)
-  "Determine the next sequence number for session-id by checking maximum sequence in event_log."
-  (if (and (boundp 'librecode-runner.event-store:*db*)
-           librecode-runner.event-store:*db*)
-      (handler-case
-          (let ((max-seq (sqlite:execute-single
-                          librecode-runner.event-store:*db*
-                          "SELECT max(sequence) FROM event_log WHERE session_id = ?"
-                          session-id)))
-            (if max-seq (1+ max-seq) 1))
-        (error () 1))
-      1))
-
 (defun resolve-ask-permission (agent action resource)
   "Handle permission request in interactive mode: blocks the current thread until resolution."
   (declare (ignore agent))
@@ -136,15 +123,13 @@ If no rule matches, defaults to returning :ask."
     ;; Commit event if session ID is active
     (when (and (boundp '*current-session-id*) *current-session-id*)
       (handler-case
-          (let ((next-version (get-next-event-sequence *current-session-id*)))
-            (librecode-runner.event-store:commit-event
-             *current-session-id*
-             `((:req-id . ,req-id)
-               (:action . ,action)
-               (:resource . ,resource)
-               (:status . "asked"))
-             :event-permission-asked
-             next-version))
+          (librecode-runner.event-store:commit-event
+           *current-session-id*
+           `((:req-id . ,req-id)
+             (:action . ,action)
+             (:resource . ,resource)
+             (:status . "asked"))
+           :event-permission-asked)
         (error () nil)))
 
     ;; Block current thread on condition variable

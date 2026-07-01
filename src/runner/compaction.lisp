@@ -47,7 +47,6 @@ and deletes compacted messages from the history."
                                               older))
                        (summary (format nil "Summary of past context:~%~{~A~^~%~}" summary-lines))
                        (epoch-id (format nil "epoch-~A" (librecode-runner.event-store::current-timestamp-ms)))
-                       (next-seq (librecode-runner.agent::get-next-event-sequence session-id))
                        (compacted-ids (map 'vector (lambda (m) (getf m :id)) older)))
                   ;; Commit baseline update event for replay self-containment.
                   ;; Database updates are deferred to apply-projectors in event-store.lisp to ensure I2 atomicity.
@@ -57,8 +56,7 @@ and deletes compacted messages from the history."
                      (:baseline-text . ,summary)
                      (:status . "compacted")
                      (:compacted-message-ids . ,compacted-ids))
-                   :context-baseline-updated
-                   next-seq)
+                   :context-baseline-updated)
                   t)
                 nil))
           nil))))

@@ -332,7 +332,7 @@ handling hash-tables (with string keys or symbols), alists, and plists."
                           "DELETE FROM session_history WHERE id = ?"
                           id))))))))))
 
-(defun commit-event (session-id event type version)
+(defun commit-event (session-id event type &optional version)
   "Commits an event to the event log and applies projectors inside a single transaction."
   (unless *db*
     (error "No active database connection in *db*."))
@@ -340,8 +340,14 @@ handling hash-tables (with string keys or symbols), alists, and plists."
         (type-str (string type))
         (now (current-timestamp-ms)))
     (with-immediate-transaction (*db*)
-      (sqlite:execute-non-query *db*
-        "INSERT INTO event_log (session_id, sequence, event_type, payload, timestamp)
-         VALUES (?, ?, ?, ?, ?)"
-        session-id version type-str payload-str now)
-      (apply-projectors *db* session-id event type version))))
+      (let ((actual-version (or version
+                                (let ((max-seq (sqlite:execute-single *db*
+                                                 "SELECT max(sequence) FROM event_log WHERE session_id = ?"
+                                                 session-id)))
+                                  (if max-seq (1+ max-seq) 1)))))
+        (sqlite:execute-non-query *db*
+          "INSERT INTO event_log (session_id, sequence, event_type, payload, timestamp)
+           VALUES (?, ?, ?, ?, ?)"
+          session-id actual-version type-str payload-str now)
+        (apply-projectors *db* session-id event type actual-version)
+        actual-version))))

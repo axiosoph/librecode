@@ -173,14 +173,12 @@
                                                                      (:arguments . ,(getf tc :arguments))))))
                                                    tool-calls)))))
                        text-content)))
-      (let ((next-seq (librecode-runner.agent::get-next-event-sequence session-id)))
-        (librecode-runner.event-store:commit-event
-         session-id
-         `((:message-id . ,msg-id)
-           (:role . "assistant")
-           (:content . ,payload))
-         :message-assistant
-         next-seq))
+      (librecode-runner.event-store:commit-event
+       session-id
+       `((:message-id . ,msg-id)
+         (:role . "assistant")
+         (:content . ,payload))
+       :message-assistant)
       (sqlite:execute-non-query db
         "INSERT INTO session_history (id, session_id, role, content, created_at)
          VALUES (?, ?, 'assistant', ?, ?)"
@@ -189,15 +187,13 @@
 (defun save-tool-message (session-id call-id tool-name content)
   "Commit a tool execution result to event log and session history."
   (let ((db librecode-runner.event-store:*db*)
-        (now (librecode-runner.event-store::current-timestamp-ms))
-        (next-seq (librecode-runner.agent::get-next-event-sequence session-id)))
+        (now (librecode-runner.event-store::current-timestamp-ms)))
     (librecode-runner.event-store:commit-event
      session-id
      `((:tool-call-id . ,call-id)
        (:tool-name . ,tool-name)
        (:content . ,content))
-     :tool-response
-     next-seq)
+     :tool-response)
     (sqlite:execute-non-query db
       "INSERT INTO session_history (id, session_id, role, content, created_at)
        VALUES (?, ?, 'tool', ?, ?)"

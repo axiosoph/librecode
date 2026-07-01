@@ -516,3 +516,46 @@
             (is (= expected-version actual-version))
             (is (equal expected-status actual-status))))))))
 
+
+(test test-atomic-sequence-concurrency
+  "Verify that concurrent committers allocating sequence numbers internally in commit-event results in race-free gap-free allocations."
+  (with-tmp-sandbox (dir)
+    (let ((db-path (uiop:merge-pathnames* "test.db" dir))
+          (session-id "session-concurrency")
+          (num-threads 5)
+          (ops-per-thread 5))
+      ;; Initialize schema
+      (let ((db (connect-db db-path)))
+        (unwind-protect
+             (init-db db)
+          (sqlite:disconnect db)))
+      (let ((threads nil))
+        (dotimes (i num-threads)
+          (let ((thread-id i))
+            (push (bt:make-thread
+                   (lambda ()
+                     (let ((*workspace-root* dir)
+                           (*db* (connect-db db-path)))
+                       (unwind-protect
+                            (dotimes (j ops-per-thread)
+                              (handler-case
+                                  (commit-event session-id
+                                                `((:thread-id . ,thread-id) (:op-id . ,j))
+                                                :concurrency-event)
+                                (error () nil))
+                              (sleep 0.005))
+                         (sqlite:disconnect *db*)))))
+                  threads)))
+        (dolist (th threads)
+          (bt:join-thread th))
+        ;; Verify the total number of events in event_log.
+        (let* ((*workspace-root* dir)
+               (db (connect-db db-path))
+               (count (sqlite:execute-single db "SELECT count(*) FROM event_log WHERE session_id = ?" session-id))
+               (sequences (mapcar #'car (sqlite:execute-to-list db "SELECT sequence FROM event_log WHERE session_id = ? ORDER BY sequence ASC" session-id))))
+          (unwind-protect
+               (progn
+                 (is (= (* num-threads ops-per-thread) count))
+                 (is (equal (loop for x from 1 to (* num-threads ops-per-thread) collect x)
+                            sequences)))
+            (sqlite:disconnect db)))))))
