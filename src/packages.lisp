@@ -194,7 +194,10 @@
 (defpackage #:librecode-runner.builtin-tools
   (:use #:cl)
   (:documentation "Built-in tools for workspace and code interaction.")
-  (:export ))
+  (:export #:read-file-tool
+           #:write-file-tool
+           #:bash-tool
+           #:register-builtin-tools))
 
 (defpackage #:librecode-runner.child
   (:use #:cl)
