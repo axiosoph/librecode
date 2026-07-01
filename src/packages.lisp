@@ -256,7 +256,15 @@
            ;; Functions
            #:compute-kahn-layers
            #:write-journal-entry
-           #:replay-journal))
+           #:replay-journal
+           
+           ;; Campaign class accessors
+           #:campaign-journal-path
+           #:campaign-repository-path
+           #:campaign-workspace-dir
+           #:campaign-active-harnesses
+           #:campaign-supervisor-mailbox
+           #:campaign-reply-mailbox))
 
 (defpackage #:librecode-meta.gate
   (:use #:cl)
