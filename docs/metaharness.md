@@ -152,7 +152,7 @@ A Campaign represents a high-level task structured as a directed acyclic graph (
   (file-surface nil :type list)        ; Paths (files or directories) this node is authorized to touch
   (dependencies nil :type list)        ; List of parent node IDs
   (serialize nil :type boolean)        ; Must run sequentially, cannot be parallelized
-  (status :pending :type keyword)      ; :pending, :dispatched, :landed, :accepted, :rework
+  (status :pending :type keyword)      ; :pending, :dispatched, :landed, :accepted, :rework, :skipped
   (harness-type nil :type symbol)      ; Class name of harness (e.g., 'harness-opencode)
   (harness-instance nil)               ; Reference to the active CLOS harness-instance
   (ibc nil :type string))              ; Initial Boundary Condition text (instructions/goals)
@@ -167,9 +167,9 @@ A Campaign represents a high-level task structured as a directed acyclic graph (
 
 The Metaharness coordinates campaign execution using a **dynamic graph-based scheduling** model derived from the Campaign DAG, resolving dependencies node-by-node to maximize parallel execution while preventing head-of-line blocking:
 
-1. **Topological Initialization**: The Campaign DAG is parsed and node dependencies are loaded. An in-memory scheduler tracks the status of each node (:pending, :dispatched, :landed, :accepted, :rework).
+1. **Topological Initialization**: The Campaign DAG is parsed and node dependencies are loaded. An in-memory scheduler tracks the status of each node (:pending, :dispatched, :landed, :accepted, :rework, :skipped).
 2. **Dynamic Dispatch Loop**:
-   * The scheduler runs continuously. A node is eligible for dispatch as soon as all of its parent dependencies are marked `:accepted`.
+   * The scheduler runs continuously. A node is eligible for dispatch as soon as all of its parent dependencies are marked `:accepted` or `:skipped`.
    * **Collision Check**: Eligible nodes are grouped. If two eligible nodes have overlapping `file_surface` scopes, the node with higher priority or fewer dependencies is dispatched in parallel, while the conflicting node is deferred and flagged for serialization.
    * **Workspace Preparation**: Prior to spawning, the class-level `harness-prepare-workspace` generic method is called using the class symbol (e.g. `'harness-librecode).
    * **Worktree Synchronization**: If a node was previously deferred (due to collision or rework) and is now dispatched, the Metaharness performs a sync step, merging or rebasing the latest campaign `shared_branch` into the node's private worktree branch to prevent working on stale checkouts.
