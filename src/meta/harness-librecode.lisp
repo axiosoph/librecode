@@ -85,11 +85,23 @@
   t)
 
 (defmethod harness-prompt ((instance librecode-harness) prompt &key (mode :steer))
+  (bt:with-lock-held ((harness-lock instance))
+    (when (member (librecode-meta.harness::%harness-status instance) '(:terminated :error))
+      (error 'librecode-runner.conditions:harness-failure
+             :message (format nil "Cannot prompt harness in status: ~S" (librecode-meta.harness::%harness-status instance)))))
+
   (let* ((session-id (harness-id instance))
          (prompt-id (format nil "prompt-~A" (random 1000000)))
          (delivery-mode (if (eq mode :queue) "QUEUE" "STEER"))
          (workspace-root (harness-workspace-root instance))
-         (provider-url (getf (harness-config instance) :provider-url))
+         (config (harness-config instance))
+         (provider-url (getf config :provider-url))
+         (interactive-p (or (getf config :interactive-p)
+                            (and (boundp 'librecode-runner.agent:*interactive-p*)
+                                 librecode-runner.agent:*interactive-p*)))
+         (project-id (or (getf config :project-id)
+                         (and (boundp 'librecode-runner.agent:*project-id*)
+                              librecode-runner.agent:*project-id*)))
          (librecode-runner.event-store:*workspace-root* workspace-root)
          (db (librecode-runner.event-store:connect-db (harness-db-path instance))))
     (unwind-protect
@@ -99,12 +111,19 @@
     
     (let ((res (librecode-runner.protocol:wake-session session-id
                  (lambda ()
-                   (let ((librecode-runner.runner::*provider-url* (or provider-url librecode-runner.runner::*provider-url*)))
+                   (let ((librecode-runner.runner::*provider-url* (or provider-url librecode-runner.runner::*provider-url*))
+                         (librecode-runner.agent:*interactive-p* interactive-p)
+                         (librecode-runner.agent:*project-id* project-id))
+                     (declare (special librecode-runner.agent:*interactive-p*
+                                       librecode-runner.agent:*project-id*))
+                     (setf (librecode-meta.harness::%harness-status instance) :running)
                      (handler-bind
-                         ((error (lambda (c)
-                                   (setf (%harness-status instance) :error)
-                                   (librecode-runner.protocol:broadcast-event session-id :error (format nil "~A" c)))))
-                       (setf (%harness-status instance) :running)
+                         ((serious-condition
+                            (lambda (c)
+                              (declare (ignore c))
+                              (bt:with-lock-held ((harness-lock instance))
+                                (unless (eq (librecode-meta.harness::%harness-status instance) :terminated)
+                                  (setf (librecode-meta.harness::%harness-status instance) :error))))))
                        (librecode-runner.http::call-with-session-drive-loop
                         session-id
                         (harness-max-steps instance)
@@ -115,16 +134,19 @@
                            session-id
                            (harness-provider instance)
                            (harness-model instance)
-                           :withhold-tools withhold-tools)))
-                       (bt:with-lock-held ((harness-lock instance))
-                         (unless (member (%harness-status instance) '(:terminated :error))
-                           (setf (%harness-status instance) :idle)))))))))
+                           :withhold-tools withhold-tools))))
+                     (bt:with-lock-held ((harness-lock instance))
+                       (unless (member (librecode-meta.harness::%harness-status instance) '(:terminated :error))
+                         (setf (librecode-meta.harness::%harness-status instance) :idle))))))))
       (when (typep res 'bt:thread)
         (setf (harness-thread instance) res))
       t)))
 
 (defmethod harness-read-events ((instance librecode-harness))
   (harness-event-queue instance))
+
+(defmethod harness-read-event ((instance librecode-harness) &key timeout)
+  (sb-concurrency:receive-message (harness-event-queue instance) :timeout timeout))
 
 (defmethod harness-send-command ((instance librecode-harness) command)
   (cond
@@ -179,13 +201,13 @@
       ((and thr (bt:thread-alive-p thr))
        :running)
       (t
-       (%harness-status instance)))))
+       (librecode-meta.harness::%harness-status instance)))))
 
 (defmethod harness-terminate ((instance librecode-harness))
   (let ((session-id (harness-id instance)))
     (unregister-harness session-id)
     (bt:with-lock-held ((harness-lock instance))
-      (setf (%harness-status instance) :terminated)
+      (setf (librecode-meta.harness::%harness-status instance) :terminated)
       (librecode-runner.protocol:interrupt-session session-id)
       (let ((thr (harness-thread instance)))
         (when (and thr (bt:thread-alive-p thr))

@@ -20,6 +20,21 @@
 
 (defvar *mock-stream-mailbox* (sb-concurrency:make-mailbox))
 
+(defun wait-for-harness-event (harness target-event-type &key (timeout 5.0))
+  "Block until the target event type is received, or timeout occurs."
+  (let ((start-time (get-universal-time)))
+    (loop
+      (let* ((elapsed (- (get-universal-time) start-time))
+             (rem-timeout (max 0.1 (- timeout elapsed)))
+             (msg (harness-read-event harness :timeout rem-timeout)))
+        (cond
+          ((null msg)
+           (return nil))
+          ((eq (getf msg :event-type) target-event-type)
+           (return t))
+          ((>= elapsed timeout)
+           (return nil)))))))
+
 (test test-harness-lifecycle
   "Exercises the abstract harness protocol on the in-process librecode-harness backend."
   (librecode-test.event-store::with-tmp-sandbox (dir)
@@ -30,15 +45,13 @@
            (port (get-free-port))
            (acceptor (make-instance 'hunchentoot:easy-acceptor :port port)))
       
-      ;; Clear mailbox
-      (loop while (sb-concurrency:receive-message-no-hang *mock-stream-mailbox*))
-      
       ;; 1. Prepare workspace
       (harness-prepare-workspace 'librecode-harness repo-path target-dir)
       
       ;; Set up custom local route dispatcher for SSE stream
       (let ((dispatcher (lambda (request)
-                          (when (equal (hunchentoot:script-name request) "/stream")
+                          (when (and (equal (hunchentoot:script-name request) "/stream")
+                                     (= (hunchentoot:acceptor-port (hunchentoot:request-acceptor request)) port))
                             (lambda ()
                               (setf (hunchentoot:content-type*) "text/event-stream")
                               (let ((stream (hunchentoot:send-headers)))
@@ -54,6 +67,7 @@
         (push dispatcher hunchentoot:*dispatch-table*)
         (unwind-protect
              (progn
+               (loop while (sb-concurrency:receive-message-no-hang *mock-stream-mailbox*))
                (hunchentoot:start acceptor)
                (let* ((provider-url (format nil "http://127.0.0.1:~A/stream" port))
                       (config (list :id session-id
@@ -76,36 +90,20 @@
                  ;; 2. Prompt the harness
                  (harness-prompt harness "hello test agent" :mode :steer)
                  
-                 ;; Loop/poll until status is :running
-                 (let ((status-ok nil))
-                   (dotimes (i 100)
-                     (when (eq (harness-status harness) :running)
-                       (setf status-ok t)
-                       (return))
-                     (sleep 0.01))
-                   (is-true status-ok))
+                 ;; Block until status is :running via :session-start event
+                 (is-true (wait-for-harness-event harness :session-start))
+                 (is (eq (harness-status harness) :running))
                  
                  ;; 3. Read events (verify event stream is accessible)
-                 (let ((events (harness-read-events harness))
-                       (has-events nil))
-                   (is (not (null events)))
-                   ;; Try reading a message from mailbox
-                   (let ((msg (sb-concurrency:receive-message events :timeout 1.0)))
-                     (when msg
-                       (setf has-events t)))
-                   (is-true has-events))
+                 (let ((msg (harness-read-event harness :timeout 0.1)))
+                   (declare (ignore msg)))
                  
                  ;; Signal mock stream to continue
                  (sb-concurrency:send-message *mock-stream-mailbox* :continue)
                  
-                 ;; Loop/poll until status goes back to :idle
-                 (let ((idle-ok nil))
-                   (dotimes (i 100)
-                     (when (eq (harness-status harness) :idle)
-                       (setf idle-ok t)
-                       (return))
-                     (sleep 0.01))
-                   (is-true idle-ok))
+                 ;; Block until status goes back to :idle via :session-complete event
+                 (is-true (wait-for-harness-event harness :session-complete))
+                 (is (eq (harness-status harness) :idle))
                  
                  ;; 4. Terminate harness
                  (harness-terminate harness)
@@ -134,7 +132,8 @@
       
       ;; Set up custom local route dispatcher for SSE stream
       (let ((dispatcher (lambda (request)
-                          (when (equal (hunchentoot:script-name request) "/stream")
+                          (when (and (equal (hunchentoot:script-name request) "/stream")
+                                     (= (hunchentoot:acceptor-port (hunchentoot:request-acceptor request)) port))
                             (lambda ()
                               (setf (hunchentoot:content-type*) "text/event-stream")
                               (let ((stream (hunchentoot:send-headers)))
@@ -158,7 +157,7 @@
                       (harness (harness-spawn 'librecode-harness config)))
                  
                  (harness-prompt harness "assert cwd" :mode :steer)
-                 (sleep 0.2)
+                 (is-true (wait-for-harness-event harness :session-complete))
                  
                  ;; Check that global CWD has not changed
                  (is (equal (namestring initial-cwd) (namestring (uiop:getcwd))))
@@ -167,5 +166,30 @@
           (progn
             (hunchentoot:stop acceptor)
             (setf hunchentoot:*dispatch-table* (delete dispatcher hunchentoot:*dispatch-table*))))))))
+
+(test test-harness-prompt-terminated-guard
+  "Verifies that calling harness-prompt on a terminated harness signals a harness-failure error."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (let* ((repo-path dir)
+           (target-dir (uiop:merge-pathnames* "target/" dir))
+           (db-path "librecode.db")
+           (session-id "test-guard-session")
+           (config (list :id session-id
+                         :db-path db-path
+                         :workspace-root target-dir
+                         :provider "mock-provider"
+                         :model "mock-model"
+                         :max-steps 1)))
+      
+      (harness-prepare-workspace 'librecode-harness repo-path target-dir)
+      (let ((harness (harness-spawn 'librecode-harness config)))
+        (unwind-protect
+             (progn
+               (harness-terminate harness)
+               (is (eq (harness-status harness) :terminated))
+               ;; Prompting a terminated harness should fail with harness-failure
+               (signals librecode-runner.conditions:harness-failure
+                 (harness-prompt harness "fail me" :mode :steer)))
+          (harness-cleanup-workspace 'librecode-harness repo-path target-dir :force t))))))
 
 

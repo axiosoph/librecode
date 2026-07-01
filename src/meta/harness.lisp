@@ -19,6 +19,9 @@
 (defgeneric harness-read-events (instance)
   (:documentation "Returns an input stream or queue of structured events/messages emitted by the harness."))
 
+(defgeneric harness-read-event (instance &key timeout)
+  (:documentation "Reads a single event from the harness event queue or stream, blocking up to TIMEOUT seconds."))
+
 (defgeneric harness-send-command (instance command)
   (:documentation "Sends a control command to the harness (e.g. /clear, /compact, or tool approval)."))
 

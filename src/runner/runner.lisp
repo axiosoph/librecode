@@ -371,6 +371,8 @@ Enforces that exactly one provider call is made. Returns t if continuation is al
                                                  :headers '(("Content-Type" . "application/json"))
                                                  :content request-body
                                                  :want-stream t
+                                                 :connect-timeout 10
+                                                 :read-timeout 30
                                                  :keep-alive nil)
                                  (dexador:http-request-failed (c)
                                    (let* ((body (dexador:response-body c))

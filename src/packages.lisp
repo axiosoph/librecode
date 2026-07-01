@@ -197,10 +197,10 @@
   (:export #:harness
            #:harness-id
            #:harness-config
-           #:%harness-status
            #:harness-spawn
            #:harness-prompt
            #:harness-read-events
+           #:harness-read-event
            #:harness-send-command
            #:harness-inject-conditioning
            #:harness-status
