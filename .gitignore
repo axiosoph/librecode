@@ -1,3 +1,10 @@
 .agents/
 .scratch/
 .ledger/
+
+# runtime / local-dev artifacts (not source)
+librecode.db
+*.db
+.envrc
+.direnv/
+*.fasl
