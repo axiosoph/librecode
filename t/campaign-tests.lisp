@@ -38,16 +38,15 @@
          (layers (compute-kahn-layers (list n1 n2 n3 n4))))
     (is (= 3 (length layers)))
     (is (equal '("A") (aref layers 0)))
-    ;; B and C can run in parallel in layer 1
-    (is (or (equal '("B" "C") (aref layers 1))
-            (equal '("C" "B") (aref layers 1))))
+    ;; Deterministically sorted alphabetically: "B" comes before "C"
+    (is (equal '("B" "C") (aref layers 1)))
     (is (equal '("D") (aref layers 2)))))
 
 (test test-kahn-cycle-detection
   (let* ((n1 (make-campaign-node :id "A" :dependencies '("C")))
          (n2 (make-campaign-node :id "B" :dependencies '("A")))
          (n3 (make-campaign-node :id "C" :dependencies '("B"))))
-    (signals error
+    (signals librecode-runner.conditions:protocol-invariant-violation
       (compute-kahn-layers (list n1 n2 n3)))))
 
 (test test-kahn-independent
@@ -55,6 +54,12 @@
          (n2 (make-campaign-node :id "B" :dependencies nil))
          (layers (compute-kahn-layers (list n1 n2))))
     (is (= 1 (length layers)))
-    (is (or (equal '("A" "B") (aref layers 0))
-            (equal '("B" "A") (aref layers 0))))))
+    ;; Deterministically sorted alphabetically: "A" comes before "B"
+    (is (equal '("A" "B") (aref layers 0)))))
+
+(test test-kahn-unresolved-dependency
+  (let ((n1 (make-campaign-node :id "A" :dependencies '("NON-EXISTENT"))))
+    (signals librecode-runner.conditions:protocol-invariant-violation
+      (compute-kahn-layers (list n1)))))
+
 

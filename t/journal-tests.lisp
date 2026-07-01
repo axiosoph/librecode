@@ -76,3 +76,19 @@
       (when (probe-file journal-file)
         (delete-file journal-file)))))
 
+(test test-journal-non-existent-node
+  (let* ((nodes (list (make-campaign-node :id "A" :dependencies nil)))
+         (dag (make-campaign-dag :nodes nodes :shared-branch "main"))
+         (journal-file "test-campaign-journal-error.lisp-expr"))
+    (when (probe-file journal-file)
+      (delete-file journal-file))
+    (unwind-protect
+         (progn
+           (with-open-file (s journal-file :direction :output :if-exists :supersede :if-does-not-exist :create)
+             (write-journal-entry s '(:node-dispatched "NON-EXISTENT")))
+           (signals librecode-runner.conditions:protocol-invariant-violation
+             (replay-journal journal-file dag)))
+      (when (probe-file journal-file)
+        (delete-file journal-file)))))
+
+

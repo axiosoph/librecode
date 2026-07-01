@@ -224,7 +224,7 @@
            #:campaign-node-goal
            #:campaign-node-file-surface
            #:campaign-node-dependencies
-           #:campaign-node-serialize
+           #:campaign-node-sequential-p
            #:campaign-node-status
            #:campaign-node-harness-type
            #:campaign-node-harness-instance

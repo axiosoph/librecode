@@ -19,34 +19,27 @@ and immediately forces output to ensure crash-safety."
   (when (and (listp entry) (keywordp (first entry)))
     (destructuring-bind (event-type &rest args) entry
       (case event-type
-        (:node-dispatched
+        ((:node-dispatched :node-landed :node-accepted :node-rework :surface-widened)
          (let* ((node-id (first args))
                 (node (find node-id (campaign-dag-nodes dag) :key #'campaign-node-id :test #'string=)))
-           (when node
-             (setf (campaign-node-status node) :dispatched))))
-        (:node-landed
-         (let* ((node-id (first args))
-                (node (find node-id (campaign-dag-nodes dag) :key #'campaign-node-id :test #'string=)))
-           (when node
-             (setf (campaign-node-status node) :landed))))
-        (:node-accepted
-         (let* ((node-id (first args))
-                (node (find node-id (campaign-dag-nodes dag) :key #'campaign-node-id :test #'string=)))
-           (when node
-             (setf (campaign-node-status node) :accepted))))
-        (:node-rework
-         (let* ((node-id (first args))
-                (ibc (second args))
-                (node (find node-id (campaign-dag-nodes dag) :key #'campaign-node-id :test #'string=)))
-           (when node
-             (setf (campaign-node-status node) :rework)
-             (setf (campaign-node-ibc node) ibc))))
-        (:surface-widened
-         (let* ((node-id (first args))
-                (new-surface (second args))
-                (node (find node-id (campaign-dag-nodes dag) :key #'campaign-node-id :test #'string=)))
-           (when node
-             (setf (campaign-node-file-surface node) new-surface))))
+           (unless node
+             (error 'librecode-runner.conditions:protocol-invariant-violation
+                    :invariant "journal-node-existence"
+                    :message (format nil "Journal entry ~S refers to non-existent node ~S" entry node-id)))
+           (case event-type
+             (:node-dispatched
+              (setf (campaign-node-status node) :dispatched))
+             (:node-landed
+              (setf (campaign-node-status node) :landed))
+             (:node-accepted
+              (setf (campaign-node-status node) :accepted))
+             (:node-rework
+              (let ((ibc (second args)))
+                (setf (campaign-node-status node) :rework)
+                (setf (campaign-node-ibc node) ibc)))
+             (:surface-widened
+              (let ((new-surface (second args)))
+                (setf (campaign-node-file-surface node) new-surface))))))
         (:layer-advanced
          ;; No-op or diagnostic log as layers are not a mutable slot in campaign-dag
          nil))))
@@ -58,15 +51,15 @@ reconstructed campaign-dag state. If a partial or malformed write is encountered
 the end of the file, it is skipped to protect against crash corruption."
   (let ((dag (or initial-dag (make-campaign-dag))))
     (with-open-file (stream filepath :direction :input :if-does-not-exist :error)
-      ;; Use handler-bind to trap any error (end-of-file, reader-error) at read site.
-      ;; If an error occurs, we assume it's a partial write at the end of the file,
-      ;; so we safely abort the loop and return the state reconstructed so far.
-      (handler-bind ((error (lambda (c)
-                              (declare (ignore c))
-                              (return-from replay-journal dag))))
-        (loop
-          (let ((entry (read stream nil :eof)))
-            (when (eq entry :eof)
-              (return))
-            (setf dag (apply-journal-entry dag entry))))))
+      (loop
+        (let ((entry (handler-bind ((reader-error (lambda (c)
+                                                   (declare (ignore c))
+                                                   (return-from replay-journal dag)))
+                                    (end-of-file (lambda (c)
+                                                   (declare (ignore c))
+                                                   (return-from replay-journal dag))))
+                       (read stream nil :eof))))
+          (when (eq entry :eof)
+            (return))
+          (setf dag (apply-journal-entry dag entry)))))
     dag))

@@ -15,7 +15,7 @@
   (goal nil :type (or null string))
   (file-surface nil :type list)        ; Paths (files or directories) this node is authorized to touch
   (dependencies nil :type list)        ; List of parent node IDs
-  (serialize nil :type boolean)        ; Must run sequentially, cannot be parallelized
+  (sequential-p nil :type boolean)     ; Must run sequentially, cannot be parallelized
   (status :pending :type keyword)      ; :pending, :dispatched, :landed, :accepted, :rework
   (harness-type nil :type symbol)      ; Class name of harness (e.g., 'harness-opencode)
   (harness-instance nil)               ; Reference to the active CLOS harness-instance
@@ -42,19 +42,29 @@
 
 (defun compute-kahn-layers (nodes)
   "Derives a vector of topological layers from NODES list using Kahn's algorithm.
-Signals an error if a dependency cycle is detected."
+Signals a protocol-invariant-violation error if a dependency cycle is detected
+or if any dependency is unresolved."
   (let* ((node-ids (mapcar #'campaign-node-id nodes))
          (in-degrees (make-hash-table :test 'equal))
          (adj (make-hash-table :test 'equal))
          (layers (make-array 0 :adjustable t :fill-pointer 0))
          (processed-count 0))
+    ;; Validate that all dependency IDs are present in nodes
+    (dolist (n nodes)
+      (let ((id (campaign-node-id n))
+            (deps (campaign-node-dependencies n)))
+        (dolist (dep deps)
+          (unless (member dep node-ids :test #'string=)
+            (error 'librecode-runner.conditions:protocol-invariant-violation
+                   :invariant "dependency-resolution"
+                   :message (format nil "Node ~S depends on unresolved node ~S" id dep))))))
+
     ;; Initialize in-degrees and adjacency lists
     (dolist (n nodes)
       (let ((id (campaign-node-id n))
             (deps (campaign-node-dependencies n)))
         (setf (gethash id in-degrees) 0)
         (dolist (dep deps)
-          ;; Only count dependencies that are part of this campaign graph
           (when (member dep node-ids :test #'string=)
             (incf (gethash id in-degrees))
             (push id (gethash dep adj))))))
@@ -67,10 +77,14 @@ Signals an error if a dependency cycle is detected."
                    (when (= deg 0)
                      (push id zero-in-degree-layer)))
                  in-degrees)
+        ;; Sort the layer deterministically by ID using string<
+        (setf zero-in-degree-layer (sort zero-in-degree-layer #'string<))
         ;; If no nodes have 0 in-degree but we haven't processed all nodes, there is a cycle!
         (when (null zero-in-degree-layer)
           (if (< processed-count (length nodes))
-              (error "Cycle detected in campaign DAG. Cannot compute Kahn layers.")
+              (error 'librecode-runner.conditions:protocol-invariant-violation
+                     :invariant "cyclic-dependency"
+                     :message "Cycle detected in campaign DAG. Cannot compute Kahn layers.")
               (return)))
         ;; Remove zero-in-degree nodes from our degrees tracker so they aren't selected again
         (dolist (id zero-in-degree-layer)
