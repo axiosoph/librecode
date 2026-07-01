@@ -5,26 +5,30 @@
 
 (in-package #:librecode-meta.gate)
 
-(defun resolve-absolute-binary (cmd)
+(defun resolve-absolute-binary (cmd &optional directory)
   "Resolve command CMD to an absolute path.
 If CMD is already absolute or contains a slash, verify it exists and return it.
 Otherwise search the PATH environment variable."
-  (cond
-    ((or (uiop:absolute-pathname-p cmd)
-         (search "/" cmd))
-     (let ((path (probe-file cmd)))
-       (if path
-           (namestring path)
-           (error "Command file not found: ~A" cmd))))
-    (t
-     (let ((path-env (uiop:getenv "PATH")))
-       (if path-env
+  (let ((cmd-str (namestring cmd)))
+    (cond
+      ((or (uiop:absolute-pathname-p cmd-str)
+           (search "/" cmd-str))
+       (let* ((base-dir (or directory *default-pathname-defaults*))
+              (path (uiop:merge-pathnames* (uiop:parse-unix-namestring cmd-str)
+                                           (uiop:ensure-directory-pathname base-dir)))
+              (exists (probe-file path)))
+         (if exists
+             (namestring exists)
+             (error "Command file not found: ~A" path))))
+      (t
+       (let ((path-env (uiop:getenv "PATH")))
+         (if path-env
            (let ((dirs (uiop:split-string path-env :separator ":")))
-             (dolist (dir dirs (error "Command not found in PATH: ~A" cmd))
-               (let ((file (uiop:merge-pathnames* cmd (uiop:ensure-directory-pathname dir))))
+             (dolist (dir dirs (error "Command not found in PATH: ~A" cmd-str))
+               (let ((file (uiop:merge-pathnames* cmd-str (uiop:ensure-directory-pathname dir))))
                  (when (uiop:file-exists-p file)
                    (return (namestring file))))))
-           (error "PATH environment variable not set, cannot locate command: ~A" cmd))))))
+           (error "PATH environment variable not set, cannot locate command: ~A" cmd-str)))))))
 
 (defun split-spaces (string)
   "Split a string by space characters, removing empty strings."
@@ -39,10 +43,10 @@ Otherwise search the PATH environment variable."
      (split-spaces command))
     (t (error "Invalid command specification: ~A" command))))
 
-(defun resolve-command-list (cmd-list)
+(defun resolve-command-list (cmd-list &optional directory)
   "Resolve the first element of CMD-LIST to an absolute path."
   (let* ((binary (car cmd-list))
-         (abs-binary (resolve-absolute-binary binary)))
+         (abs-binary (resolve-absolute-binary binary directory)))
     (cons abs-binary (cdr cmd-list))))
 
 (defun run-program-capture (cmd-list &key directory)
@@ -146,15 +150,12 @@ Otherwise search the PATH environment variable."
              (stdout-sym (intern "STDOUT" pkg))
              (stderr-sym (intern "STDERR" pkg))
              (success-sym (intern "SUCCESS" pkg))
+             (cmd-list-sym (intern "CMD-LIST" pkg))
              (body-forms nil)
              (kw-lambda-list (make-keyword-lambda-list lambda-list)))
         (when execute-eval-form
           (push `(multiple-value-bind (out err code)
-                     (let* ((raw-cmd ,execute-eval-form)
-                            (cmd-list (if (listp raw-cmd)
-                                          raw-cmd
-                                          (librecode-meta.gate::split-spaces raw-cmd)))
-                            (resolved-cmd (librecode-meta.gate::resolve-command-list cmd-list)))
+                     (let ((resolved-cmd (librecode-meta.gate::resolve-command-list ,cmd-list-sym ,(if worktree-form worktree-sym nil))))
                        (librecode-meta.gate::run-program-capture resolved-cmd :directory ,(if worktree-form worktree-sym nil)))
                    (setf ,stdout-sym out
                          ,stderr-sym err
@@ -169,13 +170,13 @@ Otherwise search the PATH environment variable."
                 (if on-failure-form
                     on-failure-form
                     `(if (and ,exit-code-sym (/= ,exit-code-sym 0))
-                         (if (librecode-meta.gate::nickel-contract-violation-p (car (librecode-meta.gate::parse-command ,execute-eval-form)) ,exit-code-sym ,stderr-sym)
+                         (if (librecode-meta.gate::nickel-contract-violation-p (car ,cmd-list-sym) ,exit-code-sym ,stderr-sym)
                              (error 'librecode-runner.conditions:protocol-invariant-violation
                                     :message ,stderr-sym
                                     :invariant "DAG safety contract")
                              (error 'librecode-runner.conditions:gate-failure
                                     :message ,stderr-sym
-                                    :command (format nil "~{~A~^ ~}" (librecode-meta.gate::parse-command ,execute-eval-form))
+                                    :command (format nil "~{~A~^ ~}" ,cmd-list-sym)
                                     :exit-code ,exit-code-sym))
                          (error 'librecode-runner.conditions:gate-failure
                                 :message "Verification failed"
@@ -191,8 +192,14 @@ Otherwise search the PATH environment variable."
                  (let ((,success-sym t)
                        ,exit-code-sym
                        ,stdout-sym
-                       ,stderr-sym)
-                   (declare (ignorable ,success-sym ,exit-code-sym ,stdout-sym ,stderr-sym))
+                       ,stderr-sym
+                       ,@(when execute-eval-form
+                           `((,cmd-list-sym (let ((raw-cmd ,execute-eval-form))
+                                              (if (listp raw-cmd)
+                                                  raw-cmd
+                                                  (librecode-meta.gate::split-spaces raw-cmd)))))))
+                   (declare (ignorable ,success-sym ,exit-code-sym ,stdout-sym ,stderr-sym
+                                       ,@(when execute-eval-form (list cmd-list-sym))))
                    ,@(nreverse body-forms)
                    (if ,success-sym
                        t

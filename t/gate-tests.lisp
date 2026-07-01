@@ -130,6 +130,28 @@
                            
      (is (eq t (librecode-meta.gate:run-gate 'test-local-lint :node-id "N1"))))))
 
+(test defgate-worktree-relative-script
+  (call-with-test-contracts
+   (lambda ()
+     (let ((script-path (librecode-meta.gate::resolve-gate-path "test_script.sh")))
+       (with-open-file (s script-path :direction :output :if-exists :supersede :if-does-not-exist :create)
+         (write-string "#!/bin/sh
+echo script-run-ok
+exit 0
+" s))
+       (uiop:run-program (list "chmod" "+x" (namestring script-path)))
+       
+       (librecode-meta.gate:defgate test-rel-script (node-id)
+         (:worktree ".")
+         (:execute "./test_script.sh")
+         (:on-failure (error 'librecode-runner.conditions:gate-failure
+                             :message stderr
+                             :command "./test_script.sh"
+                             :exit-code exit-code)))
+                             
+       (is (eq t (librecode-meta.gate:run-gate 'test-rel-script :node-id "N1")))
+       (uiop:delete-file-if-exists script-path)))))
+
 (test defgate-execute-failure
   (call-with-test-contracts
    (lambda ()
