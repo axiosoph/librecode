@@ -103,6 +103,9 @@
                  
                  ;; Block until status goes back to :idle via :session-complete event
                  (is-true (wait-for-harness-event harness :session-complete))
+                 (let ((thr (librecode-meta.harness-librecode::harness-thread harness)))
+                   (when thr
+                     (librecode-runner.protocol:join-thread-with-timeout thr 2.0)))
                  (is (eq (harness-status harness) :idle))
                  
                  ;; 4. Terminate harness
@@ -158,6 +161,9 @@
                  
                  (harness-prompt harness "assert cwd" :mode :steer)
                  (is-true (wait-for-harness-event harness :session-complete))
+                 (let ((thr (librecode-meta.harness-librecode::harness-thread harness)))
+                   (when thr
+                     (librecode-runner.protocol:join-thread-with-timeout thr 2.0)))
                  
                  ;; Check that global CWD has not changed
                  (is (equal (namestring initial-cwd) (namestring (uiop:getcwd))))
