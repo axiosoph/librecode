@@ -50,9 +50,31 @@ Its own determinization ratchet: every invariant we can make deterministic, we m
 - Stand up the **coherence telemetry substrate** (the living loop's *sensor*):
   iterations-to-gate, rework/escalation/gate-fail rates, per basin/content-type/time.
 
-### C · Memory & Context *(open design — needs its own dialectic, like the foundations)*
-The relationship between **long-term memory** (durable) and the **context map**
-(ephemeral). Captured here so it is not lost; **flagged as unresolved.**
+### C · Memory & Context *(built on J; early — highest blast radius, do not glaze)*
+Long-term memory (durable) and the context map (ephemeral). **Memory is built *on* the contract
+substrate (J), not as a separate prose-summarization system** — "a local model compacts the
+conversation into the ledger" is the *dangerous* framing, reintroducing the lossy, unverifiable
+summarization contracts exist to prevent. Memory *writes are deposits*: structured,
+evidence-bearing, and **verified** (cheap contract check + decorrelated accuracy review), never
+trusted self-summary. That de-fangs most of the open unknowns below — consolidation becomes
+structured deposits; accuracy-verification becomes contract-verification + the glaze-check;
+retrieval is the ledger structure; the LTM↔context boundary is reconstruct-from-contract; dedup is
+event-sourcing + basin promotion.
+
+**Why this cannot be glazed:** memory *is* agent-scaffolding — the extreme end of the drift-risk
+gradient (§6) — and its blast radius is the whole system. A flaw in one work-product is bounded and
+reviewable; a flaw in memory silently corrupts the foundation of *every future session* and
+compounds. So the dialectic runs **early**, depending on J, before cross-session state accumulates.
+
+**The two residual dragons** (what memory-on-contracts does *not* solve, and must not skip):
+1. **Self-consolidation shares the consolidator's blind spots** (§1/§3 at the memory layer) — a
+   model summarizing its own context cannot verify it kept what matters; consolidation must be
+   decorrelated (a different `θ`, a deterministic contract, or the human), never unchecked
+   self-summary.
+2. **Exploratory / rationale context beyond the structured deposit** — the reasoning, dead-ends,
+   and roads-not-taken a work-contract does not capture, where the *why-we-didn't* (often what a
+   later session most needs) lives. Preserving *and verifying* it is the residual hard-accuracy
+   problem.
 
 **Pieces we already have** (map to `foundations.md §4`, reconstruct-not-recall):
 - the append-only, replayable **event log + s-expr journal** — the immutable statespace
@@ -140,25 +162,43 @@ commons is only compelling once concrete (`foundations.md` Positioning, §5; `de
 - **Above any single harness.** Coordinate heterogeneous human+tool operators without requiring
   them to standardize on one harness (the metaharness-not-harness argument).
 
+### J · The contract substrate *(the spine — foundational, early)*
+The deposit / prose-procedure / contract / gate machinery the rest of the governance layer builds
+on (`foundations.md` self-governing instruction layer; `design.md §4/§7`). Named explicitly
+because **A, D, and I all sit on it** and it is currently implicit.
+- **Artifacts + scoped basins** — prose procedures and contracts as versioned, committable
+  artifacts, layered default ⊕ commons ⊕ project ⊕ operator, with an immutable core and
+  human-ratified promotion.
+- **Phase-aware contracts (typestate) + deterministic gate-parameterization** — the phase is set
+  by the gate/DAG and overrides any agent-declared value; agents never set the terms of their own
+  checking (generalizes to all contract parameters).
+- **The cost-ordered pipeline** — a cheap contract cull (auto-reprompt on fail) gating expensive
+  decorrelated review; the deposit as the co-located claim+evidence review substrate.
+- **Nickel as the checker** (decided), run at harness ⊕ CI ⊕ commit gate; **graceful degradation**
+  (recorded, never silent) + **deferred validation** when it is absent.
+- Relationships: **A** authors the immutable-core contracts on this; **D**'s actuator commits
+  refinements to the basins; **I**'s assent engine is contracts over it.
+
 ---
 
 ## Sequencing
 
-**Stabilize, then broaden.** **B (harden, incl. the I4 fix) + the sensor** comes first.
-**H (runner capability floor)** lands within the first few campaigns — the metaharness
-cannot be meaningfully tested against a toy runner, so a bounded-but-capable runner is a
-prerequisite for **A (formalize stable)**, which grounds the §8 invariants against a
-*realistically exercised* running metaharness. **C (memory)** runs as a parallel design
-dialectic. **D** follows the sensor. **I (multi-stakeholder commons)** is **prioritized** —
-its human-gated-blocker + cross-instance-view core is what makes the commons concrete and the
-thesis testable against real multi-stakeholder scenarios, and it rides the append-only substrate
-B hardens rather than waiting on it; the I4 fix still comes first (a regressed proven invariant
-is always first), and the exact interleave of I with H/A is the head's call. **E / F / G**
-(heterogeneity, TUI, full opencode-compat) are the broadening surface, deliberately after the
-core is stable per §8 — and G's full compatibility comes only after H's bounded floor.
+**Stabilize, then broaden.** **B (harden, incl. the I4 fix) + the sensor** comes first. The
+**contract substrate (J)** is foundational and lands early — A, D, and I all sit on it, so it
+precedes them. **H (runner capability floor)** lands within the first few campaigns — the
+metaharness cannot be meaningfully tested against a toy runner, so a bounded-but-capable runner is
+a prerequisite for **A (formalize stable)**, which authors the immutable-core contracts on J and
+grounds the §8 invariants against a *realistically exercised* running metaharness. **C (memory)**
+is **not** a lazy parallel track: it depends on J (memory-writes are verified deposits) and, given
+its whole-system blast radius, its dialectic runs **early**, before cross-session state
+accumulates. **D** (the self-governing loop) follows the sensor and builds on J. **I** is
+**prioritized** — its assent engine is contracts on J; the I4 fix still comes first (a regressed
+proven invariant is always first), and the exact interleave of I with H/A is the head's call.
+**E / F / G** (heterogeneity, TUI, full opencode-compat) are the broadening surface, deliberately
+after the core is stable per §8 — and G's full compatibility comes only after H's bounded floor.
 
 ## Immediate next
-1. Land the remediated foundation set on the `foundations` branch (council + head review).
-2. **First post-foundation campaign:** B's **I4 fix** (a proven invariant regressed — fix
-   before building on it), then H (**runner capability floor**) toward A (**formalize
-   stable**).
+1. **Landed** (on master): the foundation set, its council + head remediation, and the
+   self-governing instruction layer. The I4-fix campaign is in review.
+2. **Next:** the **contract substrate (J)** and H (**runner capability floor**) toward
+   A (**formalize stable**); C (memory) sequenced early on J.
