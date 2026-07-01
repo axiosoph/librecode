@@ -47,7 +47,13 @@
            #:denied-error
            #:denied-error-message
            #:denied-error-action
-           #:denied-error-resource))
+           #:denied-error-resource
+           
+           ;; Restarts
+           #:retry-with-backup-provider
+           #:compact-and-retry
+           #:skip-and-continue
+           #:retry-tool))
 
 (defpackage #:librecode-runner.audit
   (:use #:cl)
@@ -134,9 +140,11 @@
            #:promote-pending-inputs))
 
 (defpackage #:librecode-runner.runner
-  (:use #:cl)
+  (:use #:cl #:librecode-runner.conditions)
   (:documentation "LLM turn execution, provider interfacing, and SSE streaming.")
-  (:export #:execute-provider-turn))
+  (:export #:execute-provider-turn
+           #:*backup-provider-url*
+           #:*worker-marker*))
 
 (defpackage #:librecode-runner.compaction
   (:use #:cl)

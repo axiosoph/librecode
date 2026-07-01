@@ -8,8 +8,14 @@
 (defvar *provider-url* "http://localhost:8080/v1/chat/completions"
   "The LLM provider endpoint URL.")
 
+(defvar *backup-provider-url* "http://localhost:8081/v1/chat/completions"
+  "The backup LLM provider endpoint URL.")
+
 (defvar *tool-registry* (make-instance 'librecode-runner.tool:tool-registry)
   "The default active tool registry.")
+
+(defvar *worker-marker* nil
+  "Dynamic marker to verify stack preservation during worker restart invocation.")
 
 (defun get-latest-epoch-baseline (session-id)
   "Retrieve the latest baseline text from context_epoch read projection."
@@ -94,10 +100,18 @@
         (when (hash-table-p parsed)
           (let ((err (gethash "error" parsed)))
             (when err
-              (error 'librecode-runner.conditions:provider-error
-                     :endpoint *provider-url*
-                     :provider "mock"
-                     :message (format nil "SSE provider error: ~A" err))))
+              (let ((err-str (format nil "~A" err)))
+                (if (or (search "context_length_exceeded" err-str)
+                        (search "context_overflow" err-str)
+                        (search "token limit" err-str))
+                    (error 'librecode-runner.conditions:context-overflow
+                           :message err-str
+                           :budget 2000
+                           :requested 2500)
+                    (error 'librecode-runner.conditions:provider-error
+                           :endpoint *provider-url*
+                           :provider "mock"
+                           :message (format nil "SSE provider error: ~A" err-str))))))
           (let ((choices (gethash "choices" parsed)))
             (when (and choices (> (length choices) 0))
               (let* ((choice (elt choices 0))
@@ -221,18 +235,42 @@
                  (let ((self (bt:current-thread)))
                    (librecode-runner.protocol:register-worker-thread session-id self)
                    (unwind-protect
-                        (handler-case
-                            (progn
-                              ;; Evaluate permission request at execution site
-                              (librecode-runner.agent:check-permission agent "execute_tool" name)
-                              (let ((res (funcall (librecode-runner.tool:tool-handler tool) args-plist)))
-                                (librecode-runner.protocol:send-message
-                                 librecode-runner.protocol:*session-mailbox*
-                                 `(:tool-success ,call-id ,res))))
-                          (error (c)
-                            (librecode-runner.protocol:send-message
-                             librecode-runner.protocol:*session-mailbox*
-                             `(:tool-error ,call-id ,(format nil "~A" c)))))
+                        (loop
+                          (restart-case
+                              (handler-bind
+                                  ((serious-condition
+                                     (lambda (c)
+                                       (let ((reply-mbox (librecode-runner.protocol:make-mailbox :name (format nil "worker-reply-~A" call-id)))
+                                             (marker-val (and (boundp '*worker-marker*) *worker-marker*)))
+                                         (librecode-runner.protocol:send-message
+                                          librecode-runner.protocol:*session-mailbox*
+                                          `(:worker-error ,call-id ,c ,reply-mbox))
+                                         (let ((reply (librecode-runner.protocol:receive-message reply-mbox)))
+                                           (destructuring-bind (restart-name &rest args) reply
+                                             (let ((restart (find-restart restart-name)))
+                                               (if restart
+                                                   (apply #'invoke-restart restart marker-val args)
+                                                   (error "Restart ~A not found on worker stack" restart-name)))))))))
+                                ;; Evaluate permission request at execution site
+                                (librecode-runner.agent:check-permission agent "execute_tool" name)
+                                (let ((res (funcall (librecode-runner.tool:tool-handler tool) args-plist)))
+                                  (librecode-runner.protocol:send-message
+                                   librecode-runner.protocol:*session-mailbox*
+                                   `(:tool-success ,call-id ,res)))
+                                (return))
+                            (skip-and-continue (&optional marker-val)
+                              :report "Skip this tool execution and continue session."
+                              (librecode-runner.protocol:broadcast-event session-id :tool-skipped (list :id call-id :name name))
+                              (librecode-runner.protocol:send-message
+                               librecode-runner.protocol:*session-mailbox*
+                               `(:tool-success ,call-id ,(if (eq marker-val :active)
+                                                             "Marker active! No unwind!"
+                                                             "Warning: Tool execution skipped.")))
+                              (return))
+                            (retry-tool ()
+                              :report "Retry executing the tool."
+                              ;; Loop back and retry
+                              )))
                      (librecode-runner.protocol:unregister-worker-thread session-id self)
                      (librecode-runner.protocol:unregister-worker-mailbox session-id worker-mbox))))
                :name (format nil "tool-worker-~A" name))))))
@@ -255,7 +293,18 @@
                  ((eq (car msg) :tool-error)
                   (destructuring-bind (call-id err-msg) (cdr msg)
                     (librecode-runner.protocol:broadcast-event session-id :tool-error (list :id call-id :error err-msg))
-                    (setf (gethash call-id results) err-msg))))))
+                    (setf (gethash call-id results) err-msg)))
+                 ((eq (car msg) :worker-error)
+                  (destructuring-bind (call-id condition reply-mbox) (cdr msg)
+                    (librecode-runner.protocol:broadcast-event session-id :tool-worker-error (list :id call-id :condition condition))
+                    (restart-case
+                        (error condition)
+                      (skip-and-continue ()
+                        :report "Request worker to skip and continue."
+                        (librecode-runner.protocol:send-message reply-mbox '(skip-and-continue)))
+                      (retry-tool ()
+                        :report "Request worker to retry the tool."
+                        (librecode-runner.protocol:send-message reply-mbox '(retry-tool)))))))))
 
     (let ((res-list nil))
       (maphash (lambda (k v)
@@ -267,121 +316,149 @@
 (defun execute-provider-turn (session provider model &key withhold-tools (model-capabilities '(:gpu :fast :slow :strongest :cheapest-sufficient)))
   "Execute a single provider turn for the given session.
 Enforces that exactly one provider call is made. Returns t if continuation is allowed."
-  (unless librecode-runner.event-store:*db*
-    (error "No active database connection in *db*."))
-  (librecode-runner.protocol:flush-mailbox librecode-runner.protocol:*session-mailbox*)
-  (let* ((session-id (librecode-runner.session::coerce-session-id session))
-         ;; 1. Promote any pending steer inputs
-         (steer-promoted (librecode-runner.session:promote-pending-inputs session-id :mode :steer))
-         ;; 2. Build history and baseline messages
-         (baseline (get-latest-epoch-baseline session-id))
-         (history (get-session-history-messages session-id))
-         (messages (let ((msgs nil)
-                         (sys-prompt (or baseline "")))
-                     (push (alexandria:plist-hash-table `("role" "system" "content" ,sys-prompt)) msgs)
-                     (dolist (h history)
-                       (push (alexandria:plist-hash-table `("role" ,(first h) "content" ,(second h))) msgs))
-                     (nreverse msgs)))
-         ;; 3. Materialize tools if not withheld
-         (agent (get-active-agent session-id))
-         (materialized (unless withhold-tools
-                         (librecode-runner.tool:materialize-tools *tool-registry* agent model-capabilities)))
-         (request-plist (let ((plist (list :model model
-                                           :messages (mapcar #'librecode-runner.event-store::coerce-to-hash-table messages)
-                                           :stream t)))
-                          (if materialized
-                              (append plist (list :tools (mapcar (lambda (tool)
-                                                                   (list :type "function"
-                                                                         :function (list :name (getf tool :name)
-                                                                                         :description (getf tool :description)
-                                                                                         :parameters (getf tool :parameters))))
-                                                                 materialized)))
-                              plist)))
-         (request-body (com.inuoe.jzon:stringify
-                        (librecode-runner.event-store::coerce-to-hash-table request-plist)))
-         (dex-stream (handler-case
-                         (dexador:post *provider-url*
-                                       :headers '(("Content-Type" . "application/json"))
-                                       :content request-body
-                                       :want-stream t
-                                       :keep-alive nil)
-                       (error (c)
-                         (error 'librecode-runner.conditions:provider-error
-                                :endpoint *provider-url*
-                                :provider provider
-                                :message (format nil "HTTP POST failed: ~A" c))))))
-    (declare (ignore steer-promoted))
-    (multiple-value-bind (text-content tool-calls)
-        (unwind-protect
-              (let ((text-accum (make-array 0 :element-type 'character :fill-pointer 0 :adjustable t))
-                    (tools-accum (make-hash-table :test 'equal)))
-                ;; Spawn Dedicated SSE reader thread
-                (let ((mbox librecode-runner.protocol:*session-mailbox*)
-                      (rid (format nil "reader-~A" (random 1000000))))
-                  (bt:make-thread
-                   (librecode-runner.protocol:with-session-context-captured
-                     (handler-case
-                         (loop
-                           (let ((line (read-line dex-stream nil :eof)))
-                             (if (eq line :eof)
-                                 (progn
-                                   (librecode-runner.protocol:send-message
-                                    librecode-runner.protocol:*session-mailbox*
-                                    `(:sse-eof ,rid))
-                                   (return))
-                                 (librecode-runner.protocol:send-message
-                                  librecode-runner.protocol:*session-mailbox*
-                                  `(:sse-line ,rid ,line)))))
-                       (error (c)
-                         (librecode-runner.protocol:send-message
-                          librecode-runner.protocol:*session-mailbox*
-                          `(:sse-error ,rid ,c)))))
-                   :name "sse-reader-thread")
- 
-                 ;; Unified Event Loop on *session-mailbox*
-                 (loop
-                   (let ((msg (librecode-runner.protocol:receive-message librecode-runner.protocol:*session-mailbox*)))
-                     (cond
-                       ((null msg) (return))
-                       ((eq (car msg) :interrupt)
-                        (close dex-stream)
-                        (error 'librecode-runner.conditions:harness-failure
-                               :message "Session interrupted during LLM execution turn."))
-                       ((eq (car msg) :abort)
-                        (close dex-stream)
-                        (error 'librecode-runner.conditions:harness-failure
-                               :message "Session aborted during LLM execution turn."))
-                       ;; Filter reader-specific messages by reader-id
-                       ((and (member (car msg) '(:sse-line :sse-eof :sse-error))
-                             (not (equal (second msg) rid)))
-                        nil)
-                       ((eq (car msg) :sse-error)
-                        (error 'librecode-runner.conditions:provider-error
-                               :endpoint *provider-url*
-                               :provider provider
-                               :message (format nil "SSE stream error: ~A" (third msg))))
-                       ((eq (car msg) :sse-eof)
-                           (return))
-                       ((eq (car msg) :sse-line)
-                        (process-sse-line-data session-id (third msg) text-accum tools-accum))))))
- 
-                (let ((tc-list nil))
-                  (maphash (lambda (k v)
-                             (declare (ignore k))
-                             (push v tc-list))
-                           tools-accum)
-                  (values (coerce text-accum 'string) (nreverse tc-list))))
-          (close dex-stream))
- 
-      ;; 4. Save assistant response
-      (save-assistant-message session-id text-content tool-calls)
- 
-      ;; 5. Settle concurrent tool calls if any
-      (if tool-calls
-          (progn
-            (let ((results (execute-parallel-tools session-id tool-calls *tool-registry*)))
-              (loop for (call-id res-val) on results by #'cddr
-                    do (let ((tc (find call-id tool-calls :key (lambda (x) (getf x :id)) :test #'string=)))
-                         (save-tool-message session-id call-id (getf tc :name) res-val))))
-            t) ; continuation allowed
-          nil))))
+  (let ((current-url *provider-url*)
+        (current-provider provider)
+        (current-model model))
+    (loop
+      (restart-case
+          (let ((*provider-url* current-url))
+            (unless librecode-runner.event-store:*db*
+              (error "No active database connection in *db*."))
+            (librecode-runner.protocol:flush-mailbox librecode-runner.protocol:*session-mailbox*)
+            (let* ((session-id (librecode-runner.session::coerce-session-id session))
+                   ;; 1. Promote any pending steer inputs
+                   (steer-promoted (librecode-runner.session:promote-pending-inputs session-id :mode :steer))
+                   ;; 2. Build history and baseline messages
+                   (baseline (get-latest-epoch-baseline session-id))
+                   (history (get-session-history-messages session-id))
+                   (messages (let ((msgs nil)
+                                   (sys-prompt (or baseline "")))
+                               (push (alexandria:plist-hash-table `("role" "system" "content" ,sys-prompt)) msgs)
+                               (dolist (h history)
+                                 (push (alexandria:plist-hash-table `("role" ,(first h) "content" ,(second h))) msgs))
+                               (nreverse msgs)))
+                   ;; 3. Materialize tools if not withheld
+                   (agent (get-active-agent session-id))
+                   (materialized (unless withhold-tools
+                                   (librecode-runner.tool:materialize-tools *tool-registry* agent model-capabilities)))
+                   (request-plist (let ((plist (list :model current-model
+                                                     :messages (mapcar #'librecode-runner.event-store::coerce-to-hash-table messages)
+                                                     :stream t)))
+                                    (if materialized
+                                        (append plist (list :tools (mapcar (lambda (tool)
+                                                                             (list :type "function"
+                                                                                   :function (list :name (getf tool :name)
+                                                                                                   :description (getf tool :description)
+                                                                                                   :parameters (getf tool :parameters))))
+                                                                           materialized)))
+                                        plist)))
+                   (request-body (com.inuoe.jzon:stringify
+                                  (librecode-runner.event-store::coerce-to-hash-table request-plist)))
+                   (dex-stream (handler-case
+                                   (dexador:post *provider-url*
+                                                 :headers '(("Content-Type" . "application/json"))
+                                                 :content request-body
+                                                 :want-stream t
+                                                 :keep-alive nil)
+                                 (dexador:http-request-failed (c)
+                                   (let* ((body (dexador:response-body c))
+                                          (parsed (ignore-errors (com.inuoe.jzon:parse body)))
+                                          (err-msg (and (hash-table-p parsed) (gethash "error" parsed))))
+                                     (if (and (stringp err-msg)
+                                              (or (search "context_length_exceeded" err-msg)
+                                                  (search "context_overflow" err-msg)
+                                                  (search "token limit" err-msg)))
+                                         (error 'librecode-runner.conditions:context-overflow
+                                                :message err-msg
+                                                :budget 2000
+                                                :requested 2500)
+                                         (error 'librecode-runner.conditions:provider-error
+                                                :endpoint *provider-url*
+                                                :provider current-provider
+                                                :message (or err-msg (format nil "~A" c))))))
+                                 (error (c)
+                                   (error 'librecode-runner.conditions:provider-error
+                                          :endpoint *provider-url*
+                                          :provider current-provider
+                                          :message (format nil "HTTP POST failed: ~A" c))))))
+              (declare (ignore steer-promoted))
+              (multiple-value-bind (text-content tool-calls)
+                  (unwind-protect
+                       (let ((text-accum (make-array 0 :element-type 'character :fill-pointer 0 :adjustable t))
+                             (tools-accum (make-hash-table :test 'equal)))
+                         ;; Spawn Dedicated SSE reader thread
+                         (let ((mbox librecode-runner.protocol:*session-mailbox*)
+                               (rid (format nil "reader-~A" (random 1000000))))
+                           (bt:make-thread
+                            (librecode-runner.protocol:with-session-context-captured
+                              (handler-case
+                                  (loop
+                                    (let ((line (read-line dex-stream nil :eof)))
+                                      (if (eq line :eof)
+                                          (progn
+                                            (librecode-runner.protocol:send-message
+                                             librecode-runner.protocol:*session-mailbox*
+                                             `(:sse-eof ,rid))
+                                            (return))
+                                          (librecode-runner.protocol:send-message
+                                           librecode-runner.protocol:*session-mailbox*
+                                           `(:sse-line ,rid ,line)))))
+                                (error (c)
+                                  (librecode-runner.protocol:send-message
+                                   librecode-runner.protocol:*session-mailbox*
+                                   `(:sse-error ,rid ,c)))))
+                            :name "sse-reader-thread")
+  
+                           ;; Unified Event Loop on *session-mailbox*
+                           (loop
+                             (let ((msg (librecode-runner.protocol:receive-message librecode-runner.protocol:*session-mailbox*)))
+                               (cond
+                                 ((null msg) (return))
+                                 ((eq (car msg) :interrupt)
+                                  (close dex-stream)
+                                  (error 'librecode-runner.conditions:harness-failure
+                                         :message "Session interrupted during LLM execution turn."))
+                                 ((eq (car msg) :abort)
+                                  (close dex-stream)
+                                  (error 'librecode-runner.conditions:harness-failure
+                                         :message "Session aborted during LLM execution turn."))
+                                 ;; Filter reader-specific messages by reader-id
+                                 ((and (member (car msg) '(:sse-line :sse-eof :sse-error))
+                                       (not (equal (second msg) rid)))
+                                  nil)
+                                 ((eq (car msg) :sse-error)
+                                  (error 'librecode-runner.conditions:provider-error
+                                         :endpoint *provider-url*
+                                         :provider current-provider
+                                         :message (format nil "SSE stream error: ~A" (third msg))))
+                                 ((eq (car msg) :sse-eof)
+                                  (return))
+                                 ((eq (car msg) :sse-line)
+                                  (process-sse-line-data session-id (third msg) text-accum tools-accum))))))
+  
+                         (let ((tc-list nil))
+                           (maphash (lambda (k v)
+                                      (declare (ignore k))
+                                      (push v tc-list))
+                                    tools-accum)
+                           (values (coerce text-accum 'string) (nreverse tc-list))))
+                    (close dex-stream))
+  
+                ;; 4. Save assistant response
+                (save-assistant-message session-id text-content tool-calls)
+  
+                ;; 5. Settle concurrent tool calls if any
+                (if tool-calls
+                    (progn
+                      (let ((results (execute-parallel-tools session-id tool-calls *tool-registry*)))
+                        (loop for (call-id res-val) on results by #'cddr
+                              do (let ((tc (find call-id tool-calls :key (lambda (x) (getf x :id)) :test #'string=)))
+                                   (save-tool-message session-id call-id (getf tc :name) res-val))))
+                      (return-from execute-provider-turn t)) ; continuation allowed
+                    (return-from execute-provider-turn nil)))))
+        (compact-and-retry ()
+          :report "Compact session history and retry the provider turn."
+          (librecode-runner.compaction:compact-context session))
+        (retry-with-backup-provider (&optional (backup-url *backup-provider-url*))
+          :report "Retry the provider turn with a backup provider URL."
+          (setf current-url backup-url))))))
