@@ -86,7 +86,9 @@
            #:*event-broadcast-hook*
            #:broadcast-event
            #:join-thread-with-timeout
-           #:with-session-context-captured))
+           #:with-session-context-captured
+           #:failure-relay
+           #:with-failure-relay))
 
 (defpackage #:librecode-runner.event-store
   (:use #:cl)
