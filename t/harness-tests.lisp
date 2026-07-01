@@ -154,6 +154,7 @@
                                     :db-path db-path
                                     :workspace-root target-dir
                                     :provider "mock-provider"
+                                    :provider-url provider-url
                                     :model "mock-model"
                                     :max-steps 1))
                       (librecode-runner.runner::*provider-url* provider-url)
