@@ -250,6 +250,15 @@ Recursively coerces plists and alists into hash-tables so they serialize to JSON
   (sqlite:execute-non-query db
     "CREATE INDEX IF NOT EXISTS idx_findings_session ON findings(session_id);")
 
+  ;; 11. session_provider_config
+  (sqlite:execute-non-query db
+    "CREATE TABLE IF NOT EXISTS session_provider_config (
+        session_id TEXT PRIMARY KEY,
+        base_url TEXT,
+        model TEXT,
+        auth TEXT
+    );")
+
   db)
 
 
@@ -310,6 +319,14 @@ handling hash-tables (with string keys or symbols), alists, and plists."
     (let ((norm-type (if (symbolp type)
                          (intern (string-upcase (symbol-name type)) :keyword)
                          (intern (string-upcase (format nil "~A" type)) :keyword))))
+      (when (eq norm-type :session-provider-configured)
+        (let ((base-url (get-event-field parsed :base-url))
+              (model (get-event-field parsed :model))
+              (auth (get-event-field parsed :auth)))
+          (sqlite:execute-non-query db
+            "INSERT OR REPLACE INTO session_provider_config (session_id, base_url, model, auth)
+             VALUES (?, ?, ?, ?)"
+            session-id base-url model auth)))
       (when (eq norm-type :context-baseline-updated)
         (let ((epoch-id (get-event-field parsed :epoch-id))
               (baseline-text (get-event-field parsed :baseline-text))
