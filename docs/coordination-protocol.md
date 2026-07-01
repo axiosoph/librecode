@@ -128,6 +128,10 @@ When the model emits multiple tool calls:
 
 ## 5. Configuration Model
 
+> **Status: DEFERRED (design-only).** The config discovery, JSONC preprocessing,
+> and merge machinery described in this section is not implemented. Only the
+> recursive deep-merge helper (`deep-merge-plists`, `tool.lisp`, per RES-08) exists.
+
 `librecode` supports both its native S-expression format for CLI execution and OpenCode's JSON/JSONC documents for workspace compatibility.
 
 ### Discovery & Loading
@@ -193,48 +197,56 @@ In interactive execution mode, `librecode-runner` provides a REPL listener:
 
 ## 7. ASDF System & Package Layout
 
-`librecode` is organized as a single directory repository containing two decoupled ASDF systems to maintain clean boundaries between the runner execution engine and the metaharness coordinator.
+`librecode` is organized as a single directory repository containing **three**
+decoupled ASDF systems, each in its own `.asd` file at the repository root:
+`librecode-runner.asd` (the execution engine), `librecode-meta.asd` (the
+metaharness coordinator, depends on the runner), and `librecode-test.asd` (the
+FiveAM/check-it suite, depends on both). All `src` packages are defined once in
+`src/packages.lisp`, loaded first by the runner system.
 
-### System Definitions (`librecode.asd`)
+### System Definitions (as built)
 
 ```lisp
+;;; librecode-runner.asd
 (defsystem "librecode-runner"
-  :description "The Common Lisp reimplementation of OpenCode's single-agent harness."
-  :version "0.1.0"
-  :author "nrd"
-  :depends-on ("bordeaux-threads" "cl-sqlite" "com.inuoe.jzon" "dexador" "uiop" "clack" "hunchentoot")
-  :pathname "src/"
+  :depends-on ("sqlite" "bordeaux-threads" "com.inuoe.jzon" "dexador"
+               "trivial-signal" "cl-jschema" "clack" "hunchentoot"
+               "clack-handler-hunchentoot")
   :serial t
-  :components ((:file "packages")
-               (:module "runner"
-                :pathname "runner"
-                :components ((:file "conditions")
-                             (:file "audit")
-                             (:file "protocol")
-                             (:file "event-store")
-                             (:file "agent")
-                             (:file "session")
-                             (:file "runner")
-                             (:file "compaction")
-                             (:file "tool")))))        ; Materialization and execution
+  :components ((:module "src"
+                :components
+                ((:file "packages")
+                 (:module "runner"
+                  :components ((:file "conditions")
+                               (:file "protocol")
+                               (:file "event-store")
+                               (:file "agent")
+                               (:file "session")
+                               (:file "tool")
+                               (:file "runner")
+                               (:file "compaction")
+                               (:file "audit")
+                               (:file "http")))))))
 
+;;; librecode-meta.asd
 (defsystem "librecode-meta"
-  :description "The parent orchestrator for multi-agent campaigns (Metaharness)."
-  :version "0.1.0"
-  :author "nrd"
-  :depends-on ("librecode-runner" "trivial-signal")
-  :pathname "src/meta/"
+  :depends-on ("librecode-runner")
   :serial t
-  :components ((:file "multiplexer")
-               (:file "multiplexer-tmux")
-               (:file "harness")
-               (:file "harness-opencode")
-               (:file "harness-librecode")
-               (:file "campaign")
-               (:file "gate")
-               (:file "council")
-               (:file "conditioning")
-               (:file "metaharness")))
+  :components ((:module "src"
+                :components
+                ((:module "meta"
+                  :components ((:file "multiplexer")
+                               (:file "multiplexer-tmux")
+                               (:file "harness")
+                               (:file "harness-subprocess")
+                               (:file "harness-opencode")
+                               (:file "harness-librecode")
+                               (:file "journal")
+                               (:file "campaign")
+                               (:file "gate")
+                               (:file "council")
+                               (:file "conditioning")
+                               (:file "metaharness")))))))
 ```
 
 ### Package Structure (`src/packages.lisp`)
@@ -343,6 +355,12 @@ CREATE TABLE IF NOT EXISTS context_epoch (
 ```
 
 ### Primitives: Deposit and Findings Tables
+
+> **Status: SCHEMA-ONLY.** These four tables (`deposits`, `deposit_cites`,
+> `deposit_refs`, `findings`) are created by `init-db` in `event-store.lisp`, but no
+> code reads or writes them yet — there is no deposit/findings API. The council and
+> deposit substrate that would populate them are stubs (see
+> [design-council-resolutions.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/design-council-resolutions.md) §3).
 
 The following schemas define the storage model for Predicate's primitive deposits and security findings:
 

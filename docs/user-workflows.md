@@ -1,5 +1,13 @@
 # librecode User Workflows & Developer Stories
 
+> **Status: DESIGN-ONLY / ASPIRATIONAL.** This document describes the *intended*
+> end-user experience. Almost none of the user-facing surface here is built yet: there
+> is no `librecode-meta` / `librecode-metad` / `librecode-meta-tui` CLI, no Signal or
+> Matrix messaging, and no interactive campaign TUI. The underlying mechanisms that
+> *do* exist (the runner's HTTP+SSE bridge, two-phase admission, the condition-restart
+> engine, the `run-campaign` supervisor with worktrees and a crash-safe journal) are
+> reachable only programmatically. Read this as a target UX, not current behavior.
+
 This document specifies the intended user experience (UX) and developer workflows for interacting with `librecode-runner` (the harness) and `librecode-meta` (the Metaharness).
 
 ---

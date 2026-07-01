@@ -1,8 +1,24 @@
 # librecode Metaharness (librecode-meta) Architecture
 
+> **Status legend** (as-built against `src/meta/`): **BUILT** = implemented and tested ·
+> **PARTIAL** = core built, gaps noted · **STUB** = class/generic declared, no
+> behavior · **DEFERRED** = design-only, no code. This document is spec-ahead of the
+> implementation: the harness protocol, subprocess + in-process backends, campaign
+> DAG/Kahn/journal, gate runner, and supervision loop are **BUILT**; the multiplexer,
+> council, orchestration-LLM loop, notification layer, and native TUI are **STUB** or
+> **DEFERRED**. Per-section tags below mark each.
+>
+> **Note on the supervisor entry point:** the actual campaign supervisor is
+> `run-campaign` in `campaign.lisp`. The `metaharness.lisp` `start-metaharness` /
+> `stop-metaharness` functions are stubs that return `nil`.
+
 The Metaharness (`librecode-meta`) is the parent supervisor that coordinates multi-agent campaigns across physical process boundaries, establishing a **"Team of Teams"** topology. 
 
-### Externalized Campaign Workspace
+### Externalized Campaign Workspace — PARTIAL
+
+*Worktrees (`worktrees/<node-id>/`) and the crash-safe `campaign-journal.lisp-expr`
+are built. The `ledger/deposits/` and `ledger/decision-log.json` council artifacts
+are not — the council is a stub.*
 
 Rather than executing code or communicating with LLMs directly, the Metaharness schedules parallelized tasks, executes verification gates on committed files, and runs the decision council. It delegates actual task execution to independent child harness processes (such as `librecode-runner`, `harness-opencode`, or `harness-claude-code`).
 
@@ -14,7 +30,13 @@ To prevent tight coupling with the active project repository and maintain clean 
 
 Each child harness operates within its assigned worktree workspace and manages its own local agent composition and sub-delegation loops, writing outputs that cross back over to the campaign's central ledger via the Metaharness protocol.
 
-## 1. Abstract Harness Interface
+## 1. Abstract Harness Interface — BUILT
+
+*The generic-function protocol is implemented in `harness.lisp`. Built backends:
+`librecode-harness` (in-process) and `subprocess-harness` (cross-process, via
+`uiop:launch-program`, with exit-code/failure-as-event mapping per RES-04).
+`harness-opencode` is a bare **STUB** class with no methods, and `harness-claude-code`
+below is not implemented at all.*
 
 To support heterogeneous agent systems, the Metaharness decouples itself entirely from any specific runner implementation. Every child agent process is managed through a uniform CLOS protocol.
 
@@ -81,7 +103,13 @@ Each supported backend is implemented as a subclass of `harness`:
 
 ---
 
-## 2. Multiplexer Protocol (Transport Layer)
+## 2. Multiplexer Protocol (Transport Layer) — STUB
+
+*`multiplexer.lisp` and `multiplexer-tmux.lisp` are bare classes plus three
+method-less `defgeneric`s (`mux-create-session`, `mux-send-command`,
+`mux-kill-session` — note the names differ from those shown below). No tmux shelling
+exists; supervision does not run over a multiplexer. RES-03's "demote tmux to
+viz-only" is a decision, not yet implemented.*
 
 For CLI-based child harnesses, the Metaharness uses a terminal multiplexer to manage physical I/O streams and preserve session workspaces.
 
@@ -106,7 +134,12 @@ The initial backend target is `multiplexer-tmux`, which implements this interfac
 
 ---
 
-## 3. Campaign DAG Execution
+## 3. Campaign DAG Execution — BUILT (Surface-Exceed protocol DEFERRED)
+
+*The `campaign-node`/`campaign-dag` structs, `compute-kahn-layers` (with cycle and
+unresolved-dependency detection), the dispatch/reconcile loop, per-node worktrees,
+and merge/prune are built and tested (`campaign-tests.lisp`, `supervision-tests.lisp`).
+The dynamic Surface-Exceed / collision-widening protocol below is design-only.*
 
 A Campaign represents a high-level task structured as a directed acyclic graph (DAG) of independent work nodes.
 
@@ -147,7 +180,10 @@ The Metaharness coordinates campaign execution using a **dynamic graph-based sch
 
 ---
 
-### Surface-Exceed Protocol
+### Surface-Exceed Protocol — DEFERRED
+
+*Design-only. Nodes carry a `file-surface`, but the event-intercept surface-widening
+and serialization-fallback described here are not implemented.*
 
 To enforce strict boundary isolation:
 * A child harness is initialized with a ruleset where writing to any resource *outside* its authorized `file_surface` is treated as a `:ask` permission constraint.
@@ -158,7 +194,12 @@ To enforce strict boundary isolation:
 
 ---
 
-## 4. Cross-Process Council Deliberation
+## 4. Cross-Process Council Deliberation — STUB (gate runner BUILT)
+
+*The council itself is a stub: `convene-council` and `validate-assent`
+(`council.lisp`) return `nil` — no seats, deposits, or signing. What IS built is the
+gate runner (`run-gate`, `defgate`) described under "Gate Evaluation Mechanics" and
+"Lisp-Based Verification DSL" below.*
 
 The Council model governs high-stakes architectural transitions (e.g., DAG structural changes, merges, and campaign close) through distinct role-based perspectives:
 * **Composer**: Orchestrator moderation and schedule derivation.
@@ -182,7 +223,12 @@ To maintain decorrelation and avoid group-think across isolated workspaces:
    * `:full` — Unanimous machine consensus (Composer, Architect, Maintainer, Auditor) required.
    * `:human` — Requires the head's explicit approval (the human seam).
 
-### Gate Evaluation Mechanics
+### Gate Evaluation Mechanics — PARTIAL
+
+*The native `run-gate` shells to `nickel export` and routes exit codes to
+`protocol-invariant-violation` / `gate-failure` (BUILT, tested). The deposit-schema
+validation and cryptographic-signature verification below depend on the council and
+are **not** implemented.*
 
 To enforce the verification dual, `librecode-meta` implements a dedicated gate runner (`gate.lisp`). Instead of depending on external runtimes for core protocol safety, validation is divided into native invariants and pluggable DSL-based checks.
 
@@ -195,7 +241,12 @@ The core safety rules of the multi-agent coordination protocol are enforced nati
 
 If any inherent invariant is violated, the engine signals a `protocol-invariant-violation` condition directly, halting the campaign execution state-freeze immediately.
 
-#### Lisp-Based Verification DSL
+#### Lisp-Based Verification DSL — BUILT
+
+*The `defgate` macro is real (`gate.lisp`, `expand-defgate`) and tested — it supports
+the `:target`, `:verify`, `:worktree`, `:execute`, and `:on-failure` clauses shown
+below. (A broader campaign-authoring DSL, e.g. `defcampaign`, does not exist;
+campaigns are built from the `make-campaign-node` / `make-campaign-dag` structs.)*
 
 For project-specific gates, custom deposit checks, and workflow constraints, `librecode-meta` provides an embedded Lisp DSL to specify rules at campaign DAG boundaries:
 
@@ -230,7 +281,13 @@ Developers can plug user-crafted checkers (e.g., custom Nickel contracts, git ho
 
 ---
 
-## 5. Campaign Coordination Loop (The Orchestration LLM)
+## 5. Campaign Coordination Loop (The Orchestration LLM) — DEFERRED (persistence BUILT)
+
+*There is no parent-level LLM coordinator. What IS built is the autonomous recovery
+ladder (`execute-node-batch`: retry → rework → skip → escalate, bounded by
+`max-retries`, with an `escalation-hook` seam) and the crash-safe journal under
+"Campaign State Persistence" below. The LLM-driven progress-assessment and
+failure-analysis described here are design-only.*
 
 To keep multi-agent campaigns moving forward autonomously while preserving safety boundaries, the Metaharness runs its own **Campaign Coordination Loop** powered by a parent-level LLM context:
 
@@ -239,7 +296,11 @@ To keep multi-agent campaigns moving forward autonomously while preserving safet
 * **Failure Analysis & Realignment**: If a child harness fails a validation gate, the parent coordinator uses the LLM to inspect compilation, test, or linter stderr traces, formulates a corrective design revision, and updates the child's target boundary for dispatching rework.
 * **Blocking Determinations**: The loop distinguishes between autonomous progress and non-negotiable checks (e.g., design-rights conflicts, missing third-party dependencies, or non-converging review cycles). If a block is encountered, the coordinator halts the campaign and delegates the decision to the human seam.
 
-### Campaign State Persistence
+### Campaign State Persistence — BUILT
+
+*`journal.lisp` implements the append-only s-expr journal with `force-output`,
+crash-safe `replay-journal` (truncates at the last valid entry), and resume via
+`run-campaign`. Tested in `journal-tests.lisp`.*
 
 To recover from supervisor process crashes or system reboots during long-running campaigns:
 * **S-Expression Journal**: The Metaharness persists campaign DAG structures, node statuses, isolated worktree bindings, and current execution layer states as a serialized S-expression journal (`campaign-journal.lisp-expr`) stored centrally in the campaign's external ledger directory.
@@ -248,7 +309,10 @@ To recover from supervisor process crashes or system reboots during long-running
 
 ---
 
-## 6. Asynchronous Messaging & Headless Notifications
+## 6. Asynchronous Messaging & Headless Notifications — DEFERRED
+
+*Design-only. There is no `librecode-metad` HTTP daemon, no `send-notification` /
+`request-decision` implementation, and no Signal/Matrix/webhook adapter.*
 
 The Metaharness operates as a long-running background daemon (`librecode-metad`) that coordinates campaigns headlessly. It exposes a Clack/Hunchentoot-based HTTP server for programmatic control:
 * **REST Endpoints**: `/campaign/:id/status`, `/campaign/:id/nodes`, and `/campaign/:id/gate/approve`.
@@ -277,7 +341,9 @@ This decoupled layer ensures the campaign runs cheaply and autonomously in the b
 
 ---
 
-## 7. Metaharness Native TUI (librecode-meta-tui) Design
+## 7. Metaharness Native TUI (librecode-meta-tui) Design — DEFERRED
+
+*Design-only. No TUI exists; `croatoan` is not a dependency of any system.*
 
 The native TUI (`librecode-meta-tui`) is built on **Croatoan** to provide a real-time, pane-partitioned campaign dashboard.
 

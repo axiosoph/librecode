@@ -1,5 +1,12 @@
 # librecode CLOS Agent & Permission System
 
+> **Status (as-built against `src/runner/`):** the unified `agent` class (§1) and the
+> permission model (§3) are **BUILT** and verified by unit + property tests
+> (`t/agent-tests.lisp`). The tool registry (§2) is **PARTIAL**: materialization,
+> permission/capability filtering, JSON-schema advertising to the model, and parallel
+> `unwind-protect` settlement are built, but **only test-fixture tools are
+> registered** — no real `file` / `run_command` tools exist yet.
+
 `librecode` replaces ad-hoc flags and structural checks with a unified agent class and polymorphic generic dispatch over tool permissions and dynamic behaviors.
 
 ## 1. Unified Agent Class

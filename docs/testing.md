@@ -1,5 +1,15 @@
 # librecode Testing Specification
 
+> **Status (as-built).** The native FiveAM + check-it suite is **BUILT** and green.
+> The 15 suites declared in `librecode-test.asd` are: `event-store`, `agent`, `audit`,
+> `tool`, `session`, `http`, `resilience`, `campaign`, `journal`, `harness`, `gate`,
+> `supervision`, `recovery`, `failure-relay`, `cross-process`. The OpenCode-parity
+> pieces below — the §3 TypeScript "Test Porting Matrix" and the §4 Playwright
+> black-box E2E run against OpenCode's app package — are **DEFERRED/aspirational**;
+> they describe a parity goal, not tests that currently run. (Note: §4 invokes
+> `librecode-runner:start-server`; the actual HTTP entry point is
+> `librecode-runner.http:start-http-bridge`.)
+
 This document defines the testing strategy, frameworks, fixtures, and execution models required to guarantee absolute behavioral parity between `librecode` and OpenCode.
 
 ---

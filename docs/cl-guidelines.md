@@ -46,21 +46,41 @@ This document outlines the architectural paradigms, style requirements, and libr
 
 ## 2. Library Dependency Surface
 
-To keep the system lean and maintainable, the dependency list is restricted to the following approved packages:
+To keep the system lean and maintainable, the dependency list is restricted to the
+following approved packages. This table is reconciled to the actual
+`depends-on` clauses of `librecode-runner.asd`, `librecode-meta.asd`, and
+`librecode-test.asd`.
 
-| Library | Subsystem | Purpose |
+### Runtime dependencies
+
+| Library | System declared in | Subsystem | Purpose |
+| :--- | :--- | :--- | :--- |
+| `cl-sqlite` (system `sqlite`) | runner | Database | Direct SQLite WAL engine connection management. |
+| `bordeaux-threads` | runner | Concurrency | Portable multithreading (bt2) and condition variables. |
+| `com.inuoe.jzon` | runner | JSON | Stream-oriented, compliant JSON parsing. |
+| `dexador` | runner | HTTP client / SSE | HTTP queries and SSE event-stream consumption. |
+| `trivial-signal` | runner | Signals | Graceful shutdown signal handling. |
+| `cl-jschema` | runner | JSON Schema | Tool parameter schema validation (`tool.lisp`). |
+| `clack` | runner + test | HTTP Server | Booting the REST/SSE API server. |
+| `hunchentoot` | runner + test | HTTP Server | Backing web server for Clack. |
+| `clack-handler-hunchentoot` | runner + test | HTTP Server | Clack ⇄ Hunchentoot handler bridge. |
+| `sb-concurrency` | (SBCL `require`, not quicklisp) | Concurrency | Lock-free mailboxes and queues (native to SBCL). |
+
+### Test-only dependencies
+
+| Library | System declared in | Purpose |
 | :--- | :--- | :--- |
-| `alexandria` | Utilities | Core helper library (`assoc-value`, `when-let`, `plist-alist`). |
-| `bordeaux-threads` | Concurrency | Portable multithreading (bt2) and condition variables. |
-| `sb-concurrency` | Concurrency | Lock-free mailboxes and queues (native to SBCL). |
-| `dexador` | HTTP / SSE | Non-blocking HTTP queries and SSE event-stream consumption. |
-| `clack` / `hunchentoot` | HTTP Server | Booting REST/SSE API servers for E2E integration. |
-| `com.inuoe.jzon` | JSON | Stream-oriented, compliant JSON and JSONC parsing. |
-| `cl-sqlite` | Database | Direct SQLite WAL engine connection management. |
-| `croatoan` | TUI | CLOS panel and ncurses layout management. |
-| `local-time` | Time | High-precision, timezone-aware datetime parsing. |
-| `uuid` | Identity | Thread-safe UUID generation for deposits and events. |
-| `split-sequence` | Utilities | Splitting string tokens and path slices. |
+| `fiveam` | test | Unit/integration test framework. |
+| `check-it` | test | Property-based testing (generators). |
+| `usocket` | test | Free-port discovery for cross-process/HTTP tests. |
+
+> **Note:** `alexandria` is referenced in `src/runner/runner.lisp` and
+> `src/runner/http.lisp` but is not declared in any `depends-on` clause — it loads
+> only transitively (via `dexador`/`clack`). This is a latent fragility, not an
+> approved direct dependency; declare it explicitly if the code keeps using it.
+>
+> The libraries `croatoan`, `local-time`, `uuid`, and `split-sequence` previously
+> listed here are **not used anywhere** in `src/` or `t/` and have been removed.
 
 ---
 

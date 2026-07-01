@@ -2,6 +2,30 @@
 
 The Design Council (convened on 2026-06-30) has delivered a unanimous **REJECTED** verdict on the initial specifications. This document aggregates all findings from the Architect, Lead Maintainer, and Process Auditor seats and defines their mathematical and structural resolutions.
 
+> **Implementation status (as-built against `src/`).** The resolutions below drove the
+> two campaigns that have since landed. Current state:
+>
+> | RES | Topic | Status |
+> | :-- | :--- | :--- |
+> | RES-01 | Process-global CWD safety | **BUILT** — no `chdir`; `*workspace-root*` + `:directory` on `launch-program`. |
+> | RES-02 | `harness-prepare-workspace` class method | **BUILT** — generic with `eql` class-symbol specializers. |
+> | RES-03 | Demote tmux to viz-only | **DECIDED, NOT IMPLEMENTED** — multiplexer/tmux are bare stubs. |
+> | RES-04 | Cross-process restart → event mapping | **BUILT** — `subprocess-harness` exit-code/failure-as-event → parent `harness-failure`. |
+> | RES-05 | Non-blocking network/subprocess interrupts | **BUILT** — async reader/waiter threads, `stopping` flag, stream close. |
+> | RES-06 | Stack-preserving worker freeze/handshake | **BUILT** — `with-failure-relay` mailbox handshake (live SLIME connect is manual). |
+> | RES-07 | Remove custom JSONC state-machine parser | **DEFERRED** — config/JSONC loading not implemented (KU5). |
+> | RES-08 | Deep configuration merge | **BUILT** — `deep-merge-plists` (`tool.lisp`). |
+> | RES-09 | SQLite projection DDL schemas | **BUILT** — `session_state`/`session_history`/`context_epoch` created by `init-db`. |
+> | RES-10 | Native symbolic council-delegation gate | **PARTIAL** — native `nickel` gate + `protocol-invariant-violation` exist; council delegation-table evaluation is a stub. |
+> | RES-11 | Demote Signal/webhook alerts | **DECIDED, NOT IMPLEMENTED** — no notifier layer exists. |
+> | RES-12 | Collapse CLOS agent hierarchy to one class | **BUILT** — single parameterized `agent` class. |
+>
+> **§3 (Lisp-Based Primitives Mapping) is DESIGN-ONLY.** The `deposits` /
+> `deposit_cites` / `deposit_refs` / `findings` tables are created as DDL but never
+> read or written; the P-GROUND/P-ARSENAL/P-COMPOSE/P-INTENT/P-TRACK structs and
+> macros (`with-boundary`, `with-tracker`, `defprocedure`, `select-capability`) are
+> **not implemented**.
+
 ---
 
 ## 1. Architectural & Engineering Resolutions

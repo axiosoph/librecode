@@ -1,8 +1,12 @@
 # librecode Resilience & Audit System
 
+> **Status legend** (as-built against `src/`): **BUILT** = implemented and tested ·
+> **PARTIAL** = core built, gaps noted · **DEFERRED** = design-only, not implemented.
+> Overall this document is largely **BUILT**; per-item exceptions are called out inline.
+
 This specification defines `librecode`'s condition-restart failure recovery engine and S-expression audit trail, replacing the standard Javascript async error-handling paradigm with interactive and automated repair-in-place semantics.
 
-## 1. Condition-Restart Recovery Engine
+## 1. Condition-Restart Recovery Engine — BUILT (restart set partial)
 
 Unlike TypeScript/V8, which unwinds the execution stack immediately upon encountering an error (via `try/catch` or Effect's error channels), `librecode` leverages Common Lisp's dynamic condition system (`handler-bind`) to freeze the stack at the error location. This preserves all context and allows handlers to resolve the issue in-band.
 
@@ -18,27 +22,29 @@ Every subsystem defines specialized condition classes inheriting from `serious-c
 
 ### Multi-Tiered Restarts
 
-When a condition is signaled, the system offers targeted restarts:
+When a condition is signaled, the system offers targeted restarts. Restarts actually
+defined in `conditions.lisp` / `execute-provider-turn`: `retry-with-backup-provider`,
+`compact-and-retry`, `skip-and-continue`, `retry-tool`.
 
-1. **`retry-with-backup-provider`**
-   * *Applicable to*: `provider-error`
-   * *Behavior*: Switches the active provider connection to a backup model/API endpoint and re-executes the current turn.
-2. **`compact-and-retry`**
+1. **`compact-and-retry`** — **BUILT & autonomously driven**
    * *Applicable to*: `context-overflow`
-   * *Behavior*: Triggers the compaction engine to fold older context history, snapshots a new epoch baseline, and retries the turn.
-3. **`inject-corrected-payload`**
-   * *Applicable to*: `provider-error` (e.g. invalid JSON response payload)
-   * *Behavior*: Allows an auditor agent or human to modify the malformed payload or tool specification inline and retry.
-4. **`drop-to-repl-intervention`**
-   * *Applicable to*: any serious condition in interactive mode
-   * *Behavior*: Suspends the runner thread and drops the human developer into an active REPL session to inspect variables, modify code, or manually force values before resuming.
-5. **`skip-and-continue`**
+   * *Behavior*: Triggers the compaction engine to fold older context history, snapshots a new epoch baseline, and retries the turn. Auto-invoked by a `handler-bind` in the HTTP drive loop up to `*max-compact-attempts*` (`http.lisp`).
+2. **`retry-with-backup-provider`** — **BUILT (restart), not yet auto-driven**
+   * *Applicable to*: `provider-error`
+   * *Behavior*: Switches the active provider connection to a backup endpoint (`*backup-provider-url*`) and re-executes the turn. The restart exists in `restart-case` but is currently invoked only by tests — no `src/` `handler-bind` autonomously selects it.
+3. **`skip-and-continue`** — **BUILT**
    * *Applicable to*: non-fatal tool or subagent failures
    * *Behavior*: Discards the failed operation, records a warning event, and continues the session execution block.
+4. **`inject-corrected-payload`** — **DEFERRED (not defined)**
+   * *Applicable to*: `provider-error` (e.g. invalid JSON response payload)
+   * *Behavior (design)*: Allows an auditor agent or human to modify the malformed payload or tool specification inline and retry.
+5. **`drop-to-repl-intervention`** — **DEFERRED (not defined)**
+   * *Applicable to*: any serious condition in interactive mode
+   * *Behavior (design)*: Suspends the runner thread and drops the human developer into an active REPL session to inspect variables, modify code, or manually force values before resuming.
 
 ---
 
-## 2. Cross-Thread & Cross-Process Condition Propagation
+## 2. Cross-Thread & Cross-Process Condition Propagation — BUILT
 
 Because tool execution runs on separate threads and independent child harnesses execute in external processes, conditions must be propagated across dynamic extent boundaries.
 
@@ -63,7 +69,7 @@ For out-of-process runners:
 
 ---
 
-## 3. S-Expression Audit Trail
+## 3. S-Expression Audit Trail — BUILT
 
 The Audit Trail records every event, condition signal, restart invocation, and sub-process transition to a thread-safe, append-only log.
 
