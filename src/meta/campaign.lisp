@@ -122,6 +122,7 @@ or if any dependency is unresolved."
    (active-harnesses :initform (make-hash-table :test 'equal) :accessor campaign-active-harnesses :type hash-table)
    (active-harnesses-lock :initform (bt:make-lock "active-harnesses-lock") :reader campaign-active-harnesses-lock)
    (journal-lock :initform (bt:make-lock "journal-lock") :reader campaign-journal-lock)
+   (git-lock :initform (bt:make-lock "git-lock") :reader campaign-git-lock)
    (supervisor-mailbox :initarg :supervisor-mailbox :accessor campaign-supervisor-mailbox)
    (reply-mailbox :initarg :reply-mailbox :accessor campaign-reply-mailbox)
    (failure-counts :initform (make-hash-table :test 'equal) :accessor campaign-failure-counts)
@@ -172,17 +173,18 @@ or if any dependency is unresolved."
          (node-id (campaign-node-id node))
          (node-branch (format nil "campaign-node-~A" node-id)))
     (when (git-repo-p repo-path)
-      ;; Clean up any stale worktree directory in git metadata, but don't delete branch if we want to resume
-      (ignore-errors
-       (run-git-command repo-path (list "worktree" "remove" "-f" (namestring worktree-dir))))
-      (ignore-errors
-       (run-git-command repo-path (list "worktree" "prune")))
-      
-      (if (git-branch-exists-p repo-path node-branch)
-          ;; Branch exists, add worktree referencing it
-          (run-git-command repo-path (list "worktree" "add" (namestring worktree-dir) node-branch))
-          ;; Branch does not exist, create new branch from shared-branch
-          (run-git-command repo-path (list "worktree" "add" "-b" node-branch (namestring worktree-dir) shared-branch))))
+      (bt:with-lock-held ((campaign-git-lock campaign))
+        ;; Clean up any stale worktree directory in git metadata, but don't delete branch if we want to resume
+        (ignore-errors
+         (run-git-command repo-path (list "worktree" "remove" "-f" (namestring worktree-dir))))
+        (ignore-errors
+         (run-git-command repo-path (list "worktree" "prune")))
+        
+        (if (git-branch-exists-p repo-path node-branch)
+            ;; Branch exists, add worktree referencing it
+            (run-git-command repo-path (list "worktree" "add" (namestring worktree-dir) node-branch))
+            ;; Branch does not exist, create new branch from shared-branch
+            (run-git-command repo-path (list "worktree" "add" "-b" node-branch (namestring worktree-dir) shared-branch)))))
     t))
 
 (defun merge-node-branch (campaign node)
@@ -191,19 +193,37 @@ or if any dependency is unresolved."
          (node-id (campaign-node-id node))
          (node-branch (format nil "campaign-node-~A" node-id)))
     (when (git-repo-p repo-path)
-      ;; 1. Checkout the shared branch
-      (run-git-command repo-path (list "checkout" shared-branch))
-      ;; 2. Merge the node branch
-      (run-git-command repo-path (list "merge" node-branch "--no-edit"))
-      ;; 3. Clean up the worktree
-      (let ((worktree-dir (get-node-worktree-dir campaign node)))
-        (ignore-errors
-         (run-git-command repo-path (list "worktree" "remove" "-f" (namestring worktree-dir))))
-        (ignore-errors
-         (run-git-command repo-path (list "worktree" "prune")))
-        ;; 4. Delete the node branch
-        (ignore-errors
-         (run-git-command repo-path (list "branch" "-D" node-branch)))))
+      (bt:with-lock-held ((campaign-git-lock campaign))
+        ;; 1. Checkout the shared branch
+        (run-git-command repo-path (list "checkout" shared-branch))
+        ;; 2. Merge the node branch
+        (run-git-command repo-path (list "merge" node-branch "--no-edit"))
+        ;; 3. Clean up the worktree
+        (let ((worktree-dir (get-node-worktree-dir campaign node)))
+          (ignore-errors
+           (run-git-command repo-path (list "worktree" "remove" "-f" (namestring worktree-dir))))
+          (ignore-errors
+           (run-git-command repo-path (list "worktree" "prune")))
+          ;; 4. Delete the node branch
+          (ignore-errors
+           (run-git-command repo-path (list "branch" "-D" node-branch))))))
+    t))
+
+(defun prune-node-branch (campaign node)
+  (let* ((repo-path (campaign-repository-path campaign))
+         (node-id (campaign-node-id node))
+         (node-branch (format nil "campaign-node-~A" node-id)))
+    (when (git-repo-p repo-path)
+      (bt:with-lock-held ((campaign-git-lock campaign))
+        ;; 1. Clean up the worktree
+        (let ((worktree-dir (get-node-worktree-dir campaign node)))
+          (ignore-errors
+           (run-git-command repo-path (list "worktree" "remove" "-f" (namestring worktree-dir))))
+          (ignore-errors
+           (run-git-command repo-path (list "worktree" "prune")))
+          ;; 2. Delete the node branch
+          (ignore-errors
+           (run-git-command repo-path (list "branch" "-D" node-branch))))))
     t))
 
 (defun safe-write-journal-entry (campaign stream entry)
@@ -395,8 +415,9 @@ or if any dependency is unresolved."
                   (if (campaign-autonomous-p campaign)
                       (let* ((failure-counts (campaign-failure-counts campaign))
                              (count (setf (gethash node-id failure-counts)
-                                          (1+ (gethash node-id failure-counts 0)))))
-                        (if (>= count (campaign-max-retries campaign))
+                                          (1+ (gethash node-id failure-counts 0))))
+                             (limit (campaign-max-retries campaign)))
+                        (if (>= count limit)
                             (let* ((escalation-cond
                                      (make-condition 'escalation-required
                                                      :campaign campaign
@@ -414,7 +435,7 @@ or if any dependency is unresolved."
                                 ((and choice (symbolp choice) (string-equal choice "SKIP-NODE"))
                                  (setf (campaign-node-status failed-node) :accepted)
                                  (safe-write-journal-entry campaign journal-stream (list :node-accepted node-id))
-                                 (merge-node-branch campaign failed-node))
+                                 (prune-node-branch campaign failed-node))
                                 ((and choice (symbolp choice) (string-equal choice "RETRY-NODE"))
                                  (setf (campaign-node-status failed-node) :pending))
                                 (t
@@ -427,10 +448,12 @@ or if any dependency is unresolved."
                                      (format nil "Error trace from failure: ~A" (princ-to-string failed-cond)))
                                (safe-write-journal-entry campaign journal-stream (list :node-rework node-id (campaign-node-ibc failed-node)))
                                (setf (campaign-node-status failed-node) :rework))
-                              ((>= count 3)
+                              ((and (>= count 3) (< count (1- limit)))
                                (setf (campaign-node-status failed-node) :accepted)
                                (safe-write-journal-entry campaign journal-stream (list :node-accepted node-id))
-                               (merge-node-branch campaign failed-node)))))
+                               (prune-node-branch campaign failed-node))
+                              (t
+                               (setf (campaign-node-status failed-node) :pending)))))
                       (let ((choice
                               (block nil
                                 (librecode-runner.protocol:with-failure-relay
@@ -464,7 +487,7 @@ or if any dependency is unresolved."
                           ((eq choice :skip)
                            (setf (campaign-node-status failed-node) :accepted)
                            (safe-write-journal-entry campaign journal-stream (list :node-accepted node-id))
-                           (merge-node-branch campaign failed-node)))))))
+                           (prune-node-branch campaign failed-node)))))))
           ;; No failures! Merge all nodes in the batch
           (progn
             (dolist (node batch)
