@@ -9,21 +9,20 @@ so we can fill in the missing implementation and reach a fully working stack.
 
 ## Where we are (2026-07-01)
 
-- **Runner:** resilience thesis proven (condition/restart tiers, RES-06 worker
+- **Runner:** resilience thesis proven (condition/restart tiers, the worker
   freeze/handshake, the reusable failure-relay); concurrency hardened; event-sourced
   SQLite; compaction + context epochs.
 - **Metaharness:** supervision thesis proven — harness protocol + in-process and
   real cross-process (subprocess) backends; campaign DAG + Kahn + crash-safe journal;
   native `nickel` gate; supervision loop (multi-child, failure→condition→restart via the
   relay, journal resume); autonomous recovery ladder.
-- **PoC (campaign-5) — reached:** metaharness → **real subprocess child** → real
-  builtin tools (read/write/bash, CWD-safe) → native gate, producing a gated artifact,
-  with mid-campaign kill/resume; endpoint-generic OpenAI-compatible provider; a runnable
-  `just demo` against local Ollama (`qwen2.5-coder:3b`).
-- **Foundations + manifesto:** drafted (`foundations.md`, `../MANIFESTO.md`), pending
-  council review.
-- **Known regression (must-fix):** campaign-5 reintroduced `bt:destroy-thread`
-  (`tool.lisp:270`) and removed test lines — an **I4 violation** (cooperative shutdown).
+- **PoC — reached:** metaharness → **real subprocess child** → real builtin tools
+  (read/write/bash, CWD-safe) → native gate, producing a gated artifact, with
+  mid-run kill/resume; an endpoint-generic OpenAI-compatible provider; and a runnable
+  demo against a small local model (Ollama, `qwen2.5-coder:3b`).
+- **Foundations + manifesto:** drafted and reviewed (`foundations.md`, `../MANIFESTO.md`).
+- **Known regression (must-fix):** a recent change reintroduced a raw thread-kill in
+  tool-timeout cleanup and removed its tests — violating the cooperative-shutdown invariant.
 
 ## Destination
 
@@ -36,17 +35,17 @@ message-first human-seam API.
 ## Workstreams
 
 ### A · Formalize "stable" *(highest leverage; unblocks the rest)*
-Turn `foundations.md §8` into a **machine-checked spec** (`/spec` or `/form`) of the
-static invariants (monotonic unforgeable progress; bounded+recoverable divergence; seams
-surfaced never crossed; decorrelated composition) — grounded against the *now-running*
-metaharness (`campaign.lisp`). This converts "stable metaharness" from prose into a gate.
+Turn `foundations.md §8` into a **machine-checked spec** of the static invariants
+(monotonic unforgeable progress; bounded+recoverable divergence; seams surfaced never
+crossed; decorrelated composition) — grounded against the *now-running* metaharness. This
+converts "stable metaharness" from prose into a gate.
 Its own determinization ratchet: every invariant we can make deterministic, we must.
 
 ### B · Harden the runner/metaharness core
-- **Fix the I4 regression** (restore cooperative shutdown at `tool.lisp:270`; restore
-  the deleted tests) — *do this first; it's a proven invariant that slipped.*
+- **Fix the shutdown regression** — restore cooperative shutdown and the deleted tests.
+  *Do this first; it is a proven invariant that slipped.*
 - Provider auth + non-OpenAI dialects (beyond the endpoint-generic base).
-- The `:accepted`-vs-`:skipped` ladder semantics (landed in c3daf5c — verify).
+- The accepted-vs-skipped ladder semantics (recently implemented; needs verification).
 - Stand up the **coherence telemetry substrate** (the living loop's *sensor*):
   iterations-to-gate, rework/escalation/gate-fail rates, per basin/content-type/time.
 
@@ -64,12 +63,12 @@ event-sourcing + basin promotion.
 **Why this cannot be glazed:** memory *is* agent-scaffolding — the extreme end of the drift-risk
 gradient (§6) — and its blast radius is the whole system. A flaw in one work-product is bounded and
 reviewable; a flaw in memory silently corrupts the foundation of *every future session* and
-compounds. So the dialectic runs **early**, depending on J, before cross-session state accumulates.
+compounds. So this design work happens **early**, depending on J, before cross-session state accumulates.
 
 **The two residual dragons** (what memory-on-contracts does *not* solve, and must not skip):
 1. **Self-consolidation shares the consolidator's blind spots** (§1/§3 at the memory layer) — a
    model summarizing its own context cannot verify it kept what matters; consolidation must be
-   decorrelated (a different `θ`, a deterministic contract, or the human), never unchecked
+   decorrelated (a different model, a deterministic contract, or the human), never unchecked
    self-summary.
 2. **Exploratory / rationale context beyond the structured deposit** — the reasoning, dead-ends,
    and roads-not-taken a work-contract does not capture, where the *why-we-didn't* (often what a
@@ -80,12 +79,12 @@ compounds. So the dialectic runs **early**, depending on J, before cross-session
 - the append-only, replayable **event log + s-expr journal** — the immutable statespace
   (source of truth);
 - the runner's **compaction engine + context epochs** — consolidation + reconstruction;
-- predicate's **`.ledger` = a git repo** — a de-facto LTM: cheap, trivially redundant,
+- a git-repo-backed **ledger** — a de-facto long-term memory: cheap, trivially redundant,
   **no lock-in** (git is the right medium, per the freedom stance);
-- a working **memory-system prototype** (one-fact-per-file + a searchable index +
-  `[[links]]` + dedup/update discipline, git-backed) — a concrete LTM pattern to learn from.
+- an existing git-backed **memory pattern** (one-fact-per-file + a searchable index +
+  `[[links]]` + dedup/update discipline) — a concrete LTM pattern to learn from.
 
-**Open unknowns** (the future dialectic must resolve):
+**Open unknowns** (still to be worked out):
 1. **Consolidation mechanics** — a *local model* (freedom/privacy: keep it libre and
    off-vendor) opportunistically compacts fresh conversation → writes the ledger.
    Trigger, granularity, format? Enforce local-only, or advise as good style?
@@ -96,7 +95,7 @@ compounds. So the dialectic runs **early**, depending on J, before cross-session
    commit messages to know where to dive), with arbitrarily deep detail from there. What
    *minimal coherent structure* keeps it effective/searchable without imposing bounds?
 4. **LTM ↔ context-map boundary** — what is promoted to durable memory vs. held in the
-   working context; when and how (cf. predicate's scratch→ledger promotion).
+   working context; when and how (cf. the scratch→durable-store promotion pattern).
 5. **Dedup / update** — avoid duplicate/stale memory; update-in-place vs. append; delete
    what proved wrong.
 
@@ -121,10 +120,10 @@ ratification). The human quality scalar at campaign close is the ground-truth an
   is per-contract (phase design + the monotonic-phase invariant), not systemic.
 
 ### E · Heterogeneity / decorrelation-first *(the manifesto's core value)*
-- Cross-model **council/verification seats** (different `θ`, not lenses on one).
-- `harness-opencode` (real cross-process OpenCode backend) — the heterogeneity play.
-- **Arms-length proprietary** via tmux-pane-reading driven by a cheap local model —
-  disparate `θ` for decorrelation without deep coupling (the freedom-preserving path).
+- Cross-model **verification seats** (different models, not lenses on one).
+- A real cross-process **opencode backend** — the heterogeneity play.
+- **Arms-length proprietary** via terminal-pane reading driven by a cheap local model —
+  disparate models for decorrelation without deep coupling (the freedom-preserving path).
 
 ### F · The human-seam API + TUI
 The daemon↔UI **message-first protocol** = the human-seam API (`foundations.md §7`);
@@ -132,7 +131,8 @@ a **Rust/ratatui** client (clean boundary, best-in-class UX), doubling as an alt
 frontend to opencode proper.
 
 ### G · opencode-compatible runner
-Full opencode-spec compliance — the runner's stability measured against its external
+opencode is the open-source agent harness librecode's runner targets for compatibility.
+Full opencode-spec compliance — the runner's stability measured against that external
 standard; the compatibility surface, added *after* the core is stable.
 - **The augmentation seam:** the runner exposes hooks so the metaharness can enforce its
   invariants on it, while the runner runs standalone as pure-opencode (metaharness an
@@ -150,10 +150,10 @@ stabilize an elegant, minimal-but-capable runner API before broadening the code 
 ### I · The multi-stakeholder commons *(the concrete coordination mechanism — prioritized)*
 Make the commons literal — many humans + many sessions under one governance layer — because the
 commons is only compelling once concrete (`foundations.md` Positioning, §5; `design.md §2`).
-- **Build the assent engine.** `src/meta/council.lisp` is a stub (`convene-council`,
-  `validate-assent` are no-ops); implement machine-enforced delegation and sign-off, then
-  generalize the table so arbitrary humans are first-class seats and a node can carry a hard
-  sign-off gate ("X waits on Alice AND Bob") enforced like any deterministic gate.
+- **Build the assent engine.** Delegation and sign-off are currently stubs (no-ops);
+  implement them machine-enforced, then generalize the table so arbitrary humans are
+  first-class seats and a node can carry a hard sign-off gate ("X waits on Alice AND Bob")
+  enforced like any deterministic gate.
 - **The regression transitions.** Implement `reset-to-checkpoint` and
   `cut-clean-and-decorrelate` (`design.md §3`), currently design-only.
 - **Cross-instance coherent view.** Disparate isolated sessions (each stakeholder on their own
@@ -183,22 +183,23 @@ because **A, D, and I all sit on it** and it is currently implicit.
 
 ## Sequencing
 
-**Stabilize, then broaden.** **B (harden, incl. the I4 fix) + the sensor** comes first. The
-**contract substrate (J)** is foundational and lands early — A, D, and I all sit on it, so it
-precedes them. **H (runner capability floor)** lands within the first few campaigns — the
-metaharness cannot be meaningfully tested against a toy runner, so a bounded-but-capable runner is
+**Stabilize, then broaden.** **B (harden, incl. the shutdown fix) + the sensor** comes first.
+The **contract substrate (J)** is foundational and lands early — A, D, and I all sit on it, so
+it precedes them. **H (runner capability floor)** lands early — the metaharness cannot be
+meaningfully tested against a toy runner, so a bounded-but-capable runner is
 a prerequisite for **A (formalize stable)**, which authors the immutable-core contracts on J and
 grounds the §8 invariants against a *realistically exercised* running metaharness. **C (memory)**
 is **not** a lazy parallel track: it depends on J (memory-writes are verified deposits) and, given
-its whole-system blast radius, its dialectic runs **early**, before cross-session state
+its whole-system blast radius, its design work happens **early**, before cross-session state
 accumulates. **D** (the self-governing loop) follows the sensor and builds on J. **I** is
-**prioritized** — its assent engine is contracts on J; the I4 fix still comes first (a regressed
-proven invariant is always first), and the exact interleave of I with H/A is the head's call.
+**prioritized** — its assent engine is contracts on J; the shutdown fix still comes first (a
+regressed proven invariant is always first), and the exact interleave of I with H/A is a later
+maintainer decision.
 **E / F / G** (heterogeneity, TUI, full opencode-compat) are the broadening surface, deliberately
 after the core is stable per §8 — and G's full compatibility comes only after H's bounded floor.
 
 ## Immediate next
-1. **Landed** (on master): the foundation set, its council + head remediation, and the
-   self-governing instruction layer. The I4-fix campaign is in review.
+1. **Landed** (on master): the foundation set, its review and remediation, and the
+   self-governing instruction layer. A fix for the shutdown regression is in review.
 2. **Next:** the **contract substrate (J)** and H (**runner capability floor**) toward
    A (**formalize stable**); C (memory) sequenced early on J.
