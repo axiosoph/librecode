@@ -131,10 +131,14 @@ against `src/`):
   and `with-failure-relay`. (Per-node supervision deliberately uses `handler-case`
   to collect failures across independent node threads, which is by-design, not an
   I3 site.)
-* **I4 — Different session keys run concurrently; same key is serialized** *[holds]*:
-  the run coordinator serializes drains per key; `interrupt-session` sets a
-  `stopping` flag + CV notification + `(:interrupt)` mailbox post — no raw thread
-  interrupts.
+* **I4 — Different session keys run concurrently; same key is serialized**
+  *[serialization holds; the "no raw thread interrupts" clause is currently VIOLATED]*:
+  the run coordinator serializes drains per key; `interrupt-session` sets a `stopping`
+  flag + CV notification + `(:interrupt)` mailbox post. However `bt:destroy-thread` was
+  reintroduced at `src/runner/tool.lisp:270` (tool-timeout worker cleanup, a campaign-5
+  regression) — violating the no-raw-thread-interrupts clause: a proven invariant that
+  regressed because its test was removed and the gate still passed. Must-fix (roadmap B,
+  first).
 * **I5 — No busy-polling for message receipt** *[holds, with bounded-wait caveat]*:
   the turn loop, tool loop, and coordinator block on `receive-message` /
   `condition-wait`. Two bounded timed waits exist for liveness, not busy-polling:
