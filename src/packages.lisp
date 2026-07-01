@@ -195,17 +195,27 @@
   (:use #:cl)
   (:documentation "Supervised child harness interface.")
   (:export #:harness
+           #:harness-id
+           #:harness-config
+           #:%harness-status
            #:harness-spawn
-           #:harness-destroy
-           #:harness-inject-conditioning))
+           #:harness-prompt
+           #:harness-read-events
+           #:harness-send-command
+           #:harness-inject-conditioning
+           #:harness-status
+           #:harness-terminate
+           #:harness-prepare-workspace
+           #:harness-cleanup-workspace
+           #:harness-destroy))
 
 (defpackage #:librecode-meta.harness-opencode
-  (:use #:cl)
+  (:use #:cl #:librecode-meta.harness)
   (:documentation "Adapter for spawning and interacting with external OpenCode TypeScript harnesses.")
   (:export #:opencode-harness))
 
 (defpackage #:librecode-meta.harness-librecode
-  (:use #:cl)
+  (:use #:cl #:librecode-meta.harness)
   (:documentation "Adapter for spawning and interacting with self-hosted librecode-runner child harnesses.")
   (:export #:librecode-harness))
 
