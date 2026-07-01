@@ -39,32 +39,37 @@
                     (unless line
                       (return))
                     ;; Parse line as s-expression safely
-                    (let ((event (ignore-errors
-                                   (let ((*read-eval* nil))
-                                     (read-from-string line)))))
+                    (let ((event (handler-case
+                                     (let ((*read-eval* nil))
+                                       (read-from-string line))
+                                   (error (c)
+                                     (format t "~%[SUBPROCESS MONITOR INFO] Raw line: ~S (Parse error: ~A)~%" line c)
+                                     (force-output)
+                                     nil))))
                       (when event
                         (sb-concurrency:send-message mbox event)
                         ;; Check if this is a status transition
                         (bt:with-lock-held ((harness-lock instance))
                           (cond
                             ((and (listp event)
-                                  (eq (getf event :status) :idle))
+                                  (eq (ignore-errors (getf event :status)) :idle))
                              (setf (%harness-status instance) :idle))
                             ((and (listp event)
-                                  (eq (getf event :status) :error))
+                                  (eq (ignore-errors (getf event :status)) :error))
                              (setf (%harness-status instance) :error)
                              (setf (harness-error-message instance)
-                                   (getf event :message "Fatal event line received.")))))))))
+                                   (ignore-errors (getf event :message "Fatal event line received."))))))))))
               (error (c)
                 (bt:with-lock-held ((harness-lock instance))
                   (setf (%harness-status instance) :error)
                   (setf (harness-error-message instance) (princ-to-string c)))))
          ;; Final cleanups when the thread exits or process terminates
-         (let ((code (uiop:wait-process proc)))
+         (let ((code (or (ignore-errors (uiop:wait-process proc)) 1)))
            (bt:with-lock-held ((harness-lock instance))
-             (setf (harness-exit-code instance) code)
+             (unless (harness-exit-code instance)
+               (setf (harness-exit-code instance) code))
              (unless (member (%harness-status instance) '(:error :terminated :idle))
-               (if (= code 0)
+               (if (= (harness-exit-code instance) 0)
                    (setf (%harness-status instance) :idle)
                    (setf (%harness-status instance) :error))))
             (close-subprocess-streams instance))))
@@ -83,6 +88,7 @@
     (let* ((proc (uiop:launch-program resolved-command
                                       :input :stream
                                       :output :stream
+                                      :error-output :output
                                       :directory (and workspace-root (namestring workspace-root))))
            (input (uiop:process-info-input proc))
            (output (uiop:process-info-output proc))
