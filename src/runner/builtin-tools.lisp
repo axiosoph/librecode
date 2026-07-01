@@ -5,15 +5,73 @@
 
 (in-package #:librecode-runner.builtin-tools)
 
+(defun normalize-directory-list (dir-list)
+  "Normalize directory components list by resolving :up and :back."
+  (let ((result nil))
+    (dolist (comp dir-list)
+      (cond
+        ((member comp '(:up :back))
+         (if (and result (not (member (car result) '(:absolute :relative :up :back))))
+             (pop result)
+             (push comp result)))
+        (t (push comp result))))
+    (nreverse result)))
+
+(defun resolve-safe-path (path-str)
+  "Resolve and validate path-str against *workspace-root*.
+Returns the absolute pathname if safe, otherwise signals a denied-error."
+  (let* ((workspace-root (or (and (boundp 'librecode-runner.event-store:*workspace-root*)
+                                  librecode-runner.event-store:*workspace-root*)
+                             (error 'simple-error :message "Workspace root is not bound.")))
+         ;; Ensure workspace-root is an absolute directory pathname
+         (abs-workspace (uiop:ensure-absolute-pathname
+                         (uiop:ensure-directory-pathname workspace-root)
+                         #'uiop:getcwd))
+         (norm-workspace-dir (normalize-directory-list (pathname-directory abs-workspace)))
+         
+         ;; Parse target pathname
+         (target-path (pathname path-str))
+         ;; Resolve target path against abs-workspace
+         (resolved-path (if (uiop:absolute-pathname-p target-path)
+                            target-path
+                            (uiop:merge-pathnames* target-path abs-workspace)))
+         (abs-resolved (uiop:ensure-absolute-pathname resolved-path #'uiop:getcwd))
+         (norm-resolved-dir (normalize-directory-list (pathname-directory abs-resolved))))
+    
+    ;; Verify that the normalized directory components of normalized workspace root
+    ;; is a prefix of the normalized resolved directory components.
+    (unless (and (>= (length norm-resolved-dir) (length norm-workspace-dir))
+                 (equal (subseq norm-resolved-dir 0 (length norm-workspace-dir))
+                        norm-workspace-dir))
+      (error 'librecode-runner.conditions:denied-error
+             :action "resolve_path"
+             :resource path-str
+             :message (format nil "Directory traversal attack detected: path ~S escapes workspace root ~S"
+                              path-str (namestring abs-workspace))))
+    abs-resolved))
+
+(defun check-resource-permission (action resource)
+  "If *current-session-id* is bound and not nil, run the permission check on the active agent."
+  (when (and (boundp 'librecode-runner.agent:*current-session-id*)
+             librecode-runner.agent:*current-session-id*)
+    (let* ((session-id librecode-runner.agent:*current-session-id*)
+           (agent (librecode-runner.runner::get-active-agent session-id)))
+      (when agent
+        (librecode-runner.agent:check-permission agent action resource)))))
+
 (defun handle-read-file (args)
-  "Read a file inside the workspace-root as a UTF-8 string."
+  "Read a file inside the workspace-root as a UTF-8 string, with directory traversal protection and size checks."
   (let* ((path (getf args :path))
-         (resolved (librecode-runner.event-store::resolve-path path)))
+         (resolved (resolve-safe-path path)))
+    (check-resource-permission "read_file" (namestring resolved))
     (handler-case
         (with-open-file (stream resolved :direction :input :element-type 'character :external-format :utf-8)
-          (let ((seq (make-string (file-length stream))))
-            (read-sequence seq stream)
-            seq))
+          (let ((len (file-length stream)))
+            (when (and len (> len (* 10 1024 1024)))
+              (error "File size exceeds 10MB limit (~D bytes)" len))
+            (let ((seq (make-string (or len 0))))
+              (read-sequence seq stream)
+              seq)))
       (error (c)
         (error 'simple-error :format-control "Failed to read file ~A: ~A"
                              :format-arguments (list path c))))))
@@ -22,7 +80,11 @@
   "Write string content to a file inside the workspace-root, creating parent directories if needed."
   (let* ((path (getf args :path))
          (content (getf args :content))
-         (resolved (librecode-runner.event-store::resolve-path path)))
+         (resolved (resolve-safe-path path)))
+    (check-resource-permission "write_file" (namestring resolved))
+    (when (> (length content) (* 10 1024 1024))
+      (error 'simple-error :format-control "Content size ~D characters exceeds 10MB limit."
+                           :format-arguments (list (length content))))
     (handler-case
         (progn
           (ensure-directories-exist resolved)
@@ -43,19 +105,26 @@
   (let* ((command (getf args :command))
          (workspace-root (or librecode-runner.event-store:*workspace-root*
                              (uiop:getcwd)))
+         (process-info nil)
          (exit-code nil)
          (combined nil))
-    (handler-case
-        (let* ((process-info (uiop:launch-program (list "bash" "-c" command)
-                                                  :output :stream
-                                                  :error-output :stream
-                                                  :directory (namestring workspace-root)))
-               (stdout (uiop:slurp-stream-string (uiop:process-info-output process-info)))
-               (stderr (uiop:slurp-stream-string (uiop:process-info-error-output process-info))))
-          (setf exit-code (uiop:wait-process process-info))
-          (setf combined (concatenate 'string stdout stderr)))
-      (error (c)
-        (error 'simple-error :format-control "Bash invocation failed: ~A" :format-arguments (list c))))
+    (check-resource-permission "bash" command)
+    (unwind-protect
+         (handler-case
+             (progn
+               (setf process-info (uiop:launch-program (list "bash" "-c" command)
+                                                       :output :stream
+                                                       :error-output :stream
+                                                       :directory (namestring workspace-root)))
+               (let ((stdout (uiop:slurp-stream-string (uiop:process-info-output process-info)))
+                     (stderr (uiop:slurp-stream-string (uiop:process-info-error-output process-info))))
+                 (setf exit-code (uiop:wait-process process-info))
+                 (setf combined (concatenate 'string stdout stderr))))
+           (error (c)
+             (error 'simple-error :format-control "Bash invocation failed: ~A" :format-arguments (list c))))
+      ;; Subprocess leak prevention
+      (when (and process-info (uiop:process-alive-p process-info))
+        (uiop:terminate-process process-info :urgent t)))
     (if (= exit-code 0)
         combined
         (error 'simple-error :format-control "Command ~S failed with exit code ~D. Output:~%~A"
@@ -92,7 +161,12 @@
                  :capabilities nil
                  :handler #'handle-bash))
 
+(defun register-builtin-tools (registry)
+  "Register the built-in tools (read_file, write_file, and bash) in the given registry."
+  (librecode-runner.tool:register-tool registry read-file-tool)
+  (librecode-runner.tool:register-tool registry write-file-tool)
+  (librecode-runner.tool:register-tool registry bash-tool)
+  registry)
+
 ;; Automatically register into default tool registry
-(librecode-runner.tool:register-tool librecode-runner.runner::*tool-registry* read-file-tool)
-(librecode-runner.tool:register-tool librecode-runner.runner::*tool-registry* write-file-tool)
-(librecode-runner.tool:register-tool librecode-runner.runner::*tool-registry* bash-tool)
+(register-builtin-tools librecode-runner.runner::*tool-registry*)

@@ -135,3 +135,98 @@
           (execute-tool bash-tool '(:command "false")))
         (signals error
           (execute-tool bash-tool '(:command "exit 42")))))))
+
+(test test-builtin-path-traversal-denial
+  "Verify that directory traversal attempts are blocked and signal denied-error."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (let ((*workspace-root* dir)
+          (read-tool (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
+                       (gethash "read_file" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*))))
+          (write-tool (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
+                        (gethash "write_file" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*)))))
+      ;; Test relative traversal outside root
+      (signals denied-error
+        (execute-tool read-tool '(:path "../outside-file.txt")))
+      (signals denied-error
+        (execute-tool write-tool '(:path "../outside-file.txt" :content "leak")))
+      
+      ;; Test absolute paths outside root
+      (signals denied-error
+        (execute-tool read-tool '(:path "/etc/hosts")))
+      (signals denied-error
+        (execute-tool write-tool '(:path "/tmp/dangerous.txt" :content "leak"))))))
+
+(test test-builtin-permission-enforcement
+  "Verify that the built-in tools respect resource-level agent permissions."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (librecode-test.event-store::with-test-db (db dir)
+      (let* ((session-id "perm-test-session")
+             (agent-id "perm-test-agent")
+             (project-id "perm-test-project")
+             (read-tool (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
+                          (gethash "read_file" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*))))
+             (bash-tool (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
+                          (gethash "bash" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*)))))
+        
+        ;; Set up session state in SQLite
+        (sqlite:execute-non-query db
+          "INSERT INTO session_state (session_id, agent_id, version, status, last_updated)
+           VALUES (?, ?, 1, 'active', 0)"
+          session-id agent-id)
+        
+        ;; Setup a deny rule for read_file in permission_saved
+        (sqlite:execute-non-query db
+          "INSERT INTO permission_saved (project_id, action, resource, effect, timestamp)
+           VALUES (?, 'read_file', '*', 'deny', 0)"
+          project-id)
+        
+        ;; Setup a deny rule for bash in permission_saved
+        (sqlite:execute-non-query db
+          "INSERT INTO permission_saved (project_id, action, resource, effect, timestamp)
+           VALUES (?, 'bash', '*', 'deny', 0)"
+          project-id)
+        
+        ;; Execute tools with permission bindings active
+        (let ((librecode-runner.agent:*current-session-id* session-id)
+              (librecode-runner.agent::*project-id* project-id)
+              (librecode-runner.agent::*interactive-p* nil)
+              (*workspace-root* dir))
+          
+          (signals denied-error
+            (execute-tool read-tool '(:path "allowed-by-cwd-but-denied-by-perm.txt")))
+          (signals denied-error
+            (execute-tool bash-tool '(:command "echo 42"))))))))
+
+(test test-builtin-bash-leak-prevention
+  "Verify that if a bash tool execution is aborted or thread killed, the subprocess is cleaned up."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (let ((*workspace-root* dir)
+          (bash-tool (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
+                       (gethash "bash" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*)))))
+      (let* ((pid-file (merge-pathnames "pids.txt" (uiop:ensure-directory-pathname dir)))
+             ;; Write PID to file, then sleep a long time
+             (cmd (format nil "echo $$ > ~A; sleep 100" (namestring pid-file)))
+             (thread (bt:make-thread (lambda ()
+                                       (execute-tool bash-tool (list :command cmd)))
+                                     :name "bash-leak-test-worker")))
+        ;; Give the shell a moment to startup and write PID
+        (sleep 0.3)
+        (is-true (probe-file pid-file))
+        (let ((pid-str (string-trim '(#\Space #\Newline #\Return)
+                                    (uiop:read-file-string pid-file))))
+          (is (not (string= "" pid-str)))
+          ;; Verify that the subprocess is currently running
+          (multiple-value-bind (out err exit-code)
+              (uiop:run-program (list "kill" "-0" pid-str) :ignore-error-status t)
+            (declare (ignore out err))
+            (is (= 0 exit-code)))
+          
+          ;; Now kill the thread (simulating thread abort/timeout)
+          #+sbcl (sb-thread:destroy-thread thread)
+          (sleep 0.3)
+          
+          ;; Verify that the subprocess was terminated cleanly by unwind-protect
+          (multiple-value-bind (out err exit-code)
+              (uiop:run-program (list "kill" "-0" pid-str) :ignore-error-status t)
+            (declare (ignore out err))
+            (is (not (= 0 exit-code)))))))))
