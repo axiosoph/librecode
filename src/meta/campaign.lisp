@@ -110,6 +110,7 @@ or if any dependency is unresolved."
    (repository-path :initarg :repository-path :accessor campaign-repository-path :type (or string pathname))
    (workspace-dir :initarg :workspace-dir :accessor campaign-workspace-dir :type (or string pathname))
    (active-harnesses :initform (make-hash-table :test 'equal) :accessor campaign-active-harnesses :type hash-table)
+   (active-harnesses-lock :initform (bt:make-lock "active-harnesses-lock") :reader campaign-active-harnesses-lock)
    (journal-lock :initform (bt:make-lock "journal-lock") :reader campaign-journal-lock)
    (supervisor-mailbox :initarg :supervisor-mailbox :accessor campaign-supervisor-mailbox)
    (reply-mailbox :initarg :reply-mailbox :accessor campaign-reply-mailbox)))
@@ -194,10 +195,74 @@ or if any dependency is unresolved."
   (bt:with-lock-held ((campaign-journal-lock campaign))
     (write-journal-entry stream entry)))
 
+(defun list-prefix-p (list-a list-b)
+  (cond ((null list-a) t)
+        ((null list-b) nil)
+        ((equal (car list-a) (car list-b))
+         (list-prefix-p (cdr list-a) (cdr list-b)))
+        (t nil)))
+
+(defun canonicalize-path (p)
+  (handler-case
+      (truename p)
+    (error ()
+      (merge-pathnames (pathname p) *default-pathname-defaults*))))
+
+(defun parse-path-spec (p)
+  (let* ((canonical (canonicalize-path p))
+         (dir (pathname-directory canonical))
+         (name (pathname-name canonical))
+         (type (pathname-type canonical))
+         (is-dir (or (uiop:directory-exists-p canonical)
+                     (and (null name) (null type))
+                     (let ((str (namestring p)))
+                       (and (> (length str) 0)
+                            (char= (char str (1- (length str))) #\/))))))
+    (if is-dir
+        (list :directory (append dir (when name (list name))))
+        (list :file dir (cons name type)))))
+
+(defun specs-overlap-p (spec1 spec2)
+  (cond
+    ((and (eq (first spec1) :directory)
+          (eq (first spec2) :directory))
+     (let ((dir1 (second spec1))
+           (dir2 (second spec2)))
+       (or (list-prefix-p dir1 dir2)
+           (list-prefix-p dir2 dir1))))
+    
+    ((and (eq (first spec1) :directory)
+          (eq (first spec2) :file))
+     (let ((dir1 (second spec1))
+           (dir2 (second spec2)))
+       (list-prefix-p dir1 dir2)))
+    
+    ((and (eq (first spec1) :file)
+          (eq (first spec2) :directory))
+     (let ((dir1 (second spec1))
+           (dir2 (second spec2)))
+       (list-prefix-p dir2 dir1)))
+    
+    ((and (eq (first spec1) :file)
+          (eq (first spec2) :file))
+     (let ((dir1 (second spec1))
+           (file1 (third spec1))
+           (dir2 (second spec2))
+           (file2 (third spec2)))
+       (and (equal dir1 dir2)
+            (equal (car file1) (car file2))
+            (equal (cdr file1) (cdr file2)))))
+    (t nil)))
+
+(defun path-overlap-p (p1 p2)
+  (specs-overlap-p (parse-path-spec p1) (parse-path-spec p2)))
+
 (defun surfaces-overlap-p (surf1 surf2)
-  (intersection (mapcar (lambda (s) (namestring (pathname s))) surf1)
-                (mapcar (lambda (s) (namestring (pathname s))) surf2)
-                :test #'string=))
+  (some (lambda (s1)
+          (some (lambda (s2)
+                  (path-overlap-p s1 s2))
+                surf2))
+        surf1))
 
 (defun group-nodes-for-scheduling (nodes)
   (let ((batches nil))
@@ -242,7 +307,8 @@ or if any dependency is unresolved."
     ;; 2. Spawn child harness
     (let ((harness (librecode-meta.harness:harness-spawn harness-type config)))
       (setf (campaign-node-harness-instance node) harness)
-      (setf (gethash node-id (campaign-active-harnesses campaign)) harness)
+      (bt:with-lock-held ((campaign-active-harnesses-lock campaign))
+        (setf (gethash node-id (campaign-active-harnesses campaign)) harness))
       
       (unwind-protect
            (progn
@@ -270,7 +336,8 @@ or if any dependency is unresolved."
                     (librecode-meta.harness:harness-read-event harness :timeout 0.5))))))
         ;; Clean up harness in all cases
         (librecode-meta.harness:harness-terminate harness)
-        (remhash node-id (campaign-active-harnesses campaign))
+        (bt:with-lock-held ((campaign-active-harnesses-lock campaign))
+          (remhash node-id (campaign-active-harnesses campaign)))
         (setf (campaign-node-harness-instance node) nil)))
     
     ;; If we got here, it was successful! Mark landed.
@@ -304,47 +371,46 @@ or if any dependency is unresolved."
       ;; Wait for all threads to finish
       (dolist (thread threads)
         (bt:join-thread thread))
-      
       ;; If there are failures, signal them at the parent level
       (if failed-nodes
-          (let* ((failed-node (car failed-nodes))
-                 (failed-cond (car failed-conditions))
-                 (node-id (campaign-node-id failed-node)))
-            ;; Wrap the signaling in parent level with-failure-relay
-            (let ((choice
-                    (block nil
-                      (librecode-runner.protocol:with-failure-relay
-                          ((campaign-supervisor-mailbox campaign)
-                           (campaign-reply-mailbox campaign)
-                           :recovery-menu '((retry-node) (skip-node))
-                           :apply-choice (lambda (choice args)
-                                           (let ((restart (find (symbol-name choice)
-                                                                (compute-restarts)
-                                                                :key (lambda (r) (symbol-name (restart-name r)))
-                                                                :test #'string=)))
-                                             (if restart
-                                                 (apply #'invoke-restart restart args)
-                                                 (error "Restart ~A not found" choice)))))
-                        (restart-case
-                            (error 'librecode-runner.conditions:harness-failure
-                                   :message (format nil "Harness error on node ~A: ~A" node-id (princ-to-string failed-cond))
-                                   :process-id node-id
-                                   :exit-code -1)
-                          (retry-node ()
-                            :report "Retry the failed node"
-                            :retry)
-                          (skip-node ()
-                            :report "Skip the failed node"
-                            :skip))))))
-              (cond
-                ((null choice)
-                 (error "Campaign execution aborted by supervisor"))
-                ((eq choice :retry)
-                 (setf (campaign-node-status failed-node) :pending))
-                ((eq choice :skip)
-                 (setf (campaign-node-status failed-node) :accepted)
-                 (safe-write-journal-entry campaign journal-stream (list :node-accepted node-id))
-                 (merge-node-branch campaign failed-node)))))
+          (loop for failed-node in failed-nodes
+                for failed-cond in failed-conditions
+                do
+                (let* ((node-id (campaign-node-id failed-node))
+                       (choice
+                         (block nil
+                           (librecode-runner.protocol:with-failure-relay
+                               ((campaign-supervisor-mailbox campaign)
+                                (campaign-reply-mailbox campaign)
+                                :recovery-menu '((retry-node) (skip-node))
+                                :apply-choice (lambda (choice args)
+                                                (let ((restart (find (symbol-name choice)
+                                                                     (compute-restarts)
+                                                                     :key (lambda (r) (symbol-name (restart-name r)))
+                                                                     :test #'string=)))
+                                                  (if restart
+                                                      (apply #'invoke-restart restart args)
+                                                      (error "Restart ~A not found" choice)))))
+                             (restart-case
+                                 (error 'librecode-runner.conditions:harness-failure
+                                        :message (format nil "Harness error on node ~A: ~A" node-id (princ-to-string failed-cond))
+                                        :process-id node-id
+                                        :exit-code -1)
+                               (retry-node ()
+                                 :report "Retry the failed node"
+                                 :retry)
+                               (skip-node ()
+                                 :report "Skip the failed node"
+                                 :skip))))))
+                  (cond
+                    ((null choice)
+                     (error "Campaign execution aborted by supervisor"))
+                    ((eq choice :retry)
+                     (setf (campaign-node-status failed-node) :pending))
+                    ((eq choice :skip)
+                     (setf (campaign-node-status failed-node) :accepted)
+                     (safe-write-journal-entry campaign journal-stream (list :node-accepted node-id))
+                     (merge-node-branch campaign failed-node)))))
           ;; No failures! Merge all nodes in the batch
           (progn
             (dolist (node batch)
@@ -360,7 +426,13 @@ or if any dependency is unresolved."
          (layers (campaign-dag-layers dag)))
     ;; 1. Replay journal if it exists to restore state
     (when (and journal-path (probe-file journal-path))
-      (replay-journal journal-path dag))
+      (multiple-value-bind (replayed-dag last-valid-pos)
+          (replay-journal journal-path dag)
+        (declare (ignore replayed-dag))
+        #+sbcl
+        (sb-posix:truncate (namestring journal-path) last-valid-pos)
+        #-sbcl
+        (error "Truncation only supported on SBCL")))
     
     ;; 2. Open journal stream in append/create mode
     (with-open-file (journal-stream journal-path

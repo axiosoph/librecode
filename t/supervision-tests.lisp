@@ -217,3 +217,132 @@
           ;; Verify both are completed now
           (is (eq :accepted (campaign-node-status (first nodes-new))))
           (is (eq :accepted (campaign-node-status (second nodes-new)))))))))
+
+(test test-multi-failure-sequencing
+  "Verify that when multiple nodes in a batch fail concurrently, they are processed sequentially by the supervisor."
+  (librecode-test.event-store::with-tmp-sandbox (dir :git t)
+    (setup-test-git-repo dir)
+    (let* ((nodes (list (make-campaign-node :id "node-1-fail"
+                                            :goal "Fail node 1"
+                                            :file-surface '("src/a.lisp")
+                                            :harness-type 'mock-supervision-harness
+                                            :ibc "ibc-1")
+                        (make-campaign-node :id "node-2-fail"
+                                            :goal "Fail node 2"
+                                            :file-surface '("src/b.lisp")
+                                            :harness-type 'mock-supervision-harness
+                                            :ibc "ibc-2")))
+           (dag (make-campaign-dag :nodes nodes :shared-branch "master"))
+           (journal-file (uiop:merge-pathnames* "campaign-journal.lisp-expr" dir))
+           (workspace-dir (uiop:merge-pathnames* "workspace/" dir))
+           (campaign (make-instance 'campaign
+                                    :dag dag
+                                    :journal-path journal-file
+                                    :repository-path dir
+                                    :workspace-dir workspace-dir))
+           (supervisor-mbox (campaign-supervisor-mailbox campaign)))
+      
+      (let ((campaign-thread
+              (bt:make-thread (lambda () (run-campaign campaign))
+                              :name "run-campaign-multi-fail")))
+        
+        ;; Receive first failure
+        (let ((msg1 (librecode-runner.protocol:receive-message supervisor-mbox :timeout 5.0)))
+          (is (not (null msg1)))
+          (let* ((desc (second msg1))
+                 (reply (third msg1)))
+            (is (typep desc 'librecode-runner.protocol:failure-descriptor))
+            (librecode-runner.protocol:send-message reply '(skip-node))))
+        
+        ;; Receive second failure
+        (let ((msg2 (librecode-runner.protocol:receive-message supervisor-mbox :timeout 5.0)))
+          (is (not (null msg2)))
+          (let* ((desc (second msg2))
+                 (reply (third msg2)))
+            (is (typep desc 'librecode-runner.protocol:failure-descriptor))
+            (librecode-runner.protocol:send-message reply '(skip-node))))
+        
+        ;; Verify the campaign finishes
+        (let ((res (librecode-runner.protocol:join-thread-with-timeout campaign-thread 5.0)))
+          (is (eq t res)))
+        
+        (is (eq :accepted (campaign-node-status (first nodes))))
+        (is (eq :accepted (campaign-node-status (second nodes))))))))
+
+(test test-hierarchical-surface-overlaps
+  "Assert that hierarchical directory surface overlaps are correctly detected."
+  (let ((dir-surface '("src/"))
+        (file-surface '("src/packages.lisp"))
+        (nested-dir-surface '("src/meta/"))
+        (unrelated-surface '("t/supervision-tests.lisp")))
+    (is (librecode-meta.campaign::surfaces-overlap-p dir-surface file-surface))
+    (is (librecode-meta.campaign::surfaces-overlap-p dir-surface nested-dir-surface))
+    (is (librecode-meta.campaign::surfaces-overlap-p file-surface dir-surface))
+    (is (librecode-meta.campaign::surfaces-overlap-p nested-dir-surface dir-surface))
+    (is (not (librecode-meta.campaign::surfaces-overlap-p file-surface unrelated-surface)))
+    (is (not (librecode-meta.campaign::surfaces-overlap-p nested-dir-surface unrelated-surface)))
+    ;; Two files in the same directory do not overlap unless they are the same file
+    (is (not (librecode-meta.campaign::surfaces-overlap-p '("src/a.lisp") '("src/b.lisp"))))
+    (is (librecode-meta.campaign::surfaces-overlap-p '("src/a.lisp") '("src/a.lisp")))))
+
+(test test-journal-truncation-on-recovery
+  "Assert that a trailing partial write is truncated and does not corrupt subsequent writes."
+  (librecode-test.event-store::with-tmp-sandbox (dir :git t)
+    (setup-test-git-repo dir)
+    (let* ((nodes (list (make-campaign-node :id "node-1"
+                                            :goal "Goal 1"
+                                            :file-surface '("src/a.lisp")
+                                            :harness-type 'mock-supervision-harness
+                                            :ibc "ibc-1")
+                        (make-campaign-node :id "node-2"
+                                            :goal "Goal 2"
+                                            :file-surface '("src/b.lisp")
+                                            :harness-type 'mock-supervision-harness
+                                            :ibc "ibc-2")))
+           (dag (make-campaign-dag :nodes nodes :shared-branch "master"))
+           (journal-file (uiop:merge-pathnames* "campaign-journal.lisp-expr" dir))
+           (workspace-dir (uiop:merge-pathnames* "workspace/" dir)))
+      
+      ;; 1. Write a valid entry, then write a partial/corrupt entry at the end of the file
+      (with-open-file (s journal-file :direction :output :if-exists :supersede :if-does-not-exist :create)
+        (format s "(:layer-advanced 0)~%")
+        (format s "(:node-dispatched \"node-1\")~%")
+        (format s "(:node-landed \"node-1\")~%")
+        (format s "(:node-accepted \"node-1\")~%")
+        ;; A corrupt/partial write
+        (format s "(:node-dis"))
+      
+      ;; 2. Run the campaign. It should truncate the corrupt trailing write, read the valid entries,
+      ;; and resume by executing node-2 (since node-1 is already :accepted).
+      (let* ((campaign (make-instance 'campaign
+                                      :dag dag
+                                      :journal-path journal-file
+                                      :repository-path dir
+                                      :workspace-dir workspace-dir))
+             (campaign-thread
+               (bt:make-thread (lambda () (run-campaign campaign))
+                               :name "run-campaign-truncation")))
+        
+        ;; Wait for campaign to finish
+        (let ((res (librecode-runner.protocol:join-thread-with-timeout campaign-thread 5.0)))
+          (is (eq t res)))
+        
+        ;; Verify both are completed now
+        (is (eq :accepted (campaign-node-status (first nodes))))
+        (is (eq :accepted (campaign-node-status (second nodes))))
+        
+        ;; 3. Replay the journal file again. It should be fully readable without any reader errors!
+        (let* ((fresh-dag (make-campaign-dag :nodes (list (make-campaign-node :id "node-1"
+                                                                              :goal "Goal 1"
+                                                                              :file-surface '("src/a.lisp")
+                                                                              :harness-type 'mock-supervision-harness
+                                                                              :ibc "ibc-1")
+                                                          (make-campaign-node :id "node-2"
+                                                                              :goal "Goal 2"
+                                                                              :file-surface '("src/b.lisp")
+                                                                              :harness-type 'mock-supervision-harness
+                                                                              :ibc "ibc-2"))
+                                             :shared-branch "master"))
+               (replayed (librecode-meta.campaign:replay-journal journal-file fresh-dag)))
+          (is (eq :accepted (campaign-node-status (first (librecode-meta.campaign:campaign-dag-nodes replayed)))))
+          (is (eq :accepted (campaign-node-status (second (librecode-meta.campaign:campaign-dag-nodes replayed))))))))))

@@ -263,6 +263,7 @@
            #:campaign-repository-path
            #:campaign-workspace-dir
            #:campaign-active-harnesses
+           #:campaign-active-harnesses-lock
            #:campaign-supervisor-mailbox
            #:campaign-reply-mailbox))
 

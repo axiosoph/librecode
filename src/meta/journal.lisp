@@ -47,19 +47,20 @@ and immediately forces output to ensure crash-safety."
 
 (defun replay-journal (filepath &optional initial-dag)
   "Reads all S-expressions from FILEPATH, replays them sequentially, and returns the
-reconstructed campaign-dag state. If a partial or malformed write is encountered at
-the end of the file, it is skipped to protect against crash corruption."
-  (let ((dag (or initial-dag (make-campaign-dag))))
+reconstructed campaign-dag state and the last known valid file position (useful for truncation)."
+  (let ((dag (or initial-dag (make-campaign-dag)))
+        (last-valid-pos 0))
     (with-open-file (stream filepath :direction :input :if-does-not-exist :error)
       (loop
         (let ((entry (handler-bind ((reader-error (lambda (c)
                                                    (declare (ignore c))
-                                                   (return-from replay-journal dag)))
+                                                   (return-from replay-journal (values dag last-valid-pos))))
                                     (end-of-file (lambda (c)
                                                    (declare (ignore c))
-                                                   (return-from replay-journal dag))))
+                                                   (return-from replay-journal (values dag last-valid-pos)))))
                        (read stream nil :eof))))
           (when (eq entry :eof)
             (return))
-          (setf dag (apply-journal-entry dag entry)))))
-    dag))
+          (setf dag (apply-journal-entry dag entry))
+          (setf last-valid-pos (file-position stream)))))
+    (values dag last-valid-pos)))
