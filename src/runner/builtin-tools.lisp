@@ -17,37 +17,81 @@
         (t (push comp result))))
     (nreverse result)))
 
+(defun pathname-parent-directory (path)
+  "Return a pathname representing the parent directory of PATH."
+  (let* ((directory (pathname-directory path))
+         (name (pathname-name path))
+         (type (pathname-type path)))
+    (cond
+      ((or name type)
+       ;; It's a file pathname, the parent directory is just its directory.
+       (make-pathname :directory directory :name nil :type nil :defaults path))
+      ((and (consp directory) (member (car directory) '(:absolute :relative)))
+       (if (cdr directory)
+           ;; It's a directory pathname, drop the last component to get parent directory.
+           (make-pathname :directory (butlast directory) :name nil :type nil :defaults path)
+           nil))
+      (t nil))))
+
+(defun closest-existing-ancestor (path)
+  "Find the closest ancestor directory of PATH (or PATH itself) that exists."
+  (loop for p = path then (pathname-parent-directory p)
+        while p
+        do (when (probe-file p)
+             (return (truename p)))
+        finally (return nil)))
+
 (defun resolve-safe-path (path-str)
-  "Resolve and validate path-str against *workspace-root*.
-Returns the absolute pathname if safe, otherwise signals a denied-error."
+  "Resolve and validate path-str against *workspace-root* with symlink and traversal protection."
   (let* ((workspace-root (or (and (boundp 'librecode-runner.event-store:*workspace-root*)
                                   librecode-runner.event-store:*workspace-root*)
                              (error 'simple-error :message "Workspace root is not bound.")))
-         ;; Ensure workspace-root is an absolute directory pathname
+         ;; 1. Canonicalize workspace root
          (abs-workspace (uiop:ensure-absolute-pathname
                          (uiop:ensure-directory-pathname workspace-root)
                          #'uiop:getcwd))
-         (norm-workspace-dir (normalize-directory-list (pathname-directory abs-workspace)))
+         (canonical-workspace (truename abs-workspace))
+         (norm-workspace-dir (normalize-directory-list (pathname-directory canonical-workspace)))
          
-         ;; Parse target pathname
+         ;; 2. Merge target path with workspace root
          (target-path (pathname path-str))
-         ;; Resolve target path against abs-workspace
          (resolved-path (if (uiop:absolute-pathname-p target-path)
                             target-path
                             (uiop:merge-pathnames* target-path abs-workspace)))
          (abs-resolved (uiop:ensure-absolute-pathname resolved-path #'uiop:getcwd))
-         (norm-resolved-dir (normalize-directory-list (pathname-directory abs-resolved))))
+         
+         ;; 3. Find closest existing ancestor and canonicalize it
+         (existing-ancestor (closest-existing-ancestor abs-resolved)))
     
-    ;; Verify that the normalized directory components of normalized workspace root
-    ;; is a prefix of the normalized resolved directory components.
-    (unless (and (>= (length norm-resolved-dir) (length norm-workspace-dir))
-                 (equal (subseq norm-resolved-dir 0 (length norm-workspace-dir))
-                        norm-workspace-dir))
+    (unless existing-ancestor
       (error 'librecode-runner.conditions:denied-error
              :action "resolve_path"
              :resource path-str
-             :message (format nil "Directory traversal attack detected: path ~S escapes workspace root ~S"
-                              path-str (namestring abs-workspace))))
+             :message "Could not find any existing ancestor for the path."))
+    
+    ;; 4. Check if the existing ancestor escapes the workspace root
+    (let ((norm-ancestor-dir (normalize-directory-list (pathname-directory existing-ancestor))))
+      (unless (and (>= (length norm-ancestor-dir) (length norm-workspace-dir))
+                   (equal (subseq norm-ancestor-dir 0 (length norm-workspace-dir))
+                          norm-workspace-dir))
+        (error 'librecode-runner.conditions:denied-error
+               :action "resolve_path"
+               :resource path-str
+               :message (format nil "Symlink/Traversal defense: path ~S escapes workspace root ~S"
+                                path-str (namestring canonical-workspace)))))
+    
+    ;; 5. Lexically normalize the full resolved path to double-protect against lexical ".."
+    ;; in the non-existent leaf components.
+    (let ((norm-resolved-dir (normalize-directory-list (pathname-directory abs-resolved))))
+      (unless (and (>= (length norm-resolved-dir) (length norm-workspace-dir))
+                   (equal (subseq norm-resolved-dir 0 (length norm-workspace-dir))
+                          norm-workspace-dir))
+        (error 'librecode-runner.conditions:denied-error
+               :action "resolve_path"
+               :resource path-str
+               :message (format nil "Traversal defense: path ~S escapes workspace root ~S"
+                                path-str (namestring canonical-workspace)))))
+    
     abs-resolved))
 
 (defun check-resource-permission (action resource)
@@ -59,19 +103,32 @@ Returns the absolute pathname if safe, otherwise signals a denied-error."
       (when agent
         (librecode-runner.agent:check-permission agent action resource)))))
 
+(defun read-file-with-limit (resolved path-str)
+  "Read the file resolved path into a string, ensuring it does not exceed 10MB."
+  (with-open-file (stream resolved :direction :input :element-type 'character :external-format :utf-8)
+    (let ((len (file-length stream)))
+      (cond
+        ((and len (> len (* 10 1024 1024)))
+         (error "File size exceeds 10MB limit (~D bytes)" len))
+        (len
+         ;; file-length is non-nil and within limits
+         (let ((seq (make-string len)))
+           (read-sequence seq stream)
+           seq))
+        (t
+         ;; file-length is nil (special file / pipe). Read using uiop:read-file-string.
+         (let ((content (uiop:read-file-string resolved :external-format :utf-8)))
+           (when (> (length content) (* 10 1024 1024))
+             (error "Special file content size exceeds 10MB limit while reading."))
+           content))))))
+
 (defun handle-read-file (args)
   "Read a file inside the workspace-root as a UTF-8 string, with directory traversal protection and size checks."
   (let* ((path (getf args :path))
          (resolved (resolve-safe-path path)))
     (check-resource-permission "read_file" (namestring resolved))
     (handler-case
-        (with-open-file (stream resolved :direction :input :element-type 'character :external-format :utf-8)
-          (let ((len (file-length stream)))
-            (when (and len (> len (* 10 1024 1024)))
-              (error "File size exceeds 10MB limit (~D bytes)" len))
-            (let ((seq (make-string (or len 0))))
-              (read-sequence seq stream)
-              seq)))
+        (read-file-with-limit resolved path)
       (error (c)
         (error 'simple-error :format-control "Failed to read file ~A: ~A"
                              :format-arguments (list path c))))))

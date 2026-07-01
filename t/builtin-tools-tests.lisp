@@ -137,7 +137,7 @@
           (execute-tool bash-tool '(:command "exit 42")))))))
 
 (test test-builtin-path-traversal-denial
-  "Verify that directory traversal attempts are blocked and signal denied-error."
+  "Verify that directory traversal attempts (including symlinks) are blocked and signal denied-error."
   (librecode-test.event-store::with-tmp-sandbox (dir)
     (let ((*workspace-root* dir)
           (read-tool (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
@@ -154,7 +154,14 @@
       (signals denied-error
         (execute-tool read-tool '(:path "/etc/hosts")))
       (signals denied-error
-        (execute-tool write-tool '(:path "/tmp/dangerous.txt" :content "leak"))))))
+        (execute-tool write-tool '(:path "/tmp/dangerous.txt" :content "leak")))
+      
+      ;; Create a symlink in the sandbox pointing to /etc
+      (let ((symlink-path (merge-pathnames "symlink_to_etc" dir)))
+        (uiop:run-program (list "ln" "-s" "/etc" (namestring symlink-path)))
+        ;; Verify that reading through the symlink is blocked!
+        (signals denied-error
+          (execute-tool read-tool '(:path "symlink_to_etc/hosts")))))))
 
 (test test-builtin-permission-enforcement
   "Verify that the built-in tools respect resource-level agent permissions."
@@ -230,3 +237,33 @@
               (uiop:run-program (list "kill" "-0" pid-str) :ignore-error-status t)
             (declare (ignore out err))
             (is (not (= 0 exit-code)))))))))
+
+#|
+;; Note: This test is disabled because modifying `src/runner/tool.lisp` (to destroy the worker thread on timeout)
+;; is blocked by the campaign DAG's file-surface constraint for the `builtin-tools` node.
+;; Once `src/runner/tool.lisp` is updated to call `bt:destroy-thread` instead of `join-thread-with-timeout`,
+;; this test can be safely re-enabled.
+(test test-builtin-bash-timeout-subprocess-cleanup
+  "Verify that timing out under execute-tool-async destroys the worker thread and terminates the subprocess."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (let ((*workspace-root* dir)
+          (bash-tool (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
+                       (gethash "bash" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*))))
+          (pid-file (merge-pathnames "pids_timeout.txt" (uiop:ensure-directory-pathname dir))))
+      (is (not (null bash-tool)))
+      (when bash-tool
+        (let ((cmd (format nil "echo $$ > ~A; sleep 100" (namestring pid-file))))
+          (signals tool-timeout
+            (execute-tool-async bash-tool (list :command cmd) :timeout 0.3))
+          
+          ;; Wait a moment for cleanup to execute
+          (sleep 0.5)
+          (is-true (probe-file pid-file))
+          (let ((pid-str (string-trim '(#\Space #\Newline #\Return)
+                                      (uiop:read-file-string pid-file))))
+            ;; Verify that the subprocess is dead!
+            (multiple-value-bind (out err exit-code)
+                (uiop:run-program (list "kill" "-0" pid-str) :ignore-error-status t)
+              (declare (ignore out err))
+              (is (not (= 0 exit-code))))))))))
+|#
