@@ -249,3 +249,106 @@ lexically and returns a lambda that rebinds them and executes BODY."
                              librecode-runner.agent:*project-id*))
            ,@body)))))
 
+;;; --- Failure Relay Primitive ---
+
+(defstruct failure-descriptor
+  "A serializable descriptor wrapping a condition's type, message, and constructor initargs."
+  type
+  message
+  initargs)
+
+(defun condition-to-descriptor (condition)
+  "Convert a condition to a failure-descriptor."
+  (let ((type (type-of condition)))
+    (make-failure-descriptor
+     :type type
+     :message (princ-to-string condition)
+     :initargs (cond
+                 ((subtypep type 'librecode-runner.conditions:provider-error)
+                  (list :message (librecode-runner.conditions:provider-error-message condition)
+                        :endpoint (librecode-runner.conditions:provider-error-endpoint condition)
+                        :provider (librecode-runner.conditions:provider-error-provider condition)))
+                 ((subtypep type 'librecode-runner.conditions:harness-failure)
+                  (list :message (librecode-runner.conditions:harness-failure-message condition)
+                        :exit-code (librecode-runner.conditions:harness-failure-exit-code condition)
+                        :process-id (librecode-runner.conditions:harness-failure-process-id condition)))
+                 ((subtypep type 'librecode-runner.conditions:context-overflow)
+                  (list :message (librecode-runner.conditions:context-overflow-message condition)
+                        :budget (librecode-runner.conditions:context-overflow-budget condition)
+                        :requested (librecode-runner.conditions:context-overflow-requested condition)))
+                 ((subtypep type 'librecode-runner.conditions:tool-timeout)
+                  (list :message (librecode-runner.conditions:tool-timeout-message condition)
+                        :tool-id (librecode-runner.conditions:tool-timeout-tool-id condition)
+                        :duration (librecode-runner.conditions:tool-timeout-duration condition)))
+                 ((subtypep type 'librecode-runner.conditions:process-hang)
+                  (list :message (librecode-runner.conditions:process-hang-message condition)
+                        :process-id (librecode-runner.conditions:process-hang-process-id condition)))
+                 ((subtypep type 'librecode-runner.conditions:protocol-invariant-violation)
+                  (list :message (librecode-runner.conditions:protocol-invariant-violation-message condition)
+                        :invariant (librecode-runner.conditions:protocol-invariant-violation-invariant condition)))
+                 ((subtypep type 'librecode-runner.conditions:gate-failure)
+                  (list :message (librecode-runner.conditions:gate-failure-message condition)
+                        :command (librecode-runner.conditions:gate-failure-command condition)
+                        :exit-code (librecode-runner.conditions:gate-failure-exit-code condition)))
+                 ((subtypep type 'librecode-runner.conditions:denied-error)
+                  (list :message (librecode-runner.conditions:denied-error-message condition)
+                        :action (librecode-runner.conditions:denied-error-action condition)
+                        :resource (librecode-runner.conditions:denied-error-resource condition)))
+                 ((subtypep type 'simple-condition)
+                  (list :format-control (simple-condition-format-control condition)
+                        :format-arguments (simple-condition-format-arguments condition)))
+                 (t
+                  (list :message (princ-to-string condition)))))))
+
+(defun descriptor-to-condition (descriptor)
+  "Reconstruct a condition object from a failure-descriptor."
+  (let ((type (failure-descriptor-type descriptor))
+        (initargs (failure-descriptor-initargs descriptor)))
+    (if (and type (find-class type nil) (subtypep type 'condition))
+        (apply #'make-condition type initargs)
+        (make-condition 'simple-error
+                        :format-control "Condition of type ~S: ~A"
+                        :format-arguments (list type (failure-descriptor-message descriptor))))))
+
+(defun failure-relay (supervisor-mailbox reply-mbox descriptor &key recovery-menu apply-choice message-factory)
+  "Signal a failure DESCRIPTOR to a supervising mailbox, block preserving the failing context,
+and receive a recovery choice from REPLY-MBOX. Returns (values success-p choice)."
+  (declare (ignore recovery-menu))
+  (let ((message (if message-factory
+                     (funcall message-factory descriptor reply-mbox)
+                     (list :failure descriptor reply-mbox))))
+    (send-message supervisor-mailbox message)
+    (let ((reply (receive-message reply-mbox)))
+      (cond
+        ((or (eq reply :abort)
+             (and (listp reply) (eq (car reply) :abort)))
+         (values nil :abort))
+        ((listp reply)
+         (destructuring-bind (choice &rest args) reply
+           (if (eq choice :abort)
+               (values nil :abort)
+               (progn
+                 (when apply-choice
+                   (funcall apply-choice choice args))
+                 (values t choice)))))
+        (t
+         (values nil reply))))))
+
+(defmacro with-failure-relay ((supervisor-mailbox reply-mailbox &key recovery-menu apply-choice message-factory on-abort) &body body)
+  "Binds a serious-condition handler to run failure-relay. If aborted, executes on-abort (defaults to return)."
+  (let ((c-var (gensym "C"))
+        (success-var (gensym "SUCCESS"))
+        (choice-var (gensym "CHOICE")))
+    `(handler-bind
+         ((serious-condition
+           (lambda (,c-var)
+             (multiple-value-bind (,success-var ,choice-var)
+                 (failure-relay ,supervisor-mailbox
+                                ,reply-mailbox
+                                (condition-to-descriptor ,c-var)
+                                :recovery-menu ,recovery-menu
+                                :message-factory ,message-factory
+                                :apply-choice ,apply-choice)
+               (when (and (not ,success-var) (eq ,choice-var :abort))
+                 ,(or on-abort `(return)))))))
+       ,@body)))

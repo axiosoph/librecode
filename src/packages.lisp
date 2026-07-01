@@ -88,7 +88,13 @@
            #:join-thread-with-timeout
            #:with-session-context-captured
            #:failure-relay
-           #:with-failure-relay))
+           #:with-failure-relay
+           #:failure-descriptor
+           #:failure-descriptor-type
+           #:failure-descriptor-message
+           #:failure-descriptor-initargs
+           #:condition-to-descriptor
+           #:descriptor-to-condition))
 
 (defpackage #:librecode-runner.event-store
   (:use #:cl)

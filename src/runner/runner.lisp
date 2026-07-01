@@ -239,23 +239,20 @@
                                  (unwind-protect
                                       (loop
                                         (restart-case
-                                            (handler-bind
-                                                ((serious-condition
-                                                   (lambda (c)
-                                                     (let ((marker-val (and (boundp '*worker-marker*) *worker-marker*)))
-                                                       (librecode-runner.protocol:send-message
-                                                        librecode-runner.protocol:*session-mailbox*
-                                                        `(:worker-error ,call-id ,c ,worker-mbox))
-                                                       (let ((reply (librecode-runner.protocol:receive-message worker-mbox)))
-                                                         (if (and (listp reply) (eq (car reply) :abort))
-                                                             (return)
-                                                             (destructuring-bind (restart-name &rest args) reply
-                                                               (let ((restart (find-restart restart-name)))
-                                                                 (if restart
-                                                                     (if (eq restart-name 'skip-and-continue)
-                                                                         (apply #'invoke-restart restart marker-val args)
-                                                                         (apply #'invoke-restart restart args))
-                                                                     (error "Restart ~A not found on worker stack" restart-name))))))))))
+                                            (librecode-runner.protocol:with-failure-relay
+                                                (librecode-runner.protocol:*session-mailbox*
+                                                 worker-mbox
+                                                 :recovery-menu '((skip-and-continue) (retry-tool))
+                                                 :message-factory (lambda (desc reply-mbox)
+                                                                    `(:worker-error ,call-id ,desc ,reply-mbox))
+                                                 :apply-choice (lambda (choice args)
+                                                                 (let ((restart (find-restart choice)))
+                                                                   (if restart
+                                                                       (if (eq choice 'skip-and-continue)
+                                                                           (let ((marker-val (and (boundp '*worker-marker*) *worker-marker*)))
+                                                                             (apply #'invoke-restart restart marker-val args))
+                                                                           (apply #'invoke-restart restart args))
+                                                                       (error "Restart ~A not found on worker stack" choice)))))
                                               ;; Evaluate permission request at execution site
                                               (librecode-runner.agent:check-permission agent "execute_tool" name)
                                               (let ((res (funcall (librecode-runner.tool:tool-handler tool) args-plist)))
@@ -301,16 +298,17 @@
                            (librecode-runner.protocol:broadcast-event session-id :tool-error (list :id call-id :error err-msg))
                            (setf (gethash call-id results) err-msg)))
                         ((eq (car msg) :worker-error)
-                         (destructuring-bind (call-id condition reply-mbox) (cdr msg)
-                           (librecode-runner.protocol:broadcast-event session-id :tool-worker-error (list :id call-id :condition condition))
-                           (restart-case
-                               (error condition)
-                             (skip-and-continue ()
-                               :report "Request worker to skip and continue."
-                               (librecode-runner.protocol:send-message reply-mbox '(skip-and-continue)))
-                             (retry-tool ()
-                               :report "Request worker to retry the tool."
-                               (librecode-runner.protocol:send-message reply-mbox '(retry-tool))))))))))
+                         (destructuring-bind (call-id descriptor reply-mbox) (cdr msg)
+                           (let ((condition (librecode-runner.protocol:descriptor-to-condition descriptor)))
+                             (librecode-runner.protocol:broadcast-event session-id :tool-worker-error (list :id call-id :condition condition))
+                             (restart-case
+                                 (error condition)
+                               (skip-and-continue ()
+                                 :report "Request worker to skip and continue."
+                                 (librecode-runner.protocol:send-message reply-mbox '(skip-and-continue)))
+                               (retry-tool ()
+                                 :report "Request worker to retry the tool."
+                                 (librecode-runner.protocol:send-message reply-mbox '(retry-tool)))))))))))
       (progn
         (dolist (m spawned-mailboxes)
           (ignore-errors (librecode-runner.protocol:send-message m '(:abort)))
