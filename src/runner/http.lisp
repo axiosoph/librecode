@@ -196,6 +196,54 @@
     (error (c)
       (json-response 400 (list :error (format nil "Error admitting input: ~A" c))))))
 
+(defun call-with-session-drive-loop (session-id max-steps db-path workspace-root turn-thunk)
+  "Helper function executing the session drive loop lifecycle:
+1. Connects to the database and binds workspace variables.
+2. Broadcasts :session-start.
+3. Steps through the loop up to max-steps, handling context-overflow restarts.
+4. Broadcasts :session-complete on finish or :error on failure.
+5. Safely disconnects the database."
+  (let* ((librecode-runner.event-store:*workspace-root*
+           (or workspace-root librecode-runner.event-store:*workspace-root*))
+         (db (librecode-runner.event-store:connect-db db-path)))
+    (unwind-protect
+         (let ((librecode-runner.event-store:*db* db))
+           (librecode-runner.protocol:broadcast-event session-id :session-start)
+           (unwind-protect
+                (handler-case
+                    (let ((continue t)
+                          (steps-taken 0))
+                      (loop while (and continue
+                                       (< steps-taken max-steps)
+                                       (not (librecode-runner.protocol:session-stopping-p session-id)))
+                            do (let ((withhold-tools (= (1+ steps-taken) max-steps)))
+                                 (setf continue
+                                       (let ((compact-attempts 0))
+                                         (handler-bind
+                                             ((librecode-runner.conditions:context-overflow
+                                                (lambda (c)
+                                                  (declare (ignore c))
+                                                  (when (< compact-attempts *max-compact-attempts*)
+                                                    (incf compact-attempts)
+                                                    (invoke-restart 'librecode-runner.conditions:compact-and-retry)))))
+                                           (funcall turn-thunk withhold-tools))))
+                                 (incf steps-taken))))
+                  (serious-condition (c)
+                    (librecode-runner.protocol:broadcast-event session-id :error (format nil "~A" c))))
+             (librecode-runner.protocol:broadcast-event session-id :session-complete)))
+      (sqlite:disconnect db))))
+
+(defmacro with-session-drive-loop ((session-id max-steps withhold-tools-var &key db-path workspace-root)
+                                   &body body)
+  "Macro wrapper around call-with-session-drive-loop."
+  `(call-with-session-drive-loop
+    ,session-id
+    ,max-steps
+    ,db-path
+    ,workspace-root
+    (lambda (,withhold-tools-var)
+      ,@body)))
+
 (defun handle-prompt-input (session-id env)
   (handler-case
       (let* ((json (parse-json-body env))
@@ -219,45 +267,20 @@
           (return-from handle-prompt-input (json-response 400 '(:error "Missing prompt_id or prompt_text"))))
         (librecode-runner.session:admit-input session-id prompt-id prompt-text delivery-mode)
         (when resume
-            (librecode-runner.protocol:wake-session session-id
-              (lambda ()
-                (let* ((librecode-runner.event-store:*workspace-root*
-                         (or workspace-root librecode-runner.event-store:*workspace-root*))
-                       (db (librecode-runner.event-store:connect-db db-path)))
-                  (unwind-protect
-                       (let ((librecode-runner.event-store:*db* db))
-                         (librecode-runner.protocol:broadcast-event session-id :session-start)
-                         (unwind-protect
-                              (handler-case
-                                  (let ((continue t)
-                                        (steps-taken 0))
-                                    (loop while (and continue
-                                                     (< steps-taken max-steps)
-                                                     (not (librecode-runner.protocol:session-stopping-p session-id)))
-                                          do (let ((withhold-tools (= (1+ steps-taken) max-steps)))
-                                               (setf continue
-                                                     (let ((compact-attempts 0))
-                                                       (handler-bind
-                                                           ((librecode-runner.conditions:context-overflow
-                                                              (lambda (c)
-                                                                (declare (ignore c))
-                                                                (when (< compact-attempts *max-compact-attempts*)
-                                                                  (incf compact-attempts)
-                                                                  (invoke-restart 'librecode-runner.conditions:compact-and-retry)))))
-                                                         (librecode-runner.runner:execute-provider-turn session-id provider model :withhold-tools withhold-tools))))
-                                               (incf steps-taken))))
-                                (serious-condition (c)
-                                  (librecode-runner.protocol:broadcast-event session-id :error (format nil "~A" c))))
-                           (librecode-runner.protocol:broadcast-event session-id :session-complete)))
-                    (sqlite:disconnect db))))))
-          (json-response 200
-                         (list :data
-                               (list :admitted-seq 1
-                                     :id prompt-id
-                                     :session-id session-id
-                                     :prompt (list :text prompt-text)
-                                     :delivery (string-downcase delivery-mode)
-                                     :time-created (librecode-runner.event-store::current-timestamp-ms)))))
+          (librecode-runner.protocol:wake-session session-id
+            (lambda ()
+              (with-session-drive-loop (session-id max-steps withhold-tools
+                                        :db-path db-path
+                                        :workspace-root workspace-root)
+                (librecode-runner.runner:execute-provider-turn session-id provider model :withhold-tools withhold-tools)))))
+        (json-response 200
+                       (list :data
+                             (list :admitted-seq 1
+                                   :id prompt-id
+                                   :session-id session-id
+                                   :prompt (list :text prompt-text)
+                                   :delivery (string-downcase delivery-mode)
+                                   :time-created (librecode-runner.event-store::current-timestamp-ms)))))
     (error (c)
       (json-response 400 (list :error (format nil "Error handling prompt: ~A" c))))))
 
@@ -287,37 +310,10 @@
              (workspace-root *http-workspace-root*))
         (librecode-runner.protocol:wake-session session-id
           (lambda ()
-            (let* ((librecode-runner.event-store:*workspace-root*
-                     (or workspace-root librecode-runner.event-store:*workspace-root*))
-                   (db (librecode-runner.event-store:connect-db db-path)))
-              (unwind-protect
-                   (let ((librecode-runner.event-store:*db* db))
-                     (librecode-runner.protocol:broadcast-event session-id :session-start)
-                     (unwind-protect
-                          (handler-case
-                              (let ((continue t)
-                                    (steps-taken 0))
-                                (loop while (and continue
-                                                 (< steps-taken max-steps)
-                                                 (not (librecode-runner.protocol:session-stopping-p session-id)))
-                                      do (let ((withhold-tools (= (1+ steps-taken) max-steps)))
-                                           (setf continue
-                                                 (let ((compact-attempts 0))
-                                                   (handler-bind
-                                                       ((librecode-runner.conditions:context-overflow
-                                                          (lambda (c)
-                                                            (declare (ignore c))
-                                                            (when (< compact-attempts *max-compact-attempts*)
-                                                              (incf compact-attempts)
-                                                              (invoke-restart 'librecode-runner.conditions:compact-and-retry)))))
-                                                     (librecode-runner.runner:execute-provider-turn
-                                                      session-id provider model
-                                                      :withhold-tools withhold-tools))))
-                                           (incf steps-taken))))
-                            (serious-condition (c)
-                              (librecode-runner.protocol:broadcast-event session-id :error (format nil "~A" c))))
-                       (librecode-runner.protocol:broadcast-event session-id :session-complete)))
-                (sqlite:disconnect db)))))
+            (with-session-drive-loop (session-id max-steps withhold-tools
+                                      :db-path db-path
+                                      :workspace-root workspace-root)
+              (librecode-runner.runner:execute-provider-turn session-id provider model :withhold-tools withhold-tools))))
         (json-response 200 (list :status "woken")))
     (error (c)
       (json-response 400 (list :error (format nil "Error waking session: ~A" c))))))
