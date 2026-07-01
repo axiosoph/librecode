@@ -98,21 +98,51 @@ frontend to opencode proper.
 ### G · opencode-compatible runner
 Full opencode-spec compliance — the runner's stability measured against its external
 standard; the compatibility surface, added *after* the core is stable.
+- **The augmentation seam:** the runner exposes hooks so the metaharness can enforce its
+  invariants on it, while the runner runs standalone as pure-opencode (metaharness an
+  *optional* consumer). **Open prior-art unknown:** how extensible opencode already is
+  (plugins / hooks / events / MCP) — investigate first, and reuse opencode's own extension
+  mechanism if one exists (compat for free) before adding our own.
+
+### H · Runner capability floor *(prerequisite for meaningfully testing the metaharness)*
+A bounded set of the critical features *any* LLM agent harness needs — robust multi-turn
+tool use, real file/code editing, dependable error handling — stabilized to a **testable
+standard**, so realistic scenarios exist to stress the metaharness. NOT full opencode
+parity: enough to exercise supervision and coherence, no more. Keeps us bounded —
+stabilize an elegant, minimal-but-capable runner API before broadening the code surface.
+
+### I · The multi-stakeholder commons *(the concrete coordination mechanism — prioritized)*
+Make the commons literal — many humans + many sessions under one governance layer — because the
+commons is only compelling once concrete (`foundations.md` Positioning, §5; `design.md §2`).
+- **Human seats + human-gated blockers.** Generalize the council/delegation table so arbitrary
+  humans are first-class seats, and a node can carry a hard sign-off gate ("X waits on Alice AND
+  Bob") enforced like any deterministic gate — not tracked out-of-band.
+- **Cross-instance coherent view.** Disparate isolated sessions (each stakeholder on their own
+  harness) share the append-only statespace as a single global view into ongoing work — the
+  substrate that makes long-horizon multi-stakeholder alignment enforceable, not aspirational.
+- **Above any single harness.** Coordinate heterogeneous human+tool operators without requiring
+  them to standardize on one harness (the metaharness-not-harness argument).
 
 ---
 
 ## Sequencing
 
-**Stabilize, then broaden.** Core stabilization — **A (formalize stable) + B (harden,
-incl. the I4 fix) + the sensor** — comes first and fast. **C (memory)** runs as a
-parallel design dialectic (it gates nothing but underpins everything long-horizon).
-**D** follows the sensor. **E / F / G** (heterogeneity, TUI, full opencode-compat) are
-the broadening surface, deliberately after the core is stable per §8.
+**Stabilize, then broaden.** **B (harden, incl. the I4 fix) + the sensor** comes first.
+**H (runner capability floor)** lands within the first few campaigns — the metaharness
+cannot be meaningfully tested against a toy runner, so a bounded-but-capable runner is a
+prerequisite for **A (formalize stable)**, which grounds the §8 invariants against a
+*realistically exercised* running metaharness. **C (memory)** runs as a parallel design
+dialectic. **D** follows the sensor. **I (multi-stakeholder commons)** is **prioritized** —
+its human-gated-blocker + cross-instance-view core is what makes the commons concrete and the
+thesis testable against real multi-stakeholder scenarios, and it rides the append-only substrate
+B hardens rather than waiting on it; the I4 fix still comes first (a regressed proven invariant
+is always first), and the exact interleave of I with H/A is the head's call. **E / F / G**
+(heterogeneity, TUI, full opencode-compat) are the broadening surface, deliberately after the
+core is stable per §8 — and G's full compatibility comes only after H's bounded floor.
 
 ## Immediate next
-1. **Convene the council** on the doc set (`MANIFESTO.md`, `docs/foundations.md`, this
-   roadmap) — the terminal step of this (unorthodox, mostly-dialectic) foundation
-   campaign.
-2. **Commit** the doc set on council sign-off.
+1. Council convened (4 seats) + remediation applied on the `foundations` branch.
+2. **Commit** the remediated set on the head's final sign-off.
 3. **First post-foundation campaign:** B's **I4 fix** (a proven invariant regressed — fix
-   before building on it), then A (**formalize stable**).
+   before building on it), then H (**runner capability floor**) toward A (**formalize
+   stable**).

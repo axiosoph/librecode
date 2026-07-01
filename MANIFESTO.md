@@ -1,67 +1,70 @@
 # librecode
 
-**A libre coherence engine for decorrelated intelligence.**
+*A libre coordination layer for composing disparate language models into verifiable work.*
 
-*This is the case for why librecode must exist. The rigorous derivation is
-[`docs/foundations.md`](docs/foundations.md); the as-built system is [`docs/`](docs/).*
+## The problem
 
----
+A language model's systematic errors are properties of the model, not the prompt. Gaps
+in its training, its learned biases, the shapes its tuning refuses to produce: reprompting
+averages out noise but reaches none of these. Running more copies of one model compounds
+its blind spots; it does not correct them. Only a model trained differently has different
+blind spots. Error-correction across models is therefore real, and it requires models that
+genuinely differ.
 
-## The claim
+The effect has a ceiling. Models from different vendors still share corpora, architectures,
+and tuning conventions, so they can agree confidently and be jointly wrong — most
+dangerously on new problems, where there is no prior art to anchor them, and the overlap
+grows as the models get stronger. Cross-model agreement is a signal, not a proof.
+Deterministic checks and human judgment carry the rest of the load; on novel work, the
+human carries most of it.
 
-The most valuable thing you can do with language models is not available from any
-vendor — and it cannot be, by construction.
+## Why the useful version does not exist
 
-A model is a stochastic process bounded to its own training. Every copy of it shares the
-same blind spots: the same gaps, the same biases, the same safety-shaped refusals. You
-can prompt it a thousand different ways and its deepest errors stay *correlated* — they
-never cancel. Real error-correction requires **disparate models**, because the total
-reachable capability is the *union* of what all models can do, strictly larger than any
-one of them.
+No model vendor will build the layer that composes its competitors, because that layer's
+value is precisely *not* depending on any one of them. A neutral aggregator can, and closed
+ones already do. But a closed coordination layer is the next enclosure: it captures the
+dependency everyone accumulates by using it. The version worth trusting cannot be owned.
 
-No vendor can sell you that union. Reaching it means composing their competitors. The
-single most powerful architecture in this field is **structurally unbuildable by anyone
-with a model to sell** — lock-in is anti-decorrelation by construction. So the layer that
-composes disparate intelligences into something none of them could produce or verify
-alone can only come from outside the market. It has to be **libre**.
+## Why a layer, not a feature
 
-**Freedom here is not ideology. It is the enabling condition of the mathematics.**
+The obvious objection: build this coordination into an agent tool directly, as a feature. But
+a real project of any size has stakeholders who will never standardize on one tool — different
+editors, different harnesses, different workflows — and you cannot make them. A feature inside
+one tool governs only that tool's users. The commons spans the stakeholders regardless of what
+each runs locally, so the coordinating layer has to sit *above* any single tool. That is what
+lets many people, on whatever they each prefer, work as one group whose long-horizon goals do
+not silently diverge — and sustained alignment of that kind, across many contributors over a
+long horizon, is often what decides whether a large effort succeeds at all. It is not a tooling
+detail; it is the thing being built.
 
----
+## What librecode is
 
-## What we are building
+A coordination layer built as a commons — literally: a network of independent sessions, run
+by different people using different tools, cross-coordinating on shared long-horizon goals
+through one governing layer that none of them owns. It composes disparate models under
+deterministic gates that separate progress from regression without ambiguity; keeps every
+result in an append-only record so nothing proven is silently lost — and so every session sees
+one coherent view of the whole, including the hard blockers ("no progress here until these
+people sign off") that hold a large group together; recovers a line of work that goes wrong
+instead of letting it propagate; and keeps the human at the two points machines cannot reach —
+the genuinely novel, and the judgment of what is actually good.
 
-Not an agent framework. Not a business modeled in software. A **commons** modeled in
-software — the highest known standard of collaborative effort, distilled to its
-procedural essence and made enforceable.
+The composition may *use* proprietary models. It must not *depend* on any of them, and the
+governing layer itself must stay un-capturable. That is the entire freedom argument here:
+not a slogan, but the one property that keeps a coordination commons from being enclosed by
+whoever operates it.
 
-librecode composes **bounded machine-walkers** (fast, tireless, but confined to their
-training) with the **unbounded human** (the only source of genuine novelty, the final
-check against shared delusion, the judge of what actually matters) — under
-machine-enforced commons principles, ratcheting coherence through an append-only
-statespace that can never silently lose a proven result. The machine walks *within* the
-boundary; the human moves *the boundary itself*. **Each has precisely what the other
-lacks.**
+## Who it is for
 
-It governs itself the way a healthy commons does — not by command, but by clear
-boundaries, graduated recovery, transparent monitoring, and measured coherence — and it
-makes exactly one promise about your scarcest resource: **either it makes coherent
-progress, or it tells you exactly why it can't, and surfaces only the decisions that are
-genuinely yours.** No silent drift. No guessing past you.
+The people who already recognize enclosure when they see it, and who built the commons the
+rest of software runs on — in the open, procedurally, often to a higher standard than the
+firms they compete with. The layer for working with these models should be built the same
+way, by the same people, for the same reasons.
 
----
+## Where it stands
 
-## Why it matters now
-
-Drift and hallucination are not bugs to be polished away one model at a time — they are
-intrinsic to what these systems are. You correct them at the *system* level: disparate
-models covering each other's blind spots, deterministic gates that unambiguously mark
-progress from regression, and a human held in the loop precisely where the machines
-cannot reach. Everything else is a race to a better score inside a single, walled
-distribution.
-
-The tool we need does not exist because the people best positioned to build it are the
-people it would free us from. So we build it in the open — and if we build it right, we
-set the standard.
-
-*Contributions welcome. Bring a different model.*
+Early, and honest about it. The runner and the cross-process supervision core work; the
+governance and the measured-coherence loop are argued and partly built. The full argument,
+including the places where it is motivated rather than proven, is in
+[foundations](docs/foundations.md). If the reasoning holds, help build it. If it does not,
+attacking it is the fastest way to find out.

@@ -11,6 +11,13 @@ principle (that is foundations) and **not** the as-built reference (that is the 
 
 ## 1 · The campaign lifecycle (the state machine)
 
+**Scope is plural by design.** The metaharness governs one or more **commons** — each a
+body of stewards plus its many **projects** (repositories); one steward or team may run
+several commons at once. Work is organized as focused efforts (campaigns) that may span
+one or more projects within a commons. Single-project or single-human operation is a
+special case, never an assumption; governance is **plural-human** (multiple stewards are
+the human-side decorrelation of `foundations.md §3`).
+
 A campaign carries a goal through a controlled trajectory. Two context regimes: the
 **architecture** phase retains full context; **composition** dispatches into fresh
 contexts.
@@ -18,18 +25,19 @@ contexts.
 **Architecture (context-retaining):**
 1. **Prepare** — arbitrarily complex; research where needed.
 2. **Orient + align docs** — apply what prep revealed; reconcile the anchor (AGENTS.md).
-3. **Formalize the IBC** — requirements, invariants, constraints, all unknowns
+3. **Formalize the IBC** (Initial Boundary Condition — the sufficient boundary a raw agent
+   executes from without drift) — requirements, invariants, constraints, all unknowns
    (known + filed), goal & scope, definition of done. (The IBC is the *transducer*, §5.)
 4. **Council architecture + sign-off** *(fresh context)* — decorrelated seats review the
    plan; sign off or remediate (§2). Then hand to the composer.
 
-**Composition (dispatch ⇄ reconcile):** until DAG completion —
+**Composition (dispatch ⇄ reconcile):** until DAG (directed-acyclic work graph) completion —
 1. Execute a DAG layer (conflict-free set in parallel; serialized where surfaces overlap).
 2. Monitor / nudge; convene decorrelated assistance on trigger (§2).
 3. Maintainer sign-off on the layer's collected work; if not, loop.
 4. Merge into the campaign branch; advance the tip.
 
-**Convention (per campaign):** decorrelated seat review (incl. invoked guests) →
+**Convening (per campaign):** decorrelated seat review (incl. invoked guests) →
 remediation / reconciliation / extension. If extended, re-run the DAG loop and
 reconvene; else final sign-off, merge, close + cleanup.
 
@@ -46,6 +54,16 @@ head / final arbiter.
 **Delegation:** each decision-type routes to its owning seat and its required assent
 (single / subset / full / human) — the delegation table. Independent-first: each seat
 deposits *before* reading a sibling's; correction is relayed through the composer.
+
+**The council scales to arbitrary human stakeholders — it is the concrete commons**
+(`foundations.md §5`). Seats are not a fixed panel: the delegation table admits any number of
+humans as first-class seats, so a large group project runs as one commons. Each stakeholder
+works in their own isolated session (their own harness); the shared append-only statespace gives
+every session a **global coherent view** into the others' ongoing work. A **hard human-gated
+blocker** — "node X cannot proceed until Alice and Bob both sign off" — is a delegation edge with
+required-assent `{alice, bob}`, enforced like any deterministic gate rather than tracked
+out-of-band. The metaharness sits *above* any single harness precisely so these stakeholders need
+not standardize on one tool.
 
 **Convening trigger (the dual-trigger, §3 of foundations' recurring pattern):** a
 **deterministic signal** (a delegation-table decision-type · gate-non-convergence after
@@ -129,6 +147,11 @@ high) > docs** — which maps to gate strength (congruence). One signal
 (iterations-to-convergence) serves three uses: coherence health · the §2 convening
 trigger · adaptive attention (§4).
 
+**Caveat (`foundations.md §3`):** convergence is *not* health on novel work — correlated
+hallucination presents as fast, confident agreement. The novelty trigger therefore also
+uses a signal **independent of convergence** (cross-*substrate* disagreement, or a human
+spot-check), and confident-fast-agreement on novel work routes **to the human**.
+
 ## 7 · Design-pending (the open mechanics)
 
 - **Memory ↔ context** — the LTM (git-backed) / context-map consolidation, accuracy
@@ -136,3 +159,15 @@ trigger · adaptive attention (§4).
 - **The living loop** — sensor (§6) + actuator (§4) implementation. **[→ roadmap B/D.]**
 - **The §8 invariants as a machine-checked spec.** **[→ roadmap A; `/spec` or `/form`.]**
 - **Cross-model seats.** **[→ roadmap E.]**
+- **The augmentation seam** — how metaharness governance reaches an opencode-compatible
+  runner via **hooks the runner exposes** (the runner runs standalone as pure-opencode;
+  the metaharness is an *optional* consumer, and the runner depends on nothing), and how
+  extensible opencode already is. **[→ roadmap G; open prior-art unknown.]**
+
+---
+
+## Doc conventions (single source of truth)
+A fact lives in one place: invariant *status* is owned by `AGENTS.md`; the transition
+ladder by §3 here; principles by `foundations.md`; the plan by `docs/roadmap.md`.
+Everything else references it. Roadmap cross-references use the workstream's stable
+letter-ID (A–G); those IDs are not renumbered.
