@@ -36,9 +36,12 @@ message-first human-seam API.
 
 ### A · Formalize "stable" *(highest leverage; unblocks the rest)*
 Turn `foundations.md §8` into a **machine-checked spec** of the static invariants
-(monotonic unforgeable progress; bounded+recoverable divergence; seams surfaced never
+(tamper-evident monotonic progress; bounded+recoverable divergence; seams surfaced never
 crossed; decorrelated composition) — grounded against the *now-running* metaharness. This
-converts "stable metaharness" from prose into a gate.
+converts "stable metaharness" from prose into a gate. **Pin the threat model first** (§8's
+"tamper-evident, precisely"): formalize ledger integrity — checkable — and never let the spec
+claim work-validity under the same name; include the evaluator-surface countermeasure (a test
+deleted or weakened without a linked decision fails the gate).
 Its own determinization ratchet: every invariant we can make deterministic, we must.
 
 ### B · Harden the runner/metaharness core
@@ -47,7 +50,15 @@ Its own determinization ratchet: every invariant we can make deterministic, we m
 - Provider auth + non-OpenAI dialects (beyond the endpoint-generic base).
 - The accepted-vs-skipped ladder semantics (recently implemented; needs verification).
 - Stand up the **coherence telemetry substrate** (the living loop's *sensor*):
-  iterations-to-gate, rework/escalation/gate-fail rates, per basin/content-type/time.
+  iterations-to-gate, rework/escalation/gate-fail rates, per basin/content-type/time —
+  **two-sided from the start** (`design.md §6`): friction metrics PLUS the false-accept
+  instruments (decorrelated audit-sampling of gate-passed deposits; close-time attribution
+  from the human quality scalar back to contracts). The human anchor enters the schema as a
+  *partially correlated* signal, not unqualified ground truth (`foundations.md §3`).
+- **Early cross-model probe** (pulled forward from E): a cheap measurement of whether a
+  disparate-model reviewer catches defects a same-model reviewer misses on our own work —
+  the thesis's most falsifiable bet, bounded early rather than after maximal scaffolding.
+  (The 2026-07-01 decorrelated review is a first data point: it did.)
 
 ### C · Memory & Context *(built on J; early — highest blast radius, do not glaze)*
 Long-term memory (durable) and the context map (ephemeral). **Memory is built *on* the contract
@@ -174,8 +185,11 @@ because **A, D, and I all sit on it** and it is currently implicit.
   checking (generalizes to all contract parameters).
 - **The cost-ordered pipeline** — a cheap contract cull (auto-reprompt on fail) gating expensive
   decorrelated review; the deposit as the co-located claim+evidence review substrate.
-- **Nickel as the checker** (decided), run at harness ⊕ CI ⊕ commit gate; **graceful degradation**
-  (recorded, never silent) + **deferred validation** when it is absent.
+- **Nickel as the checker** (decided), run at harness ⊕ CI ⊕ commit gate; **graceful
+  degradation — semantics decided** (`design.md §7`): deposits quarantine `validation-pending`,
+  the phase never advances past a pending gate (proof advancement deferred, never retracted),
+  failed discharge reverts to rework; recorded, never silent. **Non-terminating contracts are
+  a bounded-timeout FAIL**, never a pass or a third state.
 - Relationships: **A** authors the immutable-core contracts on this; **D**'s actuator commits
   refinements to the basins; **I**'s assent engine is contracts over it.
 

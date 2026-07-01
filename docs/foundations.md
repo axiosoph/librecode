@@ -48,8 +48,9 @@ A **machine** (LLM) is a stochastic walker **bounded** to a model `θ` (its weig
 training + fine-tuning + safeguards): it samples only within `θ`'s reachable region, and
 is **abundant** in throughput. A **human** is a stochastic walker on a **different
 substrate whose bound cannot be written down** — not provably unbounded, but not
-characterized by any known `θ`, and correlated with the machines only weakly and
-indirectly — and is **scarce** in throughput (attention is the limiting resource). Two
+characterized by any known `θ`. The human–machine correlation is **graded and
+error-class-dependent**, not absent (§3 models the channels); the human is **scarce** in
+throughput (attention is the limiting resource). Two
 asymmetries are load-bearing and distinct: the human is a *different, un-formalizable
 substrate* (drives the decorrelation role, §3) and is *scarce* (drives the economy of
 §6–7). The claim is difference and independence, not superiority or unbounded reach; that
@@ -106,9 +107,11 @@ scope rule — proprietary models allowed as arms-length members — is consiste
 this reading.)
 
 ### 3 · The human/machine division — and the correlated-bias floor
-As a different substrate, the human's failures are not correlated *through* any `θ`: it is
-the natural check on the machine floor, the reach into genuine novelty (work outside `⋃_θ`),
-and — argued in §6, not assumed — the better judge of coherence and meaning. So the **human
+As a different substrate, the human's failures are not correlated through any `θ`'s
+*architecture or tuning conventions*: the human is the natural check on the machine floor,
+the reach into genuine novelty (work outside `⋃_θ`), and — argued in §6, not assumed — the
+better judge of coherence and meaning. (The correlation that *does* bind the substrates is
+modeled below, not assumed away.) So the **human
 operates ON the basin** (the basin of attraction — the region of outcomes a walk settles
 into: sets it, moves it, overrides, judges), and the **machine walks WITHIN it**. Precisely:
 - **No perfect judge.** The human errs too — the justification for measurement (§6).
@@ -131,16 +134,24 @@ into: sets it, moves it, overrides, judges), and the **machine walks WITHIN it**
   **substrate-independent deterministic gates** and a **human**, because a shared blind spot
   survives both reprompting *and* role assignment (if reviewer and author share the bias,
   the review misses it). So more models cannot break the residual floor — the only genuinely
-  different substrate is the human. And the human basin is itself imperfectly independent: a
-  reviewer who reads the machine's output before judging inherits its framing (automation
-  bias), and stewards from one community share priors — the same correlation argument, run
-  honestly against ourselves. The mitigations are structural, not magical: **judge before
-  being shown the machine's answer** where it matters, and govern **plural** with
-  *deliberately unlike* stewards (diverse problem-solvers can outperform more-able
-  homogeneous ones — Hong & Page 2004). Novel or high-stakes work stays in the human loop
-  even on ensemble agreement. This deliberately spends the scarcest resource — human
-  attention — where it is decisive, which is the cost the economy of §6–7 manages and the
-  determinization ratchet shrinks as work moves from novel to routine.
+  different substrate is the human. And the human basin's independence is **graded, not
+  binary** — two channels bind the substrates directly, beyond the human-side effects
+  (automation bias from reading the machine's answer before judging; shared steward priors):
+  `θ` is distilled *from human output*, so documented human misconceptions and cognitive
+  biases are in `θ` by construction (LLMs reproduce them; Binz & Schulz 2023), and
+  preference-tuning optimizes `θ` *against human judgment specifically*, teaching models to
+  exploit its weaknesses (sycophancy; Sharma et al. 2023) — so on confident, fluent,
+  plausible-but-wrong output, machine error and human approval are not independent draws.
+  What survives, and what the human's authority actually stands on, are the error classes
+  `θ` cannot reach: contact with the world, stakes and accountability, taste, long-horizon
+  memory. The design consequences: treat human agreement with machine output as a
+  *partially correlated* signal, not ground truth simpliciter (§6); **judge before being
+  shown the machine's answer** where it matters; and govern **plural** with *deliberately
+  unlike* stewards (suggestive support in the diversity-beats-ability literature — Hong &
+  Page 2004, though its formal core is contested). Novel or high-stakes work stays in the
+  human loop even on ensemble agreement. This deliberately spends the scarcest resource —
+  human attention — where it is decisive, which is the cost the economy of §6–7 manages and
+  the determinization ratchet shrinks as work moves from novel to routine.
 
 ### 4 · The coordination mechanics — why a deterministic bounding layer
 Coordination on a shared resource, under many uncoordinated walkers, degrades it — and the
@@ -156,11 +167,15 @@ Where the walker is a *machine*, the failure is **not** strategic — an LLM gai
 from incoherence — but **entropic**: open-loop generation drifts by default, depleting the
 same resource with no intent to. The layer must bound both.
 
-The fix is mechanism design: change the payoff so cooperation is stable (the logic of
-graduated reciprocity; Axelrod 1984) — make defection **detectable**, **costly and bounded**
+The fix is mode-matched, and its grounding splits with it. For the **strategic** mode it is
+mechanism design: change the payoff so cooperation is stable (the logic of graduated
+reciprocity; Axelrod 1984) — make defection **detectable**, **costly and bounded**
 (a graduated response that cannot propagate), and
 **individually irrational** (contribution proportional to benefit), and make the game
-**decomposable**. Realized as a deterministic bounding layer whose state is an **append-only,
+**decomposable**. For the **entropic** mode the same machinery acts not as incentive but as
+**closed-loop control** — detection, bounded correction, rollback — standing on engineering
+merits rather than game theory (the strategic-mode citations ground the human half only, and
+are not claimed for the machine half). Both realized as a deterministic bounding layer whose state is an **append-only,
 immutable, replayable statespace** — an established coordination-friendly substrate (Helland
 2015) — which is also the **context substrate** (context is *reconstructed, not recalled*).
 Proof is **monotonic** (a passed gate never silently un-passes; a proven result is never
@@ -240,19 +255,25 @@ information theory (Kalai & Vempala 2024).
 ### 7 · The composition medium — the human seam
 Human and machine compose through a **message-first medium that surfaces exactly the genuine
 seams and nothing else** (throughput is scarce): novelty-bounding, divergence-alert,
-coherence-judgment. The composition is **heterogeneous + externally verified**: aggregating
-*different* models measurably improves output (Mixture-of-Agents, Wang et al. 2024), while
-naive multi-agent debate does not reliably beat cheaper baselines (Smit et al. 2024) and
-models cannot self-correct without an external signal (Huang et al. 2024) — which is why the
-*verification* is deterministic gates and a human, not agents grading themselves. Aggregation
-supplies candidates; the external checks decide. Agents are primed to know their arsenal and owe *generative*
+coherence-judgment. The composition is **heterogeneous + externally verified** — and the
+answer-aggregation literature cuts both ways, so we cite both: mixed-model aggregation can
+improve output (Mixture-of-Agents, Wang et al. 2024), yet aggregating samples of the single
+*best* model has been shown to beat the mixed ensemble where member-quality gaps dominate the
+diversity gain (Li et al. 2025), naive multi-agent debate does not reliably beat cheaper
+baselines (Smit et al. 2024), and models cannot self-correct without an external signal
+(Huang et al. 2024). librecode's composition is **role-differentiated production under
+external checks**, not answer aggregation — so neither MoA result attaches to it directly,
+and the regime where disparate-`θ` composition pays (verification and review, vs. raw
+generation quality) is exactly what the early cross-model probe must measure (roadmap) —
+which is why the *verification* is deterministic gates and a human, not agents grading
+themselves. Aggregation supplies candidates; the external checks decide. Agents are primed to know their arsenal and owe *generative*
 reports (trade-offs, decisions-and-why, goal-fit, suggestions that spark), which makes the
 human's catch of a correlated hallucination cheap. Concrete transport and UI are design, not
 principle.
 
 ### 8 · "Stable" — the metric
 The metaharness is **stable** when, for any agent composition:
-- **(static)** the bounding-layer invariants hold — monotonic unforgeable progress,
+- **(static)** the bounding-layer invariants hold — **tamper-evident monotonic progress**,
   bounded+recoverable divergence, seams surfaced never crossed silently, decorrelated
   composition; **and**
 - **(dynamic)** the measured coherence health is good and self-correcting — a living commons
@@ -267,6 +288,19 @@ Read *decorrelated composition* at the `θ` level (§1): it means composing disp
 or the gates and the human — not lens-variation on a single `θ`, which sits below §1's floor
 and does not count. Which mechanisms are built versus designed is tracked in the roadmap and
 `AGENTS.md`, not here; this document defines the target, not the current state.
+
+**"Tamper-evident", precisely — the threat model.** Two properties travel here and only one
+is machine-checkable. *Ledger integrity* — the record "gate G passed deposit D at position P"
+is authentic, append-only, and gate-parameterized (the agent never sets the terms of its own
+checking) — **is** the static invariant, and it is checkable. *Work validity* — that G passing
+means the work is actually done — is **not** machine-checkable in general, because the agent
+authors the *subjects* of the evaluators (the code, and often the tests): weakening the
+checked subject forges "progress" through an honest gate. That vector is not hypothetical —
+this project's own shutdown regression rode it (the test was removed and the gate stayed
+green). The countermeasures are the review layer (pass is necessary, never sufficient) and
+contracts on the *evaluator surface itself* (e.g., a test deleted or weakened without a
+linked decision fails the gate). The stability metric claims the first property; it never
+claims the second.
 
 ---
 
@@ -284,7 +318,11 @@ elements are specifically unverified — contributions, not citations:
 3. **Transfer of Ostrom's principles** from human institutions to a human+machine commons.
 4. **The magnitude of §1's benefit** for long-horizon software specifically — that disparate
    `θ` beat the best single model, and by how much. The direction is well-motivated by the
-   `θ`-floor; the magnitude is what measurement must settle.
+   `θ`-floor; the magnitude is what measurement must settle — and settle *early*, because our
+   own §3 evidence says the diversity term shrinks as frontier models converge (Goel et al.
+   2025) and the aggregation literature shows regimes where mixing loses to the best single
+   model (Li et al. 2025). The bet is live in the verification/review regime we actually
+   compose in; an early cross-model probe is scheduled rather than deferred (roadmap).
 
 Each mechanism is grounded; the synthesis is the hypothesis this project exists to verify.
 
@@ -304,8 +342,16 @@ recedes toward a floor, not to zero. Where certainty is high, ceremony collapses
 ratchet is the system's *economy*, not only its rigor: every check moved into a
 machine-decidable contract is one no longer paid for with a scarce council seat or a human
 minute, so determinization buys **throughput** — it relocates verification from the expensive
-tier to the near-free one, run on every deposit. The engine that drives it is the
-self-governing instruction layer, next.
+tier to the near-free one, run on every deposit. That economy has a failure mode the loop must
+instrument against, because every friction signal is blind to it: a **false-accepting**
+contract (wrongly specified, passing what it should fail) *reduces* fill-failures and rework —
+reading as improved health on every friction metric — while the ratchet's own economy removes
+the human review that would catch it, and the two ratchet signals can never fire (nothing
+fails to fill; nothing recurs un-contracted). This is §6's convergence caveat applied to the
+gate layer itself, and it compounds. The counter-instruments are non-optional: **periodic
+decorrelated audit-sampling of gate-passed deposits**, and **close-time attribution** from the
+human quality scalar back to the contracts that passed the judged work (design §6). The
+engine that drives the ratchet is the self-governing instruction layer, next.
 
 ## The self-governing instruction layer
 The metaharness owns its own **prose procedures** and **contracts** as versioned, committable
@@ -374,10 +420,15 @@ the *terms* of checking — the agent supplies work and its record of it, never 
 decide how it is verified: at every deterministic gate the phase to check and the contract to
 apply are machine-derived from execution state (the DAG), overriding any value the agent declared
 (advisory only, for self-description or a manual self-check). The checker composes
-loosely rather than as a hard dependency — where it is absent the system **degrades** (validation
-deferred over the durable deposits, discharged when the checker returns) rather than failing,
-provided the degradation is *recorded, never silent* (design). How to shape contracts for this —
-partial and deferred validation both — is genuinely open (design §7).
+loosely rather than as a hard dependency — where it is absent the system **degrades** rather
+than failing, and the degradation has exact semantics: deposits still land durably (work
+capture keeps its liveness) but are quarantined *validation-pending*, and **the DAG phase does
+not advance past a gate on a pending deposit** — degradation defers *proof advancement*, never
+proof-then-retract. So "a violating deposit cannot enter **proven** history" holds
+unconditionally in both modes; a failed discharge reverts the pending node to rework with
+nothing proven ever lost (§4's monotonicity intact); and the degradation is *recorded, never
+silent* (design). What the absent checker costs is ratchet advancement, not work capture —
+the right trade. Contract shaping for partial validation is design (design §7).
 
 ## The recurring pattern (self-similarity)
 Wherever a boundary is inherently undecidable deterministically, the system uses one shape —
@@ -425,6 +476,9 @@ machine; and, for review, ideally cross-model).
 - Zou, Wang, Kolter & Fredrikson (2023). Universal and Transferable Adversarial Attacks on Aligned Language Models. arXiv:2307.15043.
 - Panickssery, Bowman & Feng (2024). LLM Evaluators Recognize and Favor Their Own Generations. *NeurIPS 2024*.
 - Wang, Wang, Athiwaratkun, et al. (2024). Mixture-of-Agents Enhances Large Language Model Capabilities. arXiv:2406.04692.
+- Li, Xu, et al. (2025). Rethinking Mixture-of-Agents: Is Mixing Different Large Language Models Beneficial? arXiv:2502.00674.
+- Binz & Schulz (2023). Using cognitive psychology to understand GPT-3. *PNAS* 120(6).
+- Sharma, Tong, et al. (2023). Towards Understanding Sycophancy in Language Models. arXiv:2310.13548.
 - Smit, Duckworth, Grinsztajn, et al. (2024). Should We Be Going MAD? A Look at Multi-Agent Debate Strategies for LLMs. *ICML 2024* (arXiv:2311.17371).
 - Huang, Chen, Mishra, et al. (2024). Large Language Models Cannot Self-Correct Reasoning Yet. *ICLR 2024* (arXiv:2310.01798).
 - Ostrom (1990). *Governing the Commons*. Cambridge University Press.

@@ -155,7 +155,9 @@ invariants *are* arbitrary computations over machine-written data. It also inges
 formats (YAML/JSON/TOML) and evaluates purely. The external-binary property is **load-bearing,
 not a wrinkle**: one `nickel export` is the identical gate in the harness, in CI, and at the
 commit hook — single-source-of-truth *enforcement* (no drift between what each layer checks) and
-the ledger's integrity validated at write time (a violating deposit cannot enter history). A
+the ledger's integrity validated at write time (a violating deposit cannot enter **proven**
+history — in degraded mode deposits land quarantined and unproven, never proven-then-retracted;
+see §7). A
 native Common Lisp DSL is **the wrong direction**, not merely a high bar: in-process, its one
 advantage (no external dependency) is the liability — it binds contracts to the harness runtime,
 loses the CI/commit gates, and its in-language convenience invites verifying *imperatively in the
@@ -166,8 +168,10 @@ fails** (§7).
 
 ## 5 · The human seam
 
-Only three classes of decision are genuinely the human's; the API surfaces exactly these
-and nothing else (time is the scarcest resource):
+The API surfaces exactly the human-owned decisions and nothing else (time is the scarcest
+resource). The authoritative enumeration is the **delegation table** (§2) — which includes
+ratifying contract/core promotions (§4) and selecting regression transitions at stakes (§3) —
+and three seam classes dominate its traffic:
 1. **Novelty-bounding** — greenfield outside `⋃_θ`. The human supplies requirements /
    invariants / constraints; the **IBC transducer** converts that (often underspecified)
    intent into a *sufficient boundary* a raw agent executes without drift. The machine's
@@ -201,6 +205,16 @@ Two further signals feed the self-governing loop (§4), and both need the metaha
 too coarse) and *recurring un-contracted patterns* (⇒ a candidate for a new contract). No
 single session can see either; only the harness watching many walks can.
 
+**The sensor must be two-sided.** Every signal above measures *friction* — and a
+**false-accepting** gate (a wrongly-specified contract passing what it should fail) produces
+*less* friction, reading as improved health while it silently mis-verifies every deposit on a
+surface the ratchet's economy has removed human review from (`foundations.md`, the ratchet).
+Two counter-instruments are part of the schema from the start, not retrofits: **periodic
+decorrelated audit-sampling of gate-*passed* deposits** (a small random fraction re-reviewed
+by a decorrelated reviewer), and **close-time attribution** — when the human quality scalar
+judges a campaign poorly, trace which contracts passed the offending work and flag them for
+re-scrutiny.
+
 **Caveat (`foundations.md §3`):** convergence is *not* health on novel work — correlated
 hallucination presents as fast, confident agreement. The novelty trigger therefore also
 uses a signal **independent of convergence** (cross-*substrate* disagreement, or a human
@@ -233,12 +247,19 @@ spot-check), and confident-fast-agreement on novel work routes **to the human**.
     target phase, done = *reaches target ∧ passes*. **Remaining (per-contract, not systemic):**
     each contract's phase enum and the map from DAG position to it; plus *deferred* validation
     (below), the in-time complement of the same frontier. **[largely resolved.]**
-- **Graceful degradation of the checker.** Nickel composes *loosely*: where it is absent the
-  system continues in a **degraded** state (validation deferred over the durable deposits,
-  discharged retroactively when the checker returns) rather than hard-failing — but the
-  degradation must be **recorded, never silent** (deposits marked *validation-pending* in the
-  ledger; the operator surfaced), or a silently-skipped gate reopens the exact "how did we get
-  here" hole the system exists to close. **[design-pending.]**
+- **Graceful degradation of the checker — semantics decided.** Nickel composes *loosely*:
+  where it is absent the system continues **degraded** rather than hard-failing, with exact
+  precedence: deposits land durably but **quarantined `validation-pending`**, and the DAG phase
+  **does not advance past a gate on a pending deposit** — degradation defers *proof
+  advancement*, never proof-then-retract. Discharge (when the checker returns) either advances
+  the phase or reverts the pending node to rework; a failed discharge loses nothing proven, so
+  §3's monotonic-proof invariant is unconditional in both modes. The degradation is **recorded,
+  never silent** (pending marks in the ledger; the operator surfaced). What degraded mode costs
+  is ratchet advancement, not work capture. **Contract non-termination is a fail:** a contract
+  predicate that diverges or exhausts its resource budget on a deposit is treated as a **gate
+  failure** (bounded timeout → fail → the normal reprompt/escalate path), never as a pass and
+  never as a third state — conservative, and it preserves §4's unambiguous-failure asymmetry.
+  **[remaining: implementation in J.]**
 - **The §8 invariants as a machine-checked spec.** **[→ roadmap A; `/spec` or `/form`.]**
 - **Cross-model seats.** **[→ roadmap E.]**
 - **The augmentation seam** — how metaharness governance reaches an opencode-compatible
