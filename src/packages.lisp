@@ -90,6 +90,7 @@
            #:failure-relay
            #:with-failure-relay
            #:failure-descriptor
+           #:failure-descriptor-p
            #:failure-descriptor-type
            #:failure-descriptor-message
            #:failure-descriptor-initargs

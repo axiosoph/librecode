@@ -300,11 +300,26 @@ lexically and returns a lambda that rebinds them and executes BODY."
                  (t
                   (list :message (princ-to-string condition)))))))
 
+(defun known-custom-condition-p (type)
+  "Returns true if TYPE is a known custom condition from librecode-runner.conditions."
+  (member type '(librecode-runner.conditions:harness-failure
+                 librecode-runner.conditions:provider-error
+                 librecode-runner.conditions:context-overflow
+                 librecode-runner.conditions:tool-timeout
+                 librecode-runner.conditions:process-hang
+                 librecode-runner.conditions:protocol-invariant-violation
+                 librecode-runner.conditions:gate-failure
+                 librecode-runner.conditions:denied-error)))
+
 (defun descriptor-to-condition (descriptor)
-  "Reconstruct a condition object from a failure-descriptor."
+  "Reconstruct a condition object from a failure-descriptor.
+Only deserializes known custom conditions or simple-conditions directly; other types fall back to a simple-error."
   (let ((type (failure-descriptor-type descriptor))
         (initargs (failure-descriptor-initargs descriptor)))
-    (if (and type (find-class type nil) (subtypep type 'condition))
+    (if (and type
+             (find-class type nil)
+             (or (known-custom-condition-p type)
+                 (subtypep type 'simple-condition)))
         (apply #'make-condition type initargs)
         (make-condition 'simple-error
                         :format-control "Condition of type ~S: ~A"
@@ -335,20 +350,31 @@ and receive a recovery choice from REPLY-MBOX. Returns (values success-p choice)
          (values nil reply))))))
 
 (defmacro with-failure-relay ((supervisor-mailbox reply-mailbox &key recovery-menu apply-choice message-factory on-abort) &body body)
-  "Binds a serious-condition handler to run failure-relay. If aborted, executes on-abort (defaults to return)."
+  "Binds a serious-condition handler to run failure-relay. If aborted, executes on-abort (defaults to return).
+WARNING: The default on-abort executes a (return) which requires an enclosing lexical block named NIL."
   (let ((c-var (gensym "C"))
         (success-var (gensym "SUCCESS"))
-        (choice-var (gensym "CHOICE")))
-    `(handler-bind
-         ((serious-condition
-           (lambda (,c-var)
-             (multiple-value-bind (,success-var ,choice-var)
-                 (failure-relay ,supervisor-mailbox
-                                ,reply-mailbox
-                                (condition-to-descriptor ,c-var)
-                                :recovery-menu ,recovery-menu
-                                :message-factory ,message-factory
-                                :apply-choice ,apply-choice)
-               (when (and (not ,success-var) (eq ,choice-var :abort))
-                 ,(or on-abort `(return)))))))
-       ,@body)))
+        (choice-var (gensym "CHOICE"))
+        (supervisor-var (gensym "SUPERVISOR"))
+        (reply-var (gensym "REPLY"))
+        (menu-var (gensym "MENU"))
+        (factory-var (gensym "FACTORY"))
+        (apply-var (gensym "APPLY")))
+    `(let ((,supervisor-var ,supervisor-mailbox)
+           (,reply-var ,reply-mailbox)
+           (,menu-var ,recovery-menu)
+           (,factory-var ,message-factory)
+           (,apply-var ,apply-choice))
+       (handler-bind
+            ((serious-condition
+              (lambda (,c-var)
+                (multiple-value-bind (,success-var ,choice-var)
+                    (failure-relay ,supervisor-var
+                                   ,reply-var
+                                   (condition-to-descriptor ,c-var)
+                                   :recovery-menu ,menu-var
+                                   :message-factory ,factory-var
+                                   :apply-choice ,apply-var)
+                  (when (and (not ,success-var) (eq ,choice-var :abort))
+                    ,(or on-abort `(return)))))))
+         ,@body))))

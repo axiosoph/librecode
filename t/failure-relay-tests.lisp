@@ -77,3 +77,31 @@ Where: HTTP/SSE streaming connection client boundary."))
                    (is (equal 42 result))
                    (is (equal '(:worker-start :eval-site :retry :eval-site (:use-alternative 42)) (nreverse step-tracker))))))))
       (ignore-errors (bt:destroy-thread worker-thread)))))
+
+(test test-failure-descriptor-robust-fallback
+  "Verify that descriptor-to-condition falls back to simple-error for unknown condition types."
+  (let* ((orig (make-condition 'storage-condition))
+         (desc (librecode-runner.protocol:condition-to-descriptor orig))
+         (cond-obj (librecode-runner.protocol:descriptor-to-condition desc)))
+    (is (typep cond-obj 'simple-error))
+    (is (search "Condition of type STORAGE-CONDITION:" (princ-to-string cond-obj)))))
+
+(test test-failure-descriptor-json-compatibility
+  "Verify that failure-descriptor is properly coerced to JSON-compatible types."
+  (let* ((orig (make-condition 'librecode-runner.conditions:provider-error
+                               :message "API down"
+                               :endpoint "/v1/chat"
+                               :provider "Anthropic"))
+         (desc (librecode-runner.protocol:condition-to-descriptor orig))
+         (json-compatible (librecode-runner.audit::coerce-to-json-compatible desc)))
+    (is (hash-table-p json-compatible))
+    (is (equal "provider-error" (gethash "type" json-compatible)))
+    (is (equal (librecode-runner.protocol:failure-descriptor-message desc) (gethash "message" json-compatible)))
+    (is (hash-table-p (gethash "initargs" json-compatible)))
+    (is (equal "API down" (gethash "message" (gethash "initargs" json-compatible))))
+    (is (equal "/v1/chat" (gethash "endpoint" (gethash "initargs" json-compatible))))
+    (is (equal "Anthropic" (gethash "provider" (gethash "initargs" json-compatible))))
+    (let ((encoded (com.inuoe.jzon:stringify json-compatible)))
+      (is (stringp encoded))
+      (is (search "API down" encoded)))))
+
