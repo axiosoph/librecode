@@ -224,3 +224,145 @@
           (progn
             (hunchentoot:stop acceptor)
             (setf hunchentoot:*dispatch-table* (delete dispatcher hunchentoot:*dispatch-table*))))))))
+
+(test test-worker-retry-tool
+  "Verify that a worker serious-condition can be retried and successfully completes."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (librecode-test.event-store::with-test-db (db dir)
+      (let* ((session-id "sess-worker-retry")
+             (port (get-free-port))
+             (acceptor (make-instance 'hunchentoot:easy-acceptor :port port))
+             (test-registry (make-instance 'tool-registry))
+             (call-count 0)
+             (mock-tool (make-instance 'tool
+                                       :name "mock_retryable_tool"
+                                       :description "Tool that succeeds on second call"
+                                       :parameters nil
+                                       :capabilities nil
+                                       :handler (lambda (args)
+                                                  (declare (ignore args))
+                                                  (incf call-count)
+                                                  (if (= call-count 1)
+                                                      (error 'provider-error :message "Mock tool error")
+                                                      "Success on retry!"))))
+             (dispatcher (lambda (request)
+                           (when (equal (hunchentoot:script-name request) "/stream")
+                             (lambda ()
+                               (setf (hunchentoot:content-type*) "text/event-stream")
+                               (let ((stream (hunchentoot:send-headers))
+                                     (tool-call-payload "{\"id\": \"call-tool-456\", \"type\": \"function\", \"function\": {\"name\": \"mock_retryable_tool\", \"arguments\": \"{}\"}}"))
+                                 (write-sequence (flexi-streams:string-to-octets
+                                                  (format nil "data: {\"choices\": [{\"delta\": {\"tool_calls\": [~A]}}]}~%" tool-call-payload)
+                                                  :external-format :utf-8)
+                                                 stream)
+                                 (write-sequence (flexi-streams:string-to-octets
+                                                  (format nil "data: [DONE]~%")
+                                                  :external-format :utf-8)
+                                                 stream)
+                                 (force-output stream)
+                                 ""))))))
+        (register-tool test-registry mock-tool)
+        (sqlite:execute-non-query db
+          "INSERT INTO session_state (session_id, agent_id, version, status, last_updated)
+           VALUES (?, ?, 1, 'active', ?)"
+          session-id "agent-1" (librecode-runner.event-store::current-timestamp-ms))
+        
+        (sqlite:execute-non-query db
+          "INSERT INTO permission_saved (project_id, action, resource, effect, timestamp)
+           VALUES ('default', 'execute_tool', 'mock_retryable_tool', 'allow', 123456)")
+
+        (push dispatcher hunchentoot:*dispatch-table*)
+        (unwind-protect
+             (progn
+               (hunchentoot:start acceptor)
+               (let ((librecode-runner.runner::*provider-url* (format nil "http://127.0.0.1:~A/stream" port))
+                     (librecode-runner.runner::*tool-registry* test-registry)
+                     (librecode-runner.protocol::*session-mailbox* (librecode-runner.protocol:make-mailbox))
+                     (worker-error-caught nil))
+                 (handler-bind
+                     ((provider-error
+                        (lambda (c)
+                          (declare (ignore c))
+                          (setf worker-error-caught t)
+                          (invoke-restart 'retry-tool))))
+                   (execute-provider-turn session-id "mock-provider" "mock-model"))
+                 (is-true worker-error-caught)
+                 (is (= 2 call-count))
+                 (let ((content (sqlite:execute-single db "SELECT content FROM session_history WHERE role = 'tool'")))
+                   (is (equal "Success on retry!" content)))))
+          (progn
+            (hunchentoot:stop acceptor)
+            (setf hunchentoot:*dispatch-table* (delete dispatcher hunchentoot:*dispatch-table*))))))))
+
+(defvar *test-worker-thread* nil)
+
+(test test-worker-handshake-abort
+  "Verify that if the coordinator aborts during a worker error handshake, the worker exits immediately."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (librecode-test.event-store::with-test-db (db dir)
+      (let* ((session-id "sess-worker-abort")
+             (port (get-free-port))
+             (acceptor (make-instance 'hunchentoot:easy-acceptor :port port))
+             (test-registry (make-instance 'tool-registry))
+             (mock-tool (make-instance 'tool
+                                       :name "mock_abort_tool"
+                                       :description "Tool that triggers handshake and waits for abort"
+                                       :parameters nil
+                                       :capabilities nil
+                                       :handler (lambda (args)
+                                                  (declare (ignore args))
+                                                  (setf *test-worker-thread* (bt:current-thread))
+                                                  (error 'provider-error :message "Mock tool error"))))
+             (dispatcher (lambda (request)
+                           (when (equal (hunchentoot:script-name request) "/stream")
+                             (lambda ()
+                               (setf (hunchentoot:content-type*) "text/event-stream")
+                               (let ((stream (hunchentoot:send-headers))
+                                     (tool-call-payload "{\"id\": \"call-tool-789\", \"type\": \"function\", \"function\": {\"name\": \"mock_abort_tool\", \"arguments\": \"{}\"}}"))
+                                 (write-sequence (flexi-streams:string-to-octets
+                                                  (format nil "data: {\"choices\": [{\"delta\": {\"tool_calls\": [~A]}}]}~%" tool-call-payload)
+                                                  :external-format :utf-8)
+                                                 stream)
+                                 (write-sequence (flexi-streams:string-to-octets
+                                                  (format nil "data: [DONE]~%")
+                                                  :external-format :utf-8)
+                                                 stream)
+                                 (force-output stream)
+                                 ""))))))
+        (register-tool test-registry mock-tool)
+        (sqlite:execute-non-query db
+          "INSERT INTO session_state (session_id, agent_id, version, status, last_updated)
+           VALUES (?, ?, 1, 'active', ?)"
+          session-id "agent-1" (librecode-runner.event-store::current-timestamp-ms))
+        
+        (sqlite:execute-non-query db
+          "INSERT INTO permission_saved (project_id, action, resource, effect, timestamp)
+           VALUES ('default', 'execute_tool', 'mock_abort_tool', 'allow', 123456)")
+
+        (push dispatcher hunchentoot:*dispatch-table*)
+        (setf *test-worker-thread* nil)
+        (unwind-protect
+             (progn
+               (hunchentoot:start acceptor)
+               (let ((librecode-runner.runner::*provider-url* (format nil "http://127.0.0.1:~A/stream" port))
+                     (librecode-runner.runner::*tool-registry* test-registry)
+                     (librecode-runner.protocol::*session-mailbox* (librecode-runner.protocol:make-mailbox))
+                     (aborted nil))
+                 (catch 'abort-tag
+                   (handler-bind
+                       ((provider-error
+                          (lambda (c)
+                            (declare (ignore c))
+                            (setf aborted t)
+                            (throw 'abort-tag :aborted))))
+                     (execute-provider-turn session-id "mock-provider" "mock-model")))
+                 (is-true aborted)
+                 ;; Wait a small amount of time for cleanup to finish
+                 (sleep 0.1)
+                 ;; Verify the worker thread was unregistered and has exited cleanly
+                 (is (not (null *test-worker-thread*)))
+                 (is (not (bt:thread-alive-p *test-worker-thread*)))))
+          (progn
+            (hunchentoot:stop acceptor)
+            (setf hunchentoot:*dispatch-table* (delete dispatcher hunchentoot:*dispatch-table*))))))))
+
