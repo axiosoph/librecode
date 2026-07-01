@@ -115,11 +115,54 @@ contestable) **+ a dual promotion trigger** — a deterministic recurrence thres
 *ratifies*. Combine both because the boundary can't be weighed deterministically — catch
 it before it compounds.
 
-**Determinization ratchet (foundations):** scaffolding ∝ *un*certainty. Where certainty
-is lowest, deploy the maximum — full council, every check — **and hunt for a *new*
-deterministic gate** (an overlooked test, an extractable invariant) that converts the
-uncertainty into a permanent check. The deterministic surface grows; the uncertain
-frontier recedes. Where certainty is high, ceremony collapses.
+**Determinization ratchet — the self-governing loop (`foundations.md`):** the actuator's
+persistent output is edits to the harness's own **prose procedures** and **contracts**,
+committed to versioned, scoped basins (default ⊕ commons ⊕ project ⊕ operator). Vocabulary:
+- **Prose procedure** — the actionable means (*do X, then Y*); freely refinable guidance.
+- **Contract** — the declarative target: a typed record with a slot per step, whose filled
+  instance must type-check and meet its invariants or fail unambiguously.
+- **Deposit** — the machine-written *filled* contract (the agent's record of its work); the
+  audit trail and the checked object are one.
+- **Gate** — the act that enforces a contract against a deposit.
+
+Two cross-session signals (§6) drive it: *repeated failure to fill a contract* ⇒ the prose is
+too coarse, refine it; *a recurring un-contracted area* ⇒ reify a new contract. An **immutable
+core of contracts** (the §8 static invariants) cannot be modified at any scope; scoped
+contracts add within it, never relax it. Promoting a refinement into the shipped default — or
+editing the core — is the **dual promotion trigger** above: privileged, human-ratified.
+
+**Verification is a cost-ordered pipeline.** The gate is the cheap first line: the harness runs
+the contract (and re-runs any evaluator a deposit names) in milliseconds to decide whether the
+worker did what it said, *before* spending a decorrelated council seat or a human minute. The
+asymmetry is what makes it safe to automate — a contract *failure* is unambiguous, so it
+**auto-reprompts**, targeted by exactly which slot failed; a contract *pass* is
+necessary-not-sufficient, so it **earns** review of the subtleties a contract cannot see, not
+acceptance. The cheap tier culls; the expensive tier judges. The reprompt loop is bounded (the
+recovery ladder); *persistent* fill-failure is itself the ratchet signal — finer prose, or
+escalate.
+
+**Contracts as review substrate.** For that soft path, the reviewer reads the deposit's prose
+reasoning against the *co-located* evidence the same contract carries — catching a glaze that
+contradicts its own evidence, which is harder to fake than either half alone. Fill-*thinness*
+relative to a step's demand is a heat map for review attention: a mechanical flag that points a
+**decorrelated** reviewer (a same-`θ` reviewer is fooled by fluent glaze), never an auto-verdict.
+
+**Contract language — decided: Nickel.** The choice is settled, not open. Its decisive property
+is contract-abstraction *at the type level* with arbitrary, Turing-complete runtime predicates,
+**composable like types** (`all_of [Dag, DagNoConflict]` — two graph algorithms composed into one
+contract-type): "a valid DAG" becomes a *type*, enforced at the boundary, for a domain whose
+invariants *are* arbitrary computations over machine-written data. It also ingests multiple
+formats (YAML/JSON/TOML) and evaluates purely. The external-binary property is **load-bearing,
+not a wrinkle**: one `nickel export` is the identical gate in the harness, in CI, and at the
+commit hook — single-source-of-truth *enforcement* (no drift between what each layer checks) and
+the ledger's integrity validated at write time (a violating deposit cannot enter history). A
+native Common Lisp DSL is **the wrong direction**, not merely a high bar: in-process, its one
+advantage (no external dependency) is the liability — it binds contracts to the harness runtime,
+loses the CI/commit gates, and its in-language convenience invites verifying *imperatively in the
+harness*, collapsing the trusted-checker/untrusted-data separation that Nickel's foreignness
+enforces for free. The honest cost is real but cheap: Nickel must be present and version-pinned
+wherever gates run — and where it is **absent the system degrades (validation deferred), never
+fails** (§7).
 
 ## 5 · The human seam
 
@@ -153,6 +196,11 @@ high) > docs** — which maps to gate strength (congruence). One signal
 (iterations-to-convergence) serves three uses: coherence health · the §2 convening
 trigger · adaptive attention (§4).
 
+Two further signals feed the self-governing loop (§4), and both need the metaharness's
+**cross-session vantage**: *repeated contract-fill failures* on a procedure (⇒ its prose is
+too coarse) and *recurring un-contracted patterns* (⇒ a candidate for a new contract). No
+single session can see either; only the harness watching many walks can.
+
 **Caveat (`foundations.md §3`):** convergence is *not* health on novel work — correlated
 hallucination presents as fast, confident agreement. The novelty trigger therefore also
 uses a signal **independent of convergence** (cross-*substrate* disagreement, or a human
@@ -167,6 +215,30 @@ spot-check), and confident-fast-agreement on novel work routes **to the human**.
 - **Memory ↔ context** — the LTM (git-backed) / context-map consolidation, accuracy
   verification, retrieval structure. **[→ roadmap C; needs its own dialectic.]**
 - **The living loop** — sensor (§6) + actuator (§4) implementation. **[→ roadmap B/D.]**
+- **Contract *shaping* — a clean approach found; remaining work is per-contract.** A full
+  contract is not satisfiable on the first or second commit, yet the gate should still run and
+  pass on *what is done so far*. Two parts.
+  - **Representation:** a typed **phase enum** + a single *static* contract that reads the phase
+    and recursively requires only the slots due *up to it*, later slots optional (**typestate** —
+    Strom & Yemini 1986; cf. typed holes / Hazel, gradual typing, ratchet-CI — in the exact idiom
+    `findings.ncl` already uses: inspect the value, conditionally require). The phase enum is the
+    coarse skeleton of the prose procedure, so defining it falls out of writing the procedure.
+  - **Integrity:** at authoritative gates the phase is **not the agent's to set** — the commit
+    gate/hook derives it *deterministically from execution state* ("layer 3, commit 3", read off
+    the DAG) and overrides any value the deposit declared; an agent-declared phase is **advisory**
+    only (self-description, or a manual "check myself" when stuck). This makes monotonicity **free**
+    (the DAG position only advances) and closes the fudge-the-inputs hole — the agent supplies
+    work, never the terms of its own checking (generalizes to *all* contract parameters at gates).
+  - Completion separates cleanly: the contract certifies "valid up to phase K," the plan holds the
+    target phase, done = *reaches target ∧ passes*. **Remaining (per-contract, not systemic):**
+    each contract's phase enum and the map from DAG position to it; plus *deferred* validation
+    (below), the in-time complement of the same frontier. **[largely resolved.]**
+- **Graceful degradation of the checker.** Nickel composes *loosely*: where it is absent the
+  system continues in a **degraded** state (validation deferred over the durable deposits,
+  discharged retroactively when the checker returns) rather than hard-failing — but the
+  degradation must be **recorded, never silent** (deposits marked *validation-pending* in the
+  ledger; the operator surfaced), or a silently-skipped gate reopens the exact "how did we get
+  here" hole the system exists to close. **[design-pending.]**
 - **The §8 invariants as a machine-checked spec.** **[→ roadmap A; `/spec` or `/form`.]**
 - **Cross-model seats.** **[→ roadmap E.]**
 - **The augmentation seam** — how metaharness governance reaches an opencode-compatible

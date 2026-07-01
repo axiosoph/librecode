@@ -291,21 +291,100 @@ Each mechanism is grounded; the synthesis is the hypothesis this project exists 
 ## Congruence inverted on certainty — the determinization ratchet
 Scaffolding is deployed inversely to certainty (a dynamic form of "cost ∝ benefit", §5).
 Where certainty is lowest — novel, near the reach boundary, high divergence — deploy the
-maximum: full decorrelation, every applicable check, and a meta-review that hunts for a new
-deterministic gate that converts the uncertainty into a permanent check. Routing uncertain
-cases to heavier scrutiny and to the human is itself established (selective prediction and
-learning-to-defer; El-Yaniv & Wiener 2010; Mozannar & Sontag 2020); what is ours is the
-*ratchet* — that the meta-review hunts *new* gates, so the deterministic surface grows and
-the uncertain frontier recedes as the commons matures. That surface has a ceiling: some
-coherence properties are undecidable in principle (Rice), so the frontier recedes toward a
-floor, not to zero. Where certainty is high, ceremony collapses.
+maximum: full decorrelation and every applicable check. Where a boundary can be made
+machine-decidable, convert it, along a gradient of instruments: from **sharpened prose** (a
+more specific, less ambiguous procedure) to a **contract** (that procedure's declarative
+target — a typed record that must be filled and checked) enforced by a **gate**. Routing
+uncertain cases to heavier scrutiny and to the human is itself established (selective
+prediction and learning-to-defer; El-Yaniv & Wiener 2010; Mozannar & Sontag 2020); what is
+ours is the *ratchet* — that a meta-review hunts *new* determinizations, so the machine-checked
+surface grows and the uncertain frontier recedes as the commons matures. That surface has a
+ceiling: some coherence properties are undecidable in principle (Rice), so the frontier
+recedes toward a floor, not to zero. Where certainty is high, ceremony collapses. And the
+ratchet is the system's *economy*, not only its rigor: every check moved into a
+machine-decidable contract is one no longer paid for with a scarce council seat or a human
+minute, so determinization buys **throughput** — it relocates verification from the expensive
+tier to the near-free one, run on every deposit. The engine that drives it is the
+self-governing instruction layer, next.
+
+## The self-governing instruction layer
+The metaharness owns its own **prose procedures** and **contracts** as versioned, committable
+artifacts, and governs them the way it governs work — the self-similarity pattern turned on
+the harness itself.
+
+Two artifacts in a control loop. A **prose procedure** is the actionable means — *do X, then
+Y* — direct and low-risk, the thing an agent can act on. A **contract** is the declarative
+*target*: a typed record with a slot per step (*what was done for X, for Y*) whose filled
+instance must type-check and meet its invariants, or fail unambiguously — no judgment. The
+prose aims to fill the contract; the filled instance *is* the audit trail, since the record
+and the check are one object. That is why sharpening prose serves auditability and not only
+correctness (§4: the history is the deliverable). The contract is the stable setpoint, edited
+rarely; the prose is the adaptive means, refined often.
+
+The contract's deepest purpose is **reconstructability**. Because the empty contract is the
+plan, filling it is the doing, and the partial fill is the exact resumption state,
+plan/execution/record collapse into one artifact — leaving no gap between them for context to
+leak out of. A reader with *no* prior context — a later session, a different agent, the human
+months on — can open the contract and see what was attempted, what is done, and where it
+stopped; with the immutable ledger (§4) alongside, that reader rebuilds whatever else it needs.
+This is the system's load-bearing purpose: never to reach the most corrosive failure of agentic
+work — where too much was done too fast, the context that explains it is gone, and good state
+can no longer be told from bad (the trajectory has gone *unfalsifiable*). The context-free
+reader is the **primary** consumer, because context loss — compaction, a new session, a new
+agent — is the normal case, not the exception; every artifact is built to suffice for someone
+holding nothing but the artifact. It also makes review tractable: the reviewer reads the
+contract's reasoning against its co-located evidence rather than reconstructing the work from a
+diff, and *thin* fill relative to what a step demanded is a heat map for where scrutiny should
+go. Two guards keep it honest — slots must demand **evidence** (a re-runnable evaluator, a
+`file:line`, a checkable object), not bare prose a capable agent can fill convincingly without
+having done the thing; and they must capture the **why**, not only the *what*, since the
+repercussions that surface late live in intent, not in the diff.
+
+The metaharness has a vantage no single walk has — it sees the *same* procedure across many
+sessions — and reads two signals from it:
+- **Repeated failure to fill a contract** ⇒ the prose is too coarse; refine the prose.
+- **A recurring, un-contracted area** ⇒ a pattern stable enough to reify; author a contract.
+
+The first sharpens the means toward a fixed target; the second raises a new target where
+behavior has stabilized. Neither reaches novel work — *recurrence itself* is the signal that a
+procedure is stable enough to bind, so binding it never constrains the genuinely new
+(congruence-∝-certainty).
+
+The artifacts layer by scope: a **default basin ships** with the harness and is refined **per
+commons, per project, per operator** (a project's formatter, its issue tracker, its house
+procedure). A refinement that proves itself *across sessions* is **promoted upward** toward
+the default base. The layering is asymmetric where it must be: prose is freely refinable — it
+is guidance, bounded by the contracts — while an **immutable core of contracts cannot be
+modified at any scope**: the system's own invariants, the §8 static floor. Scoped contracts
+*add* requirements within that floor and cannot relax it, exactly as a nested goal must stay
+inside its parent — a move that loosened the core would be a defeater. Editing the core, or
+promoting a refinement into the shipped default, is a **privileged, human-ratified** act: the
+harness may propose its own constitution but not self-author it (the recurring pattern's
+dual-trigger, cost scaled by blast radius — a per-operator tweak is local and cheap; a change
+to what ships for everyone is constitutional).
+
+This layer is the concrete form of the living loop's actuator (design §4) and the procedural
+half of durable memory (git-backed how-to; roadmap C). The checking half is not hypothetical:
+the tooling this project is built with already validates machine-written deposits against
+exactly such typed contracts — and those contracts may carry *arbitrarily rigorous* computation
+(a real graph algorithm proving a plan is a valid, conflict-free DAG, run purely as the gate),
+safe precisely because the contract is **trusted, human-authored** code checking **untrusted,
+machine-authored** data: the same human/machine line as the immutable core. That line extends to
+the *terms* of checking — the agent supplies work and its record of it, never the parameters that
+decide how it is verified: at every deterministic gate the phase to check and the contract to
+apply are machine-derived from execution state (the DAG), overriding any value the agent declared
+(advisory only, for self-description or a manual self-check). The checker composes
+loosely rather than as a hard dependency — where it is absent the system **degrades** (validation
+deferred over the durable deposits, discharged when the checker returns) rather than failing,
+provided the degradation is *recorded, never silent* (design). How to shape contracts for this —
+partial and deferred validation both — is genuinely open (design §7).
 
 ## The recurring pattern (self-similarity)
 Wherever a boundary is inherently undecidable deterministically, the system uses one shape —
 a deterministic flag + a non-deterministic judgment + human ratification (an instance of the
 Verification Dual) — never pure-determinism (brittle) nor pure-judgment (ungovernable). It
-recurs at the convening trigger, the rule-promotion trigger, and the accept/rework/escalate
-ladder.
+recurs at the convening trigger, the rule-promotion trigger (authoring a contract; promoting a
+refinement into the shipped core), and the accept/rework/escalate ladder.
 
 ## Scope rule (freedom)
 - **Out:** deep integration with, or dependence on, proprietary systems (unverifiable black

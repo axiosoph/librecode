@@ -83,6 +83,20 @@ Implement the *actuator* over B's sensor: re-derive attention from telemetry eac
 (auto), propose rule-promotions for gating (human/collective), with transparency + the
 **dual promotion trigger** (deterministic flag + non-deterministic judgment + human
 ratification). The human quality scalar at campaign close is the ground-truth anchor.
+- **The self-governing instruction layer** (`foundations.md`; `design.md §4`): the actuator's
+  persistent output is edits to the harness's own **prose procedures** and **contracts**, in
+  versioned scoped basins (default ⊕ commons ⊕ project ⊕ operator) with an immutable core and
+  human-ratified promotion. Two cross-session signals drive it: contract-fill failure ⇒ finer
+  prose; recurring un-contracted pattern ⇒ new contract. Overlaps **C** (the basins are the
+  procedural half of git-backed memory).
+- **Contract language — decided: Nickel** (`design.md §4`). Type-level composable contracts with
+  arbitrary Turing-complete predicates, multi-format, pure; the external binary is *load-bearing*
+  (one gate at harness ⊕ CI ⊕ commit). A CL DSL is the wrong direction, not just a high bar. Cost:
+  Nickel present + version-pinned wherever gates run; absent ⇒ degrade, don't fail.
+- **Contract *shaping* — approach found** (`design.md §7`). Partial validation via a
+  **self-declared phase enum** + a recursive phase-aware contract (typestate in Nickel), with
+  deferred/degraded validation as the in-time complement — both a *monotonic frontier*. Remaining
+  is per-contract (phase design + the monotonic-phase invariant), not systemic.
 
 ### E · Heterogeneity / decorrelation-first *(the manifesto's core value)*
 - Cross-model **council/verification seats** (different `θ`, not lenses on one).
