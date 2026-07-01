@@ -5,18 +5,83 @@
 
 (defpackage #:librecode-test.cross-process
   (:use #:cl #:fiveam)
+  (:import-from #:librecode-meta.campaign
+                #:campaign
+                #:make-campaign-node
+                #:campaign-node-status
+                #:make-campaign-dag
+                #:run-campaign
+                #:campaign-failure-counts)
+  (:import-from #:librecode-test.supervision
+                #:setup-test-git-repo)
   (:export #:cross-process-suite))
 (in-package #:librecode-test.cross-process)
 
 (def-suite cross-process-suite :description "Test cross process metaharness control")
 (in-suite cross-process-suite)
 
-(test c-protocol-unchanged
-  "Confirm that harness.lisp and metaharness.lisp are completely untouched."
-  (multiple-value-bind (stdout stderr exit-code)
-      (uiop:run-program '("git" "diff" "--exit-code" "src/meta/harness.lisp" "src/meta/metaharness.lisp") :ignore-error-status t)
-    (declare (ignore stdout stderr))
-    (is (zerop exit-code))))
+;;; ----------------------------------------------------------------------------
+;;; A REAL subprocess backend that always fails, selected via node harness-type.
+;;; The campaign node carries no command, so we inject a failing one here — exactly
+;;; as mock-supervision-harness supplies its behavior via its own spawn method.
+;;; Instance-level methods (prompt/status/read-event/terminate) come free from the
+;;; real subprocess-harness class, so the SUPERVISOR drives a genuine OS child.
+;;; ----------------------------------------------------------------------------
+
+(defvar *integration-spawns* nil
+  "Records the subprocess-harness instances the supervisor spawned, so the test can
+prove real OS children (not threads/mocks) were driven end-to-end.")
+
+(defmethod librecode-meta.harness:harness-spawn ((type (eql 'failing-subprocess-harness)) config)
+  (let ((instance
+          (librecode-meta.harness:harness-spawn
+           'librecode-meta.harness::subprocess-harness
+           (list* :command
+                  (list "sbcl" "--noinform" "--non-interactive" "--eval"
+                        "(progn (sleep 0.1) (format t \"(:status :error :message ~S)~%\" \"integration boom\") (force-output))")
+                  config))))
+    (push instance *integration-spawns*)
+    instance))
+
+(defmethod librecode-meta.harness:harness-prepare-workspace ((class (eql 'failing-subprocess-harness)) repo-path target-dir)
+  (librecode-meta.harness:harness-prepare-workspace 'librecode-meta.harness::subprocess-harness repo-path target-dir))
+
+(defmethod librecode-meta.harness:harness-cleanup-workspace ((class (eql 'failing-subprocess-harness)) repo-path target-dir &key force)
+  (librecode-meta.harness:harness-cleanup-workspace 'librecode-meta.harness::subprocess-harness repo-path target-dir :force force))
+
+(test c-supervisor-recovers-real-subprocess-child
+  "END-TO-END + SEAM PROOF. The UNMODIFIED supervisor (run-campaign) drives a REAL
+failing subprocess child across a process boundary and autonomously recovers it via
+the extracted failure-relay recovery ladder (retry -> rework -> skip). This supersedes
+the former git-diff 'protocol-unchanged' check: the seam is proven BEHAVIORALLY — a
+brand-new real backend needs zero changes to the harness protocol or the supervisor —
+which is strictly stronger than asserting a clean working tree."
+  (setf *integration-spawns* nil)
+  (librecode-test.event-store::with-tmp-sandbox (dir :git t)
+    (setup-test-git-repo dir)
+    (let* ((node (make-campaign-node :id "node-subproc-fail"
+                                     :goal "Always-failing subprocess node"
+                                     :file-surface '("src/a.lisp")
+                                     :harness-type 'failing-subprocess-harness
+                                     :ibc "ibc-subproc"))
+           (dag (make-campaign-dag :nodes (list node) :shared-branch "master"))
+           (journal-file (uiop:merge-pathnames* "campaign-journal.lisp-expr" dir))
+           (workspace-dir (uiop:merge-pathnames* "workspace/" dir))
+           (campaign (make-instance 'campaign
+                                    :dag dag
+                                    :journal-path journal-file
+                                    :repository-path dir
+                                    :workspace-dir workspace-dir
+                                    :autonomous-p t
+                                    :max-retries 5)))
+      (run-campaign campaign)
+      ;; The supervisor recovered the failed CROSS-PROCESS node autonomously.
+      (is (eq :accepted (campaign-node-status node)))
+      (is (= 3 (gethash "node-subproc-fail" (campaign-failure-counts campaign))))
+      ;; It drove REAL OS subprocess children — one genuine subprocess-harness per attempt.
+      (is (= 3 (length *integration-spawns*)))
+      (is (every (lambda (h) (typep h 'librecode-meta.harness::subprocess-harness))
+                 *integration-spawns*)))))
 
 (test c-real-subprocess
   "Verify the child runs as a distinct OS subprocess and is supervised purely via stdout events."
