@@ -326,17 +326,23 @@
 (defun execute-provider-turn (session provider model &key withhold-tools (model-capabilities '(:gpu :fast :slow :strongest :cheapest-sufficient)))
   "Execute a single provider turn for the given session.
 Enforces that exactly one provider call is made. Returns t if continuation is allowed."
-  (let ((current-url *provider-url*)
-        (current-provider provider)
-        (current-model model))
+  (let* ((session-id (librecode-runner.session::coerce-session-id session))
+         (sess-config (librecode-runner.provider:get-session-config session-id))
+         (base-url (and sess-config (getf sess-config :base-url)))
+         (config-model (and sess-config (getf sess-config :model)))
+         (auth (and sess-config (getf sess-config :auth)))
+         (current-url (if base-url
+                          (librecode-runner.provider::resolve-provider-endpoint base-url)
+                          *provider-url*))
+         (current-provider provider)
+         (current-model (or config-model model)))
     (loop
       (restart-case
           (let ((*provider-url* current-url))
             (unless librecode-runner.event-store:*db*
               (error "No active database connection in *db*."))
             (librecode-runner.protocol:flush-mailbox librecode-runner.protocol:*session-mailbox*)
-            (let* ((session-id (librecode-runner.session::coerce-session-id session))
-                   ;; 1. Promote any pending steer inputs
+            (let* (;; 1. Promote any pending steer inputs
                    (steer-promoted (librecode-runner.session:promote-pending-inputs session-id :mode :steer))
                    ;; 2. Build history and baseline messages
                    (baseline (get-latest-epoch-baseline session-id))
@@ -366,7 +372,10 @@ Enforces that exactly one provider call is made. Returns t if continuation is al
                                   (librecode-runner.event-store::coerce-to-hash-table request-plist)))
                    (dex-stream (handler-case
                                    (dexador:post *provider-url*
-                                                 :headers '(("Content-Type" . "application/json"))
+                                                 :headers (let ((h (list (cons "Content-Type" "application/json"))))
+                                                            (when auth
+                                                              (push (cons "Authorization" (format nil "Bearer ~A" auth)) h))
+                                                            h)
                                                  :content request-body
                                                  :want-stream t
                                                  :connect-timeout 10

@@ -186,7 +186,9 @@
 (defpackage #:librecode-runner.provider
   (:use #:cl)
   (:documentation "LLM provider interface and SSE stream parser.")
-  (:export ))
+  (:export #:configure-session
+           #:get-session-config
+           #:clear-session-configs))
 
 (defpackage #:librecode-runner.builtin-tools
   (:use #:cl)
