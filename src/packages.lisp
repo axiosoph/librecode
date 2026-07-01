@@ -177,7 +177,8 @@
            #:deep-merge-plists
            #:*active-subprocesses*
            #:register-active-subprocess
-           #:unregister-active-subprocess))
+           #:unregister-active-subprocess
+           #:tool-cancelled-p))
 
 (defpackage #:librecode-runner.http
   (:use #:cl)

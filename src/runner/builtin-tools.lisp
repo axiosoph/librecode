@@ -127,6 +127,8 @@
   (let* ((path (getf args :path))
          (resolved (resolve-safe-path path)))
     (check-resource-permission "read_file" (namestring resolved))
+    (when (librecode-runner.tool:tool-cancelled-p)
+      (error "Tool execution was cancelled."))
     (handler-case
         (read-file-with-limit resolved path)
       (error (c)
@@ -139,6 +141,8 @@
          (content (getf args :content))
          (resolved (resolve-safe-path path)))
     (check-resource-permission "write_file" (namestring resolved))
+    (when (librecode-runner.tool:tool-cancelled-p)
+      (error "Tool execution was cancelled."))
     (when (> (length content) (* 10 1024 1024))
       (error 'simple-error :format-control "Content size ~D characters exceeds 10MB limit."
                            :format-arguments (list (length content))))
@@ -166,6 +170,8 @@
          (exit-code nil)
          (combined nil))
     (check-resource-permission "bash" command)
+    (when (librecode-runner.tool:tool-cancelled-p)
+      (error "Tool execution was cancelled."))
     (unwind-protect
          (handler-case
              (progn

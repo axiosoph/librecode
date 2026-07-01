@@ -6,21 +6,33 @@
 (in-package #:librecode-runner.tool)
 
 (defvar *active-subprocesses* nil
-  "Special variable bound dynamically to track active subprocesses launched by tool execution.")
+  "Special variable bound dynamically to track active subprocesses launched by tool execution.
+Bound to (cons registry lock) where registry is (cons processes cancelled-p).")
 
 (defun register-active-subprocess (process-info)
-  "Register an active subprocess in the current execution context."
+  "Register an active subprocess in the current execution context.
+If the context has been cancelled, terminates the process immediately."
   (when (and (boundp '*active-subprocesses*) *active-subprocesses*)
-    (destructuring-bind (container-ref . lock) *active-subprocesses*
+    (destructuring-bind (registry . lock) *active-subprocesses*
       (bt:with-lock-held (lock)
-        (push process-info (car container-ref))))))
+        (if (cdr registry)
+            (handler-case (uiop:terminate-process process-info :urgent t)
+              (error () nil))
+            (push process-info (car registry)))))))
 
 (defun unregister-active-subprocess (process-info)
   "Unregister an active subprocess from the current execution context."
   (when (and (boundp '*active-subprocesses*) *active-subprocesses*)
-    (destructuring-bind (container-ref . lock) *active-subprocesses*
+    (destructuring-bind (registry . lock) *active-subprocesses*
       (bt:with-lock-held (lock)
-        (setf (car container-ref) (delete process-info (car container-ref)))))))
+        (setf (car registry) (delete process-info (car registry)))))))
+
+(defun tool-cancelled-p ()
+  "Return t if the current tool execution context has been cancelled."
+  (when (and (boundp '*active-subprocesses*) *active-subprocesses*)
+    (destructuring-bind (registry . lock) *active-subprocesses*
+      (bt:with-lock-held (lock)
+        (cdr registry)))))
 
 (defclass tool ()
   ((name :initarg :name :reader tool-name :type string)
@@ -243,9 +255,9 @@ Eliminates redundant JSON serialization."
          (result-err nil)
          (worker-thread nil)
          ;; Cooperative cancellation tracking
-         (procs-container (list nil))
+         (registry (cons nil nil))
          (procs-lock (bt:make-lock "tool-active-procs-lock"))
-         (active-subprocs-binding (cons procs-container procs-lock)))
+         (active-subprocs-binding (cons registry procs-lock)))
     (setf worker-thread
           (bt:make-thread
            (librecode-runner.protocol:with-session-context-captured
@@ -265,24 +277,26 @@ Eliminates redundant JSON serialization."
     (unwind-protect
          (bt:with-lock-held (lock)
            (if timeout
-               (let ((start-time (get-universal-time)))
+               (let* ((start-time (get-internal-real-time))
+                      (timeout-units (* timeout internal-time-units-per-second)))
                  (loop until finished-p
-                       do (let ((res (bt:condition-wait cv lock :timeout timeout)))
-                            (unless res
-                              (unless finished-p
-                                (error 'librecode-runner.conditions:tool-timeout
-                                       :tool-id (tool-name tool)
-                                       :duration timeout
-                                       :message (format nil "Tool ~A execution exceeded timeout of ~A seconds."
-                                                        (tool-name tool) timeout)))))
-                            (let ((elapsed (- (get-universal-time) start-time)))
-                               (when (>= elapsed timeout)
-                                 (unless finished-p
-                                   (error 'librecode-runner.conditions:tool-timeout
-                                          :tool-id (tool-name tool)
-                                          :duration timeout
-                                          :message (format nil "Tool ~A execution exceeded timeout of ~A seconds."
-                                                           (tool-name tool) timeout)))))))
+                       do (let* ((elapsed (- (get-internal-real-time) start-time))
+                                 (remaining-units (- timeout-units elapsed)))
+                            (when (<= remaining-units 0)
+                              (error 'librecode-runner.conditions:tool-timeout
+                                     :tool-id (tool-name tool)
+                                     :duration timeout
+                                     :message (format nil "Tool ~A execution exceeded timeout of ~A seconds."
+                                                      (tool-name tool) timeout)))
+                            (let* ((remaining-seconds (float (/ remaining-units internal-time-units-per-second) 1.0))
+                                   (res (bt:condition-wait cv lock :timeout remaining-seconds)))
+                              (unless res
+                                (unless finished-p
+                                  (error 'librecode-runner.conditions:tool-timeout
+                                         :tool-id (tool-name tool)
+                                         :duration timeout
+                                         :message (format nil "Tool ~A execution exceeded timeout of ~A seconds."
+                                                          (tool-name tool) timeout))))))))
                (loop until finished-p
                      do (bt:condition-wait cv lock)))
            (if result-err
@@ -292,8 +306,9 @@ Eliminates redundant JSON serialization."
       ;; and let it exit naturally.
       (let ((procs-to-kill nil))
         (bt:with-lock-held (procs-lock)
-          (setf procs-to-kill (car procs-container))
-          (setf (car procs-container) nil))
+          (setf (cdr registry) t)
+          (setf procs-to-kill (car registry))
+          (setf (car registry) nil))
         (dolist (proc procs-to-kill)
           (when (and proc (uiop:process-alive-p proc))
             (handler-case
