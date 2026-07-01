@@ -183,6 +183,21 @@
            #:stop-http-bridge
            #:*max-compact-attempts*))
 
+(defpackage #:librecode-runner.provider
+  (:use #:cl)
+  (:documentation "LLM provider interface and SSE stream parser.")
+  (:export ))
+
+(defpackage #:librecode-runner.builtin-tools
+  (:use #:cl)
+  (:documentation "Built-in tools for workspace and code interaction.")
+  (:export ))
+
+(defpackage #:librecode-runner.child
+  (:use #:cl)
+  (:documentation "Child harness entry point and session loop.")
+  (:export ))
+
 ;; --- metaharness layer ---
 
 (defpackage #:librecode-meta.multiplexer

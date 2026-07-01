@@ -34,7 +34,11 @@
      (:file "supervision-tests")
      (:file "recovery-tests")
      (:file "failure-relay-tests")
-     (:file "cross-process-tests"))))
+     (:file "cross-process-tests")
+     (:file "provider-tests")
+     (:file "builtin-tools-tests")
+     (:file "child-tests")
+     (:file "e2e-tests"))))
   :perform (asdf:test-op (op c)
                          (let ((results (append
                                          (uiop:symbol-call :fiveam :run
@@ -66,7 +70,15 @@
                                          (uiop:symbol-call :fiveam :run
                                                            (uiop:find-symbol* :failure-relay-suite :librecode-test.failure-relay))
                                          (uiop:symbol-call :fiveam :run
-                                                           (uiop:find-symbol* :cross-process-suite :librecode-test.cross-process)))))
+                                                           (uiop:find-symbol* :cross-process-suite :librecode-test.cross-process))
+                                         (uiop:symbol-call :fiveam :run
+                                                           (uiop:find-symbol* :provider-suite :librecode-test.provider))
+                                         (uiop:symbol-call :fiveam :run
+                                                           (uiop:find-symbol* :builtin-tools-suite :librecode-test.builtin-tools))
+                                         (uiop:symbol-call :fiveam :run
+                                                           (uiop:find-symbol* :child-suite :librecode-test.child))
+                                         (uiop:symbol-call :fiveam :run
+                                                           (uiop:find-symbol* :e2e-suite :librecode-test.e2e)))))
                            (uiop:symbol-call :fiveam :explain! results)
                            (unless (every (lambda (r)
                                             (typep r (uiop:find-symbol* :test-passed :fiveam)))
