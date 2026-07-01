@@ -188,7 +188,8 @@
   (:documentation "LLM provider interface and SSE stream parser.")
   (:export #:configure-session
            #:get-session-config
-           #:clear-session-configs))
+           #:clear-session-configs
+           #:resolve-provider-endpoint))
 
 (defpackage #:librecode-runner.builtin-tools
   (:use #:cl)

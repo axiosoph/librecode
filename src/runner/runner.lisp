@@ -332,7 +332,7 @@ Enforces that exactly one provider call is made. Returns t if continuation is al
          (config-model (and sess-config (getf sess-config :model)))
          (auth (and sess-config (getf sess-config :auth)))
          (current-url (if base-url
-                          (librecode-runner.provider::resolve-provider-endpoint base-url)
+                          (librecode-runner.provider:resolve-provider-endpoint base-url)
                           *provider-url*))
          (current-provider provider)
          (current-model (or config-model model)))

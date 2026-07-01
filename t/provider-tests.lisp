@@ -172,3 +172,18 @@
             (progn
               (hunchentoot:stop acceptor)
               (setf hunchentoot:*dispatch-table* (delete dispatcher hunchentoot:*dispatch-table*)))))))))
+
+(test test-resolve-provider-endpoint
+  "Verify resolve-provider-endpoint generic path suffix rules."
+  (is (equal "http://localhost:8000/v1/chat/completions"
+             (resolve-provider-endpoint "http://localhost:8000/v1/chat/completions")))
+  (is (equal "http://localhost:8000/chat/completions"
+             (resolve-provider-endpoint "http://localhost:8000/chat/completions")))
+  (is (equal "http://localhost:8000/v1/messages"
+             (resolve-provider-endpoint "http://localhost:8000/v1/messages")))
+  (is (equal "http://localhost:8000/v1/chat/completions"
+             (resolve-provider-endpoint "http://localhost:8000/v1")))
+  (is (equal "http://localhost:8000/chat/completions"
+             (resolve-provider-endpoint "http://localhost:8000")))
+  (is (equal nil
+             (resolve-provider-endpoint nil))))
