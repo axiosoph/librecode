@@ -53,4 +53,12 @@ run port="4096":
          --eval '(progn (format t "Server listening on port {{port}}...~%") (force-output))' \
          --eval '(loop (sleep 1))'
 
+# Run the end-to-end campaign demo against local Ollama
+demo model="qwen2.5-coder:3b" base_url="http://localhost:11434/v1":
+    env OLLAMA_MODEL="{{model}}" OLLAMA_BASE_URL="{{base_url}}" sbcl --non-interactive \
+         --eval '(require :asdf)' \
+         --eval '(push (truename "./") asdf:*central-registry*)' \
+         --load demo/mvp-demo.lisp
+
+
 

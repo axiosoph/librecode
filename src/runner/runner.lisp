@@ -88,6 +88,56 @@
                      (incf i)))))))
     out))
 
+(defun parse-fallback-tool-call (text)
+  "Attempt to parse a tool call from raw text if the model returned it in content."
+  (handler-case
+      (let* ((trimmed (string-trim '(#\Space #\Tab #\Return #\Newline) text))
+             (json-str (cond
+                         ((search "```json" trimmed)
+                          (let* ((start (+ (search "```json" trimmed) 7))
+                                 (end (search "```" trimmed :start2 start)))
+                            (if end
+                                (subseq trimmed start end)
+                                (subseq trimmed start))))
+                         ((search "```" trimmed)
+                          (let* ((start (+ (search "```" trimmed) 3))
+                                 (end (search "```" trimmed :start2 start)))
+                            (if end
+                                (subseq trimmed start end)
+                                (subseq trimmed start))))
+                         (t trimmed)))
+             (first-brace (position #\{ json-str))
+             (last-brace (position #\} json-str :from-end t))
+             (clean-json (if (and first-brace last-brace (< first-brace last-brace))
+                             (subseq json-str first-brace (1+ last-brace))
+                             json-str))
+             (parsed (com.inuoe.jzon:parse clean-json)))
+        (when (hash-table-p parsed)
+          (let ((name (gethash "name" parsed))
+                (arguments (gethash "arguments" parsed)))
+            (when (and name arguments)
+              (let ((args-str (if (stringp arguments)
+                                  arguments
+                                  (com.inuoe.jzon:stringify arguments))))
+                (return-from parse-fallback-tool-call
+                  (list (list :id "call-fallback-1"
+                              :name name
+                              :arguments args-str))))))
+          (let ((func (gethash "function" parsed)))
+            (when (and func (hash-table-p func))
+              (let ((name (gethash "name" func))
+                    (arguments (gethash "arguments" func)))
+                (when (and name arguments)
+                  (let ((args-str (if (stringp arguments)
+                                      arguments
+                                      (com.inuoe.jzon:stringify arguments))))
+                    (return-from parse-fallback-tool-call
+                      (list (list :id "call-fallback-1"
+                                  :name name
+                                  :arguments args-str))))))))))
+    (error () nil))
+  nil)
+
 (defun process-sse-line-data (session-id line text-accum tools-accum)
   "Parse a single SSE streaming delta line and accumulate content and tool calls."
   (let ((trimmed (string-trim '(#\Space #\Tab #\Return #\Newline) line)))
@@ -361,12 +411,12 @@ Enforces that exactly one provider call is made. Returns t if continuation is al
                                                      :messages (mapcar #'librecode-runner.event-store::coerce-to-hash-table messages)
                                                      :stream t)))
                                     (if materialized
-                                        (append plist (list :tools (mapcar (lambda (tool)
-                                                                             (list :type "function"
-                                                                                   :function (list :name (getf tool :name)
-                                                                                                   :description (getf tool :description)
-                                                                                                   :parameters (getf tool :parameters))))
-                                                                           materialized)))
+                                        (append plist (list :tools (map 'vector (lambda (tool)
+                                                                                  (list :type "function"
+                                                                                        :function (list :name (getf tool :name)
+                                                                                                        :description (getf tool :description)
+                                                                                                        :parameters (getf tool :parameters))))
+                                                                        materialized)))
                                         plist)))
                    (request-body (com.inuoe.jzon:stringify
                                   (librecode-runner.event-store::coerce-to-hash-table request-plist)))
@@ -382,7 +432,10 @@ Enforces that exactly one provider call is made. Returns t if continuation is al
                                                  :read-timeout 30
                                                  :keep-alive nil)
                                  (dexador:http-request-failed (c)
-                                   (let* ((body (dexador:response-body c))
+                                   (let* ((body-raw (dexador:response-body c))
+                                          (body (if (streamp body-raw)
+                                                    (alexandria:read-stream-content-into-string body-raw)
+                                                    body-raw))
                                           (parsed (ignore-errors (com.inuoe.jzon:parse body)))
                                           (err-msg (and (hash-table-p parsed) (gethash "error" parsed))))
                                      (if (and (stringp err-msg)
@@ -396,7 +449,7 @@ Enforces that exactly one provider call is made. Returns t if continuation is al
                                          (error 'librecode-runner.conditions:provider-error
                                                 :endpoint *provider-url*
                                                 :provider current-provider
-                                                :message (or err-msg (format nil "~A" c))))))
+                                                :message (format nil "HTTP request failed body: ~A (err-msg: ~A)" body err-msg)))))
                                  (error (c)
                                    (error 'librecode-runner.conditions:provider-error
                                           :endpoint *provider-url*
@@ -457,12 +510,17 @@ Enforces that exactly one provider call is made. Returns t if continuation is al
                                  ((eq (car msg) :sse-line)
                                   (process-sse-line-data session-id (third msg) text-accum tools-accum))))))
   
-                         (let ((tc-list nil))
-                           (maphash (lambda (k v)
-                                      (declare (ignore k))
-                                      (push v tc-list))
-                                    tools-accum)
-                           (values (coerce text-accum 'string) (nreverse tc-list))))
+                           (let ((tc-list nil))
+                             (maphash (lambda (k v)
+                                        (declare (ignore k))
+                                        (push v tc-list))
+                                      tools-accum)
+                             (let ((text-content (coerce text-accum 'string))
+                                   (final-tc-list (nreverse tc-list)))
+                               (if (null final-tc-list)
+                                   (let ((fallback (parse-fallback-tool-call text-content)))
+                                     (values text-content fallback))
+                                   (values text-content final-tc-list)))))
                     (close dex-stream))
   
                 ;; 4. Save assistant response
