@@ -15,6 +15,17 @@
    (exit-code :initform nil :accessor harness-exit-code)
    (error-message :initform nil :accessor harness-error-message)))
 
+(defun close-subprocess-streams (instance)
+  (bt:with-lock-held ((harness-lock instance))
+    (let ((in (harness-input-stream instance))
+          (out (harness-output-stream instance)))
+      (when in
+        (ignore-errors (close in))
+        (setf (harness-input-stream instance) nil))
+      (when out
+        (ignore-errors (close out))
+        (setf (harness-output-stream instance) nil)))))
+
 (defun start-subprocess-monitor (instance)
   (let ((stream (harness-output-stream instance))
         (mbox (harness-event-queue instance))
@@ -55,7 +66,8 @@
              (unless (member (%harness-status instance) '(:error :terminated :idle))
                (if (= code 0)
                    (setf (%harness-status instance) :idle)
-                   (setf (%harness-status instance) :error)))))))
+                   (setf (%harness-status instance) :error))))
+            (close-subprocess-streams instance))))
      :name (format nil "subprocess-monitor-~A" (harness-id instance)))))
 
 (defmethod harness-spawn ((type (eql 'subprocess-harness)) config)
@@ -168,4 +180,5 @@
   (let ((thr (harness-monitor-thread instance)))
     (when (and thr (bt:thread-alive-p thr))
       (ignore-errors (librecode-runner.protocol:join-thread-with-timeout thr 1.0))))
+  (close-subprocess-streams instance)
   t)

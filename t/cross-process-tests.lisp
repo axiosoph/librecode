@@ -128,3 +128,26 @@
              (is-true signaled))
         (librecode-meta.harness:harness-terminate harness)))))
 
+(test c-subprocess-stream-cleanup
+  "Verify that subprocess streams are closed and set to nil after termination."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (let* ((session-id "c-stream-cleanup-test")
+           (config (list :id session-id
+                         :workspace-root dir
+                         :command (list "sbcl" "--noinform" "--non-interactive"
+                                        "--eval"
+                                        "(progn (format t \"(:status :running)~%\") (force-output))")))
+           (harness (librecode-meta.harness:harness-spawn 'librecode-meta.harness::subprocess-harness config)))
+      ;; Wait for running status to ensure stream is initialized and active
+      (let ((ev (librecode-meta.harness:harness-read-event harness :timeout 2.0)))
+        (is (not (null ev)))
+        (is (eq (getf ev :status) :running)))
+      ;; Verify streams are not nil initially
+      (is (not (null (librecode-meta.harness::harness-input-stream harness))))
+      (is (not (null (librecode-meta.harness::harness-output-stream harness))))
+      ;; Terminate
+      (librecode-meta.harness:harness-terminate harness)
+      ;; Verify streams are set to nil
+      (is (null (librecode-meta.harness::harness-input-stream harness)))
+      (is (null (librecode-meta.harness::harness-output-stream harness))))))
+
