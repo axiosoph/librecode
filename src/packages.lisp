@@ -202,7 +202,7 @@
 (defpackage #:librecode-runner.child
   (:use #:cl)
   (:documentation "Child harness entry point and session loop.")
-  (:export ))
+  (:export #:run-child))
 
 ;; --- metaharness layer ---
 
