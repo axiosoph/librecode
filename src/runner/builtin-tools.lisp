@@ -173,6 +173,7 @@
                                                        :output :stream
                                                        :error-output :stream
                                                        :directory (namestring workspace-root)))
+               (librecode-runner.tool:register-active-subprocess process-info)
                (let ((stdout (uiop:slurp-stream-string (uiop:process-info-output process-info)))
                      (stderr (uiop:slurp-stream-string (uiop:process-info-error-output process-info))))
                  (setf exit-code (uiop:wait-process process-info))
@@ -181,7 +182,9 @@
              (error 'simple-error :format-control "Bash invocation failed: ~A" :format-arguments (list c))))
       ;; Subprocess leak prevention
       (when (and process-info (uiop:process-alive-p process-info))
-        (uiop:terminate-process process-info :urgent t)))
+        (uiop:terminate-process process-info :urgent t))
+      (when process-info
+        (librecode-runner.tool:unregister-active-subprocess process-info)))
     (if (= exit-code 0)
         combined
         (error 'simple-error :format-control "Command ~S failed with exit code ~D. Output:~%~A"

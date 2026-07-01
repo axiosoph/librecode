@@ -174,7 +174,10 @@
            #:materialize-tools
            #:execute-tool
            #:execute-tool-async
-           #:deep-merge-plists))
+           #:deep-merge-plists
+           #:*active-subprocesses*
+           #:register-active-subprocess
+           #:unregister-active-subprocess))
 
 (defpackage #:librecode-runner.http
   (:use #:cl)

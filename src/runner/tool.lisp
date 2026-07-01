@@ -3,7 +3,26 @@
 ;;; tool.lisp — Tool execution, registry, and deep plist merging
 ;;;
 
-(in-package #:librecode-runner.tool)(defclass tool ()
+(in-package #:librecode-runner.tool)
+
+(defvar *active-subprocesses* nil
+  "Special variable bound dynamically to track active subprocesses launched by tool execution.")
+
+(defun register-active-subprocess (process-info)
+  "Register an active subprocess in the current execution context."
+  (when (and (boundp '*active-subprocesses*) *active-subprocesses*)
+    (destructuring-bind (container-ref . lock) *active-subprocesses*
+      (bt:with-lock-held (lock)
+        (push process-info (car container-ref))))))
+
+(defun unregister-active-subprocess (process-info)
+  "Unregister an active subprocess from the current execution context."
+  (when (and (boundp '*active-subprocesses*) *active-subprocesses*)
+    (destructuring-bind (container-ref . lock) *active-subprocesses*
+      (bt:with-lock-held (lock)
+        (setf (car container-ref) (delete process-info (car container-ref)))))))
+
+(defclass tool ()
   ((name :initarg :name :reader tool-name :type string)
    (description :initarg :description :reader tool-description :type string)
    (parameters :initarg :parameters :reader tool-parameters :type list)
@@ -222,21 +241,26 @@ Eliminates redundant JSON serialization."
          (finished-p nil)
          (result-val nil)
          (result-err nil)
-         (worker-thread nil))
+         (worker-thread nil)
+         ;; Cooperative cancellation tracking
+         (procs-container (list nil))
+         (procs-lock (bt:make-lock "tool-active-procs-lock"))
+         (active-subprocs-binding (cons procs-container procs-lock)))
     (setf worker-thread
           (bt:make-thread
            (librecode-runner.protocol:with-session-context-captured
-             (multiple-value-bind (val err)
-                 (handler-case
-                     (funcall (tool-handler tool) arguments)
-                   (error (c)
-                     (values nil c)))
-               (bt:with-lock-held (lock)
-                 (if err
-                     (setf result-err err)
-                     (setf result-val val))
-                 (setf finished-p t)
-                 (bt:condition-notify cv))))
+             (let ((*active-subprocesses* active-subprocs-binding))
+               (multiple-value-bind (val err)
+                   (handler-case
+                       (funcall (tool-handler tool) arguments)
+                     (error (c)
+                       (values nil c)))
+                 (bt:with-lock-held (lock)
+                   (if err
+                       (setf result-err err)
+                       (setf result-val val))
+                   (setf finished-p t)
+                   (bt:condition-notify cv)))))
            :name (format nil "tool-worker-~A" (tool-name tool))))
     (unwind-protect
          (bt:with-lock-held (lock)
@@ -264,8 +288,14 @@ Eliminates redundant JSON serialization."
            (if result-err
                (error result-err)
                result-val))
-      ;; Cleanup: safely terminate worker thread if it is still running
-      (when (and worker-thread (bt:thread-alive-p worker-thread))
-        (handler-case
-            (bt:destroy-thread worker-thread)
-          (error () nil))))))
+      ;; Cleanup: terminate active subprocesses to unblock the worker thread
+      ;; and let it exit naturally.
+      (let ((procs-to-kill nil))
+        (bt:with-lock-held (procs-lock)
+          (setf procs-to-kill (car procs-container))
+          (setf (car procs-container) nil))
+        (dolist (proc procs-to-kill)
+          (when (and proc (uiop:process-alive-p proc))
+            (handler-case
+                (uiop:terminate-process proc :urgent t)
+              (error () nil))))))))
