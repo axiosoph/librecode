@@ -295,3 +295,138 @@
                      (ignore-errors (bt:destroy-thread sse-thread)))))))
         (stop-http-bridge)))))
 
+(test test-http-step-cap
+  "Test that the session drive loop terminates at max-steps and withholds tools on the last step."
+  (setf hunchentoot:*dispatch-table* nil)
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    ;; Initialize schema in librecode.db and close connection immediately
+    (let* ((db-path (merge-pathnames "librecode.db" dir))
+           (init-db (librecode-runner.event-store:connect-db db-path)))
+      (unwind-protect
+           (librecode-runner.event-store:init-db init-db)
+        (sqlite:disconnect init-db)))
+
+    (let* ((port (get-free-port))
+           (url-base (format nil "http://127.0.0.1:~A" port))
+           (session-id nil)
+           (provider-calls-count 0)
+           (bodies-list nil)
+           (lock (bt:make-lock "provider-calls-lock")))
+
+      ;; Register a mock tool
+      (let ((tool (make-instance 'librecode-runner.tool:tool
+                                 :name "mock-tool"
+                                 :description "Mock Tool"
+                                 :parameters '(:type "object" :properties (:input (:type "string")))
+                                 :capabilities nil
+                                 :handler (lambda (args) (declare (ignore args)) "mock-res"))))
+        (librecode-runner.tool:register-tool librecode-runner.runner::*tool-registry* tool))
+
+      (unwind-protect
+           (progn
+             ;; Start the HTTP bridge
+             (start-http-bridge :port port :address "127.0.0.1" :db-path "librecode.db" :workspace-root dir)
+             (sleep 0.2)
+
+             ;; Create session
+             (let* ((payload (com.inuoe.jzon:stringify
+                              (alexandria:plist-hash-table
+                               `("agent_id" "test-agent"
+                                 "ruleset" ,(vector (alexandria:plist-hash-table
+                                                     `("action" "execute_tool"
+                                                       "resource" "*"
+                                                       "effect" "allow")))))))
+                    (res (dexador:post (format nil "~A/session" url-base)
+                                       :headers '(("Content-Type" . "application/json"))
+                                       :content payload
+                                       :keep-alive nil))
+                    (parsed (com.inuoe.jzon:parse res)))
+               (is (not (null (gethash "session_id" parsed))))
+               (setf session-id (gethash "session_id" parsed)))
+
+             ;; Set up mock provider that always returns tool calls.
+             (let* ((mock-port (get-free-port))
+                    (mock-acceptor (make-instance 'hunchentoot:easy-acceptor :port mock-port))
+                    (dispatcher (lambda (request)
+                                  (when (equal (hunchentoot:script-name request) "/provider-stream")
+                                    (lambda ()
+                                      (bt:with-lock-held (lock)
+                                        (incf provider-calls-count)
+                                        (let ((body (hunchentoot:raw-post-data :force-text t)))
+                                          (push body bodies-list)))
+                                      (setf (hunchentoot:content-type*) "text/event-stream")
+                                      (setf (hunchentoot:header-out "Connection") "close")
+                                      (let ((stream (hunchentoot:send-headers)))
+                                        (write-sequence (flexi-streams:string-to-octets (format nil "data: {\"choices\": [{\"delta\": {\"tool_calls\": [{\"index\": 0, \"id\": \"call-~A\", \"function\": {\"name\": \"mock-tool\", \"arguments\": \"{}\"}}]}}]}~%" provider-calls-count) :external-format :utf-8) stream)
+                                        (force-output stream)
+                                        (write-sequence (flexi-streams:string-to-octets (format nil "data: [DONE]~%") :external-format :utf-8) stream)
+                                        (force-output stream)
+                                        ""))))))
+               (push dispatcher hunchentoot:*dispatch-table*)
+               (unwind-protect
+                    (progn
+                      (hunchentoot:start mock-acceptor)
+                      (let ((old-provider-url librecode-runner.runner::*provider-url*))
+                        (unwind-protect
+                             (progn
+                               (setf librecode-runner.runner::*provider-url* (format nil "http://127.0.0.1:~A/provider-stream" mock-port))
+                               
+                               ;; Admit prompt
+                               (let* ((prompt-payload (com.inuoe.jzon:stringify
+                                                       (alexandria:plist-hash-table
+                                                        `("prompt_id" "prompt-test-cap"
+                                                          "prompt_text" "Keep calling tool please"
+                                                          "delivery_mode" "STEER"))))
+                                      (admit-res (dexador:post (format nil "~A/session/~A/admit" url-base session-id)
+                                                               :headers '(("Content-Type" . "application/json"))
+                                                               :content prompt-payload
+                                                               :keep-alive nil)))
+                                 (is (not (null admit-res))))
+
+                               ;; We want to run with max_steps = 3.
+                               (let* ((wake-payload (com.inuoe.jzon:stringify
+                                                     (alexandria:plist-hash-table
+                                                      `("provider" "mock-provider"
+                                                        "model" "mock-model"
+                                                        "max_steps" 3))))
+                                      (wake-thread
+                                        (bt:make-thread
+                                         (lambda ()
+                                           (handler-case
+                                               (dexador:post (format nil "~A/session/~A/wake" url-base session-id)
+                                                             :headers '(("Content-Type" . "application/json"))
+                                                             :content wake-payload
+                                                             :keep-alive nil)
+                                             (error (c) (format nil "error: ~A" c)))))))
+                                 ;; Wait up to 3 seconds for the wake thread to finish
+                                 (let ((finished (loop for i from 1 to 30
+                                                       while (bt:thread-alive-p wake-thread)
+                                                       do (sleep 0.1)
+                                                       finally (return (not (bt:thread-alive-p wake-thread))))))
+                                   (if finished
+                                       (bt:join-thread wake-thread)
+                                       (progn
+                                         (bt:destroy-thread wake-thread)
+                                         (error "Wake session hung! Step cap failed to terminate."))))
+
+                                 ;; Let's inspect provider-calls-count
+                                 (is (= 3 provider-calls-count))
+
+                                 ;; Inspect the bodies of each call
+                                 (is (= 3 (length bodies-list)))
+                                 (let* ((body1 (com.inuoe.jzon:parse (third bodies-list)))
+                                        (body2 (com.inuoe.jzon:parse (second bodies-list)))
+                                        (body3 (com.inuoe.jzon:parse (first bodies-list))))
+                                   ;; 1st and 2nd should have tools
+                                   (is-true (gethash "tools" body1))
+                                   (is-true (gethash "tools" body2))
+                                   ;; 3rd (final) should NOT have tools
+                                   (is-false (gethash "tools" body3)))))
+                          (setf librecode-runner.runner::*provider-url* old-provider-url))))
+                 (progn
+                   (hunchentoot:stop mock-acceptor)
+                   (setf hunchentoot:*dispatch-table* (delete dispatcher hunchentoot:*dispatch-table*)))))))
+        (progn
+          (stop-http-bridge)
+          (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
+            (remhash "mock-tool" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*)))))))

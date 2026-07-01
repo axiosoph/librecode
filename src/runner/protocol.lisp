@@ -135,13 +135,15 @@ Blocks if another thread is already draining this session."
                           (setf (coordinator-entry-pending-wake entry) nil)
                           (return))))
                ;; Cleanup block for threads and mailboxes upon abort, interrupt, or exit
-               (bt:with-lock-held ((coordinator-entry-lock entry))
-                 (dolist (m (coordinator-entry-active-worker-mailboxes entry))
-                   (ignore-errors (sb-concurrency:send-message m '(:abort))))
-                 (setf (coordinator-entry-active-worker-mailboxes entry) nil)
-                 (dolist (thr (coordinator-entry-active-worker-threads entry))
-                   (ignore-errors (join-thread-with-timeout thr 2.0)))
-                 (setf (coordinator-entry-active-worker-threads entry) nil)))))
+               (let ((threads-to-join nil))
+                 (bt:with-lock-held ((coordinator-entry-lock entry))
+                   (dolist (m (coordinator-entry-active-worker-mailboxes entry))
+                     (ignore-errors (sb-concurrency:send-message m '(:abort))))
+                   (setf (coordinator-entry-active-worker-mailboxes entry) nil)
+                   (setf threads-to-join (coordinator-entry-active-worker-threads entry))
+                   (setf (coordinator-entry-active-worker-threads entry) nil))
+                 (dolist (thr threads-to-join)
+                   (ignore-errors (join-thread-with-timeout thr 2.0)))))))
       ;; 3. Release entry ownership and notify next thread
       (unwind-protect
            (bt:with-lock-held (*coordinator-lock*)
@@ -218,24 +220,32 @@ Sets the stopping flag and posts an interrupt message to the event loop mailbox.
   #-sbcl (bt:join-thread thread))
 
 (defmacro with-session-context-captured (&body body)
-  "Captures the dynamic variables (*db*, *workspace-root*, *current-session-id*, *session-mailbox*)
+  "Captures the dynamic variables (*db*, *workspace-root*, *current-session-id*, *session-mailbox*, *interactive-p*, *project-id*)
 lexically and returns a lambda that rebinds them and executes BODY."
   (let ((db-val (gensym "DB"))
         (workspace-val (gensym "WORKSPACE"))
         (session-val (gensym "SESSION"))
-        (mailbox-val (gensym "MAILBOX")))
+        (mailbox-val (gensym "MAILBOX"))
+        (interactive-val (gensym "INTERACTIVE"))
+        (project-val (gensym "PROJECT")))
     `(let ((,db-val (and (boundp 'librecode-runner.event-store:*db*) librecode-runner.event-store:*db*))
            (,workspace-val (and (boundp 'librecode-runner.event-store:*workspace-root*) librecode-runner.event-store:*workspace-root*))
            (,session-val (and (boundp 'librecode-runner.agent:*current-session-id*) librecode-runner.agent:*current-session-id*))
-           (,mailbox-val (and (boundp 'librecode-runner.protocol:*session-mailbox*) librecode-runner.protocol:*session-mailbox*)))
+           (,mailbox-val (and (boundp 'librecode-runner.protocol:*session-mailbox*) librecode-runner.protocol:*session-mailbox*))
+           (,interactive-val (and (boundp 'librecode-runner.agent:*interactive-p*) librecode-runner.agent:*interactive-p*))
+           (,project-val (and (boundp 'librecode-runner.agent:*project-id*) librecode-runner.agent:*project-id*)))
        (lambda ()
          (let ((librecode-runner.event-store:*db* ,db-val)
                (librecode-runner.event-store:*workspace-root* ,workspace-val)
                (librecode-runner.agent:*current-session-id* ,session-val)
-               (librecode-runner.protocol:*session-mailbox* ,mailbox-val))
+               (librecode-runner.protocol:*session-mailbox* ,mailbox-val)
+               (librecode-runner.agent:*interactive-p* ,interactive-val)
+               (librecode-runner.agent:*project-id* ,project-val))
            (declare (special librecode-runner.event-store:*db*
                              librecode-runner.event-store:*workspace-root*
                              librecode-runner.agent:*current-session-id*
-                             librecode-runner.protocol:*session-mailbox*))
+                             librecode-runner.protocol:*session-mailbox*
+                             librecode-runner.agent:*interactive-p*
+                             librecode-runner.agent:*project-id*))
            ,@body)))))
 

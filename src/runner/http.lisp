@@ -14,6 +14,9 @@
 (defvar *http-workspace-root* nil
   "Saved workspace root path for background threads.")
 
+(defvar *default-max-steps* 30
+  "The default maximum step count for session drive loops.")
+
 ;; --- SSE Broadcast Registry ---
 
 (defvar *sse-listeners-lock* (bt:make-lock "sse-listeners-lock"))
@@ -205,6 +208,8 @@
                          t))
              (provider (or (and json (gethash "provider" json)) "mock-provider"))
              (model (or (and json (gethash "model" json)) "mock-model"))
+             (max-steps (or (and json (or (gethash "max_steps" json) (gethash "max-steps" json)))
+                            *default-max-steps*))
              (db-path *http-db-path*)
              (workspace-root *http-workspace-root*))
         (unless (and prompt-id prompt-text)
@@ -220,9 +225,15 @@
                        (let ((librecode-runner.event-store:*db* db))
                          (librecode-runner.protocol:broadcast-event session-id :session-start)
                          (unwind-protect
-                              (let ((continue t))
-                                (loop while (and continue (not (librecode-runner.protocol:session-stopping-p session-id)))
-                                      do (setf continue (librecode-runner.runner:execute-provider-turn session-id provider model))))
+                              (let ((continue t)
+                                    (steps-taken 0))
+                                (loop while (and continue
+                                                 (< steps-taken max-steps)
+                                                 (not (librecode-runner.protocol:session-stopping-p session-id)))
+                                      do (let ((withhold-tools (= (1+ steps-taken) max-steps)))
+                                           (setf continue
+                                                 (librecode-runner.runner:execute-provider-turn session-id provider model :withhold-tools withhold-tools))
+                                           (incf steps-taken))))
                            (librecode-runner.protocol:broadcast-event session-id :session-complete)))
                     (sqlite:disconnect db))))))
           (json-response 200
@@ -256,6 +267,8 @@
       (let* ((json (parse-json-body env))
              (provider (or (and json (gethash "provider" json)) "mock-provider"))
              (model (or (and json (gethash "model" json)) "mock-model"))
+             (max-steps (or (and json (or (gethash "max_steps" json) (gethash "max-steps" json)))
+                            *default-max-steps*))
              (db-path *http-db-path*)
              (workspace-root *http-workspace-root*))
         (librecode-runner.protocol:wake-session session-id
@@ -268,9 +281,17 @@
                      (librecode-runner.protocol:broadcast-event session-id :session-start)
                      (unwind-protect
                           (handler-case
-                              (let ((continue t))
-                                (loop while (and continue (not (librecode-runner.protocol:session-stopping-p session-id)))
-                                      do (setf continue (librecode-runner.runner:execute-provider-turn session-id provider model))))
+                              (let ((continue t)
+                                    (steps-taken 0))
+                                (loop while (and continue
+                                                 (< steps-taken max-steps)
+                                                 (not (librecode-runner.protocol:session-stopping-p session-id)))
+                                      do (let ((withhold-tools (= (1+ steps-taken) max-steps)))
+                                           (setf continue
+                                                 (librecode-runner.runner:execute-provider-turn
+                                                  session-id provider model
+                                                  :withhold-tools withhold-tools))
+                                           (incf steps-taken))))
                             (error (c)
                               (librecode-runner.protocol:broadcast-event session-id :error (format nil "~A" c))))
                        (librecode-runner.protocol:broadcast-event session-id :session-complete)))

@@ -441,8 +441,10 @@
         (let* ((librecode-runner.agent:*interactive-p* t)
                (coord-thread (bt:make-thread
                               (lambda ()
-                                (let ((librecode-runner.event-store:*db* db))
-                                  (declare (special librecode-runner.event-store:*db*))
+                                (let ((librecode-runner.event-store:*db* db)
+                                      (librecode-runner.agent:*interactive-p* t))
+                                  (declare (special librecode-runner.event-store:*db*
+                                                    librecode-runner.agent:*interactive-p*))
                                   (run-coordinator session-id drain-fn)))
                               :name "coordinator-permission-test")))
           
@@ -545,9 +547,11 @@
                   (bt:make-thread
                    (lambda ()
                      (let ((librecode-runner.event-store:*db* db)
-                           (librecode-runner.event-store:*workspace-root* dir))
+                           (librecode-runner.event-store:*workspace-root* dir)
+                           (librecode-runner.agent:*interactive-p* t))
                        (declare (special librecode-runner.event-store:*db*
-                                         librecode-runner.event-store:*workspace-root*))
+                                         librecode-runner.event-store:*workspace-root*
+                                         librecode-runner.agent:*interactive-p*))
                        (run-coordinator session-id
                                         (lambda ()
                                           ;; Execute parallel tool call
