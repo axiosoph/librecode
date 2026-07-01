@@ -214,7 +214,32 @@
   (:documentation "Campaign scheduler, DAG execution engine, and progress realigner.")
   (:export #:campaign
            #:campaign-dag
-           #:run-campaign))
+           #:run-campaign
+           
+           ;; Structs and accessors
+           #:campaign-node
+           #:make-campaign-node
+           #:campaign-node-p
+           #:campaign-node-id
+           #:campaign-node-goal
+           #:campaign-node-file-surface
+           #:campaign-node-dependencies
+           #:campaign-node-sequential-p
+           #:campaign-node-status
+           #:campaign-node-harness-type
+           #:campaign-node-harness-instance
+           #:campaign-node-ibc
+           
+           #:make-campaign-dag
+           #:campaign-dag-p
+           #:campaign-dag-nodes
+           #:campaign-dag-layers
+           #:campaign-dag-shared-branch
+           
+           ;; Functions
+           #:compute-kahn-layers
+           #:write-journal-entry
+           #:replay-journal))
 
 (defpackage #:librecode-meta.gate
   (:use #:cl)
