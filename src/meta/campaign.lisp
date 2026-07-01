@@ -104,6 +104,16 @@ or if any dependency is unresolved."
 ;;; campaign class and supervisor implementation
 ;;; ============================================================================
 
+(define-condition escalation-required (error)
+  ((campaign :initarg :campaign :reader escalation-required-campaign)
+   (node :initarg :node :reader escalation-required-node)
+   (failure-descriptor :initarg :failure-descriptor :reader escalation-required-failure-descriptor)
+   (reply-mailbox :initarg :reply-mailbox :reader escalation-required-reply-mailbox))
+  (:report (lambda (condition stream)
+             (format stream "Campaign escalation required for node ~A due to failure: ~A"
+                     (campaign-node-id (escalation-required-node condition))
+                     (librecode-runner.protocol:failure-descriptor-message (escalation-required-failure-descriptor condition))))))
+
 (defclass campaign ()
   ((dag :initarg :dag :accessor campaign-dag :type campaign-dag)
    (journal-path :initarg :journal-path :accessor campaign-journal-path :type (or string pathname))
@@ -112,8 +122,14 @@ or if any dependency is unresolved."
    (active-harnesses :initform (make-hash-table :test 'equal) :accessor campaign-active-harnesses :type hash-table)
    (active-harnesses-lock :initform (bt:make-lock "active-harnesses-lock") :reader campaign-active-harnesses-lock)
    (journal-lock :initform (bt:make-lock "journal-lock") :reader campaign-journal-lock)
+   (git-lock :initform (bt:make-lock "git-lock") :reader campaign-git-lock)
    (supervisor-mailbox :initarg :supervisor-mailbox :accessor campaign-supervisor-mailbox)
-   (reply-mailbox :initarg :reply-mailbox :accessor campaign-reply-mailbox)))
+   (reply-mailbox :initarg :reply-mailbox :accessor campaign-reply-mailbox)
+   (failure-counts :initform (make-hash-table :test 'equal) :accessor campaign-failure-counts)
+   (escalation-hook :initarg :escalation-hook :initform nil :accessor campaign-escalation-hook)
+   (max-retries :initarg :max-retries :initform 4 :accessor campaign-max-retries)
+   (autonomous-p :initarg :autonomous-p :initform nil :accessor campaign-autonomous-p)
+   (autonomous-supervisor-thread :initform nil :accessor campaign-autonomous-supervisor-thread)))
 
 (defmethod initialize-instance :after ((self campaign) &key &allow-other-keys)
   (unless (slot-boundp self 'supervisor-mailbox)
@@ -157,17 +173,18 @@ or if any dependency is unresolved."
          (node-id (campaign-node-id node))
          (node-branch (format nil "campaign-node-~A" node-id)))
     (when (git-repo-p repo-path)
-      ;; Clean up any stale worktree directory in git metadata, but don't delete branch if we want to resume
-      (ignore-errors
-       (run-git-command repo-path (list "worktree" "remove" "-f" (namestring worktree-dir))))
-      (ignore-errors
-       (run-git-command repo-path (list "worktree" "prune")))
-      
-      (if (git-branch-exists-p repo-path node-branch)
-          ;; Branch exists, add worktree referencing it
-          (run-git-command repo-path (list "worktree" "add" (namestring worktree-dir) node-branch))
-          ;; Branch does not exist, create new branch from shared-branch
-          (run-git-command repo-path (list "worktree" "add" "-b" node-branch (namestring worktree-dir) shared-branch))))
+      (bt:with-lock-held ((campaign-git-lock campaign))
+        ;; Clean up any stale worktree directory in git metadata, but don't delete branch if we want to resume
+        (ignore-errors
+         (run-git-command repo-path (list "worktree" "remove" "-f" (namestring worktree-dir))))
+        (ignore-errors
+         (run-git-command repo-path (list "worktree" "prune")))
+        
+        (if (git-branch-exists-p repo-path node-branch)
+            ;; Branch exists, add worktree referencing it
+            (run-git-command repo-path (list "worktree" "add" (namestring worktree-dir) node-branch))
+            ;; Branch does not exist, create new branch from shared-branch
+            (run-git-command repo-path (list "worktree" "add" "-b" node-branch (namestring worktree-dir) shared-branch)))))
     t))
 
 (defun merge-node-branch (campaign node)
@@ -176,19 +193,37 @@ or if any dependency is unresolved."
          (node-id (campaign-node-id node))
          (node-branch (format nil "campaign-node-~A" node-id)))
     (when (git-repo-p repo-path)
-      ;; 1. Checkout the shared branch
-      (run-git-command repo-path (list "checkout" shared-branch))
-      ;; 2. Merge the node branch
-      (run-git-command repo-path (list "merge" node-branch "--no-edit"))
-      ;; 3. Clean up the worktree
-      (let ((worktree-dir (get-node-worktree-dir campaign node)))
-        (ignore-errors
-         (run-git-command repo-path (list "worktree" "remove" "-f" (namestring worktree-dir))))
-        (ignore-errors
-         (run-git-command repo-path (list "worktree" "prune")))
-        ;; 4. Delete the node branch
-        (ignore-errors
-         (run-git-command repo-path (list "branch" "-D" node-branch)))))
+      (bt:with-lock-held ((campaign-git-lock campaign))
+        ;; 1. Checkout the shared branch
+        (run-git-command repo-path (list "checkout" shared-branch))
+        ;; 2. Merge the node branch
+        (run-git-command repo-path (list "merge" node-branch "--no-edit"))
+        ;; 3. Clean up the worktree
+        (let ((worktree-dir (get-node-worktree-dir campaign node)))
+          (ignore-errors
+           (run-git-command repo-path (list "worktree" "remove" "-f" (namestring worktree-dir))))
+          (ignore-errors
+           (run-git-command repo-path (list "worktree" "prune")))
+          ;; 4. Delete the node branch
+          (ignore-errors
+           (run-git-command repo-path (list "branch" "-D" node-branch))))))
+    t))
+
+(defun prune-node-branch (campaign node)
+  (let* ((repo-path (campaign-repository-path campaign))
+         (node-id (campaign-node-id node))
+         (node-branch (format nil "campaign-node-~A" node-id)))
+    (when (git-repo-p repo-path)
+      (bt:with-lock-held ((campaign-git-lock campaign))
+        ;; 1. Clean up the worktree
+        (let ((worktree-dir (get-node-worktree-dir campaign node)))
+          (ignore-errors
+           (run-git-command repo-path (list "worktree" "remove" "-f" (namestring worktree-dir))))
+          (ignore-errors
+           (run-git-command repo-path (list "worktree" "prune")))
+          ;; 2. Delete the node branch
+          (ignore-errors
+           (run-git-command repo-path (list "branch" "-D" node-branch))))))
     t))
 
 (defun safe-write-journal-entry (campaign stream entry)
@@ -376,41 +411,83 @@ or if any dependency is unresolved."
           (loop for failed-node in failed-nodes
                 for failed-cond in failed-conditions
                 do
-                (let* ((node-id (campaign-node-id failed-node))
-                       (choice
-                         (block nil
-                           (librecode-runner.protocol:with-failure-relay
-                               ((campaign-supervisor-mailbox campaign)
-                                (campaign-reply-mailbox campaign)
-                                :recovery-menu '((retry-node) (skip-node))
-                                :apply-choice (lambda (choice args)
-                                                (let ((restart (find (symbol-name choice)
-                                                                     (compute-restarts)
-                                                                     :key (lambda (r) (symbol-name (restart-name r)))
-                                                                     :test #'string=)))
-                                                  (if restart
-                                                      (apply #'invoke-restart restart args)
-                                                      (error "Restart ~A not found" choice)))))
-                             (restart-case
-                                 (error 'librecode-runner.conditions:harness-failure
-                                        :message (format nil "Harness error on node ~A: ~A" node-id (princ-to-string failed-cond))
-                                        :process-id node-id
-                                        :exit-code -1)
-                               (retry-node ()
-                                 :report "Retry the failed node"
-                                 :retry)
-                               (skip-node ()
-                                 :report "Skip the failed node"
-                                 :skip))))))
-                  (cond
-                    ((null choice)
-                     (error "Campaign execution aborted by supervisor"))
-                    ((eq choice :retry)
-                     (setf (campaign-node-status failed-node) :pending))
-                    ((eq choice :skip)
-                     (setf (campaign-node-status failed-node) :accepted)
-                     (safe-write-journal-entry campaign journal-stream (list :node-accepted node-id))
-                     (merge-node-branch campaign failed-node)))))
+                (let ((node-id (campaign-node-id failed-node)))
+                  (if (campaign-autonomous-p campaign)
+                      (let* ((failure-counts (campaign-failure-counts campaign))
+                             (count (setf (gethash node-id failure-counts)
+                                          (1+ (gethash node-id failure-counts 0))))
+                             (limit (campaign-max-retries campaign)))
+                        (if (>= count limit)
+                            (let* ((escalation-cond
+                                     (make-condition 'escalation-required
+                                                     :campaign campaign
+                                                     :node failed-node
+                                                     :failure-descriptor (librecode-runner.protocol:condition-to-descriptor failed-cond)
+                                                     :reply-mailbox (campaign-reply-mailbox campaign)))
+                                   (choice (restart-case
+                                               (if (campaign-escalation-hook campaign)
+                                                   (funcall (campaign-escalation-hook campaign) escalation-cond)
+                                                   (error escalation-cond))
+                                             (resume-escalation (action)
+                                               :report "Resume campaign after escalation"
+                                               action))))
+                              (cond
+                                ((and choice (symbolp choice) (string-equal choice "SKIP-NODE"))
+                                 (setf (campaign-node-status failed-node) :accepted)
+                                 (safe-write-journal-entry campaign journal-stream (list :node-accepted node-id))
+                                 (prune-node-branch campaign failed-node))
+                                ((and choice (symbolp choice) (string-equal choice "RETRY-NODE"))
+                                 (setf (campaign-node-status failed-node) :pending))
+                                (t
+                                 (error "Unhandled escalation resolution action: ~S" choice))))
+                            (cond
+                              ((= count 1)
+                               (setf (campaign-node-status failed-node) :pending))
+                              ((= count 2)
+                               (setf (campaign-node-ibc failed-node)
+                                     (format nil "Error trace from failure: ~A" (princ-to-string failed-cond)))
+                               (safe-write-journal-entry campaign journal-stream (list :node-rework node-id (campaign-node-ibc failed-node)))
+                               (setf (campaign-node-status failed-node) :rework))
+                              ((and (>= count 3) (< count (1- limit)))
+                               (setf (campaign-node-status failed-node) :accepted)
+                               (safe-write-journal-entry campaign journal-stream (list :node-accepted node-id))
+                               (prune-node-branch campaign failed-node))
+                              (t
+                               (setf (campaign-node-status failed-node) :pending)))))
+                      (let ((choice
+                              (block nil
+                                (librecode-runner.protocol:with-failure-relay
+                                    ((campaign-supervisor-mailbox campaign)
+                                     (campaign-reply-mailbox campaign)
+                                     :recovery-menu '((retry-node) (skip-node))
+                                     :apply-choice (lambda (choice args)
+                                                     (let ((restart (find (symbol-name choice)
+                                                                          (compute-restarts)
+                                                                          :key (lambda (r) (symbol-name (restart-name r)))
+                                                                          :test #'string=)))
+                                                       (if restart
+                                                           (apply #'invoke-restart restart args)
+                                                           (error "Restart ~A not found" choice)))))
+                                  (restart-case
+                                      (error 'librecode-runner.conditions:harness-failure
+                                             :message (format nil "Harness error on node ~A: ~A" node-id (princ-to-string failed-cond))
+                                             :process-id node-id
+                                             :exit-code -1)
+                                    (retry-node ()
+                                      :report "Retry the failed node"
+                                      :retry)
+                                    (skip-node ()
+                                      :report "Skip the failed node"
+                                      :skip))))))
+                        (cond
+                          ((null choice)
+                           (error "Campaign execution aborted by supervisor"))
+                          ((eq choice :retry)
+                           (setf (campaign-node-status failed-node) :pending))
+                          ((eq choice :skip)
+                           (setf (campaign-node-status failed-node) :accepted)
+                           (safe-write-journal-entry campaign journal-stream (list :node-accepted node-id))
+                           (prune-node-branch campaign failed-node)))))))
           ;; No failures! Merge all nodes in the batch
           (progn
             (dolist (node batch)

@@ -265,7 +265,16 @@
            #:campaign-active-harnesses
            #:campaign-active-harnesses-lock
            #:campaign-supervisor-mailbox
-           #:campaign-reply-mailbox))
+           #:campaign-reply-mailbox
+           #:campaign-autonomous-p
+           #:campaign-escalation-hook
+           #:campaign-max-retries
+           #:campaign-failure-counts
+           #:escalation-required
+           #:escalation-required-campaign
+           #:escalation-required-node
+           #:escalation-required-failure-descriptor
+           #:escalation-required-reply-mailbox))
 
 (defpackage #:librecode-meta.gate
   (:use #:cl)
