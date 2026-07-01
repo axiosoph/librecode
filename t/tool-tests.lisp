@@ -227,7 +227,11 @@
       (execute-tool-async tool nil))))
 
 (test test-async-execution-timeout
-  "Verify that execution timing out signals tool-timeout and kills the worker thread."
+  "Cooperative shutdown: a timeout signals TOOL-TIMEOUT to the caller, but must NOT
+raw-interrupt the worker thread. The worker is left to unwind naturally, so a
+non-cooperating pure-CL tool runs to completion rather than being killed mid-stack.
+That the worker FINISHES (rather than vanishing) is the observable proof that no
+raw thread-kill fired: under bt:destroy-thread it would never set thread-finished."
   (let* ((thread-started nil)
          (thread-finished nil)
          (tool (make-instance 'tool
@@ -238,12 +242,14 @@
                               :handler (lambda (args)
                                          (declare (ignore args))
                                          (setf thread-started t)
-                                         (sleep 5.0)
+                                         (sleep 1.0)
                                          (setf thread-finished t)
-                                         "hung"))))
+                                         "done"))))
+    ;; The caller sees the timeout promptly...
     (signals tool-timeout
       (execute-tool-async tool nil :timeout 0.2))
-    ;; Wait a moment to ensure background thread had time to potentially finish (if not killed)
-    (sleep 0.5)
     (is-true thread-started)
-    (is-false thread-finished)))
+    ;; ...but the worker is not killed: past its own 1s runtime it has completed
+    ;; on its own. A raw bt:destroy-thread would leave thread-finished NIL forever.
+    (sleep 1.3)
+    (is-true thread-finished)))

@@ -239,7 +239,10 @@
             (is (not (= 0 exit-code)))))))))
 
 (test test-builtin-bash-timeout-subprocess-cleanup
-  "Verify that timing out under execute-tool-async destroys the worker thread and terminates the subprocess."
+  "Cooperative shutdown: timing out under execute-tool-async must terminate the
+tool's subprocess (no orphan) rather than raw-killing the worker thread. A raw
+bt:destroy-thread leaves the launched process orphaned and alive; cooperative
+termination kills it, so `kill -0 pid` must report the process gone."
   (librecode-test.event-store::with-tmp-sandbox (dir)
     (let ((*workspace-root* dir)
           (bash-tool (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
