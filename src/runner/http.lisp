@@ -17,6 +17,9 @@
 (defvar *default-max-steps* 30
   "The default maximum step count for session drive loops.")
 
+(defvar *max-compact-attempts* 3
+  "The maximum number of context compaction and retry attempts allowed per turn.")
+
 ;; --- SSE Broadcast Registry ---
 
 (defvar *sse-listeners-lock* (bt:make-lock "sse-listeners-lock"))
@@ -225,15 +228,26 @@
                        (let ((librecode-runner.event-store:*db* db))
                          (librecode-runner.protocol:broadcast-event session-id :session-start)
                          (unwind-protect
-                              (let ((continue t)
-                                    (steps-taken 0))
-                                (loop while (and continue
-                                                 (< steps-taken max-steps)
-                                                 (not (librecode-runner.protocol:session-stopping-p session-id)))
-                                      do (let ((withhold-tools (= (1+ steps-taken) max-steps)))
-                                           (setf continue
-                                                 (librecode-runner.runner:execute-provider-turn session-id provider model :withhold-tools withhold-tools))
-                                           (incf steps-taken))))
+                              (handler-case
+                                  (let ((continue t)
+                                        (steps-taken 0))
+                                    (loop while (and continue
+                                                     (< steps-taken max-steps)
+                                                     (not (librecode-runner.protocol:session-stopping-p session-id)))
+                                          do (let ((withhold-tools (= (1+ steps-taken) max-steps)))
+                                               (setf continue
+                                                     (let ((compact-attempts 0))
+                                                       (handler-bind
+                                                           ((librecode-runner.conditions:context-overflow
+                                                              (lambda (c)
+                                                                (declare (ignore c))
+                                                                (when (< compact-attempts *max-compact-attempts*)
+                                                                  (incf compact-attempts)
+                                                                  (invoke-restart 'librecode-runner.conditions:compact-and-retry)))))
+                                                         (librecode-runner.runner:execute-provider-turn session-id provider model :withhold-tools withhold-tools))))
+                                               (incf steps-taken))))
+                                (serious-condition (c)
+                                  (librecode-runner.protocol:broadcast-event session-id :error (format nil "~A" c))))
                            (librecode-runner.protocol:broadcast-event session-id :session-complete)))
                     (sqlite:disconnect db))))))
           (json-response 200
@@ -288,11 +302,19 @@
                                                  (not (librecode-runner.protocol:session-stopping-p session-id)))
                                       do (let ((withhold-tools (= (1+ steps-taken) max-steps)))
                                            (setf continue
-                                                 (librecode-runner.runner:execute-provider-turn
-                                                  session-id provider model
-                                                  :withhold-tools withhold-tools))
+                                                 (let ((compact-attempts 0))
+                                                   (handler-bind
+                                                       ((librecode-runner.conditions:context-overflow
+                                                          (lambda (c)
+                                                            (declare (ignore c))
+                                                            (when (< compact-attempts *max-compact-attempts*)
+                                                              (incf compact-attempts)
+                                                              (invoke-restart 'librecode-runner.conditions:compact-and-retry)))))
+                                                     (librecode-runner.runner:execute-provider-turn
+                                                      session-id provider model
+                                                      :withhold-tools withhold-tools))))
                                            (incf steps-taken))))
-                            (error (c)
+                            (serious-condition (c)
                               (librecode-runner.protocol:broadcast-event session-id :error (format nil "~A" c))))
                        (librecode-runner.protocol:broadcast-event session-id :session-complete)))
                 (sqlite:disconnect db)))))

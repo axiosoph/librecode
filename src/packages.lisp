@@ -171,7 +171,8 @@
   (:use #:cl)
   (:documentation "HTTP server bridge for remote control and SSE coordination.")
   (:export #:start-http-bridge
-           #:stop-http-bridge))
+           #:stop-http-bridge
+           #:*max-compact-attempts*))
 
 ;; --- metaharness layer ---
 

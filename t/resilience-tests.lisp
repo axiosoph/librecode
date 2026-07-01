@@ -366,3 +366,204 @@
             (hunchentoot:stop acceptor)
             (setf hunchentoot:*dispatch-table* (delete dispatcher hunchentoot:*dispatch-table*))))))))
 
+(test test-headless-compact-retry-success
+  "Verify that context-overflow triggers compaction and retry inside the drive loop."
+  (setf hunchentoot:*dispatch-table* nil)
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (let* ((db-path (merge-pathnames "librecode.db" dir))
+           (port (get-free-port))
+           (url-base (format nil "http://127.0.0.1:~A" port))
+           (provider-port (get-free-port))
+           (provider-acceptor (make-instance 'hunchentoot:easy-acceptor :port provider-port))
+           (req-count 0)
+           (provider-dispatcher
+             (lambda (request)
+               (when (equal (hunchentoot:script-name request) "/stream")
+                 (lambda ()
+                   (setf (hunchentoot:content-type*) "text/event-stream")
+                   (setf (hunchentoot:header-out "Connection") "close")
+                   (incf req-count)
+                   (let ((stream (hunchentoot:send-headers)))
+                     (if (= req-count 1)
+                         (write-sequence (flexi-streams:string-to-octets
+                                          (format nil "data: {\"error\": \"context_length_exceeded\"}~%")
+                                          :external-format :utf-8)
+                                         stream)
+                         (progn
+                           (write-sequence (flexi-streams:string-to-octets
+                                            (format nil "data: {\"choices\": [{\"delta\": {\"content\": \"Success!\"}}]}~%")
+                                            :external-format :utf-8)
+                                           stream)
+                           (write-sequence (flexi-streams:string-to-octets
+                                            (format nil "data: [DONE]~%")
+                                            :external-format :utf-8)
+                                           stream)))
+                     (force-output stream)
+                     ""))))))
+      (let ((init-db (librecode-runner.event-store:connect-db db-path)))
+        (unwind-protect
+             (librecode-runner.event-store:init-db init-db)
+          (sqlite:disconnect init-db)))
+      (push provider-dispatcher hunchentoot:*dispatch-table*)
+      (unwind-protect
+           (progn
+             (hunchentoot:start provider-acceptor)
+             (librecode-runner.http:start-http-bridge :port port :address "127.0.0.1" :db-path "librecode.db" :workspace-root dir)
+             (sleep 0.2)
+             (let* ((payload (com.inuoe.jzon:stringify
+                              (alexandria:plist-hash-table
+                                '("agent_id" "test-agent"))))
+                    (res (dexador:post (format nil "~A/session" url-base)
+                                       :headers '(("Content-Type" . "application/json"))
+                                       :content payload
+                                       :keep-alive nil))
+                    (parsed (com.inuoe.jzon:parse res))
+                    (actual-session-id (gethash "session_id" parsed)))
+               (let ((db (librecode-runner.event-store:connect-db db-path)))
+                 (unwind-protect
+                      (dotimes (i 10)
+                        (let ((msg-id (format nil "msg-pre-~A" i))
+                              (now (librecode-runner.event-store::current-timestamp-ms)))
+                          (sqlite:execute-non-query db
+                            "INSERT INTO session_history (id, session_id, role, content, created_at)
+                             VALUES (?, ?, 'user', 'some long history message content here', ?)"
+                            msg-id actual-session-id now)))
+                   (sqlite:disconnect db)))
+               (let ((prompt-payload (com.inuoe.jzon:stringify
+                                      (alexandria:plist-hash-table
+                                        '("prompt_id" "prompt-resilience-1"
+                                          "prompt_text" "Begin turn execution"
+                                          "delivery_mode" "STEER")))))
+                 (dexador:post (format nil "~A/session/~A/admit" url-base actual-session-id)
+                               :headers '(("Content-Type" . "application/json"))
+                               :content prompt-payload
+                               :keep-alive nil))
+               (let ((old-provider-url librecode-runner.runner::*provider-url*))
+                 (unwind-protect
+                      (progn
+                        (setf librecode-runner.runner::*provider-url*
+                              (format nil "http://127.0.0.1:~A/stream" provider-port))
+                        (let ((wake-payload (com.inuoe.jzon:stringify
+                                             (alexandria:plist-hash-table
+                                               '("provider" "mock-provider"
+                                                 "model" "mock-model"
+                                                 "max_steps" 2)))))
+                          (dexador:post (format nil "~A/session/~A/wake" url-base actual-session-id)
+                                        :headers '(("Content-Type" . "application/json"))
+                                        :content wake-payload
+                                        :keep-alive nil))
+                        (let ((success nil))
+                          (loop for i from 1 to 50
+                                do (let ((db (librecode-runner.event-store:connect-db db-path)))
+                                     (unwind-protect
+                                          (let ((content (sqlite:execute-single db
+                                                           "SELECT content FROM session_history WHERE role = 'assistant'")))
+                                            (when (equal content "Success!")
+                                              (setf success t)
+                                              (return)))
+                                       (sqlite:disconnect db)))
+                                   (sleep 0.1))
+                          (is-true success))
+                        (is (= 2 req-count)))
+                   (setf librecode-runner.runner::*provider-url* old-provider-url)))))
+        (progn
+          (librecode-runner.http:stop-http-bridge)
+          (hunchentoot:stop provider-acceptor)
+          (setf hunchentoot:*dispatch-table* (delete provider-dispatcher hunchentoot:*dispatch-table*)))))))
+
+(test test-headless-compact-retry-limit
+  "Verify that context-overflow stops after *max-compact-attempts* in the drive loop."
+  (setf hunchentoot:*dispatch-table* nil)
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (let* ((db-path (merge-pathnames "librecode.db" dir))
+           (port (get-free-port))
+           (url-base (format nil "http://127.0.0.1:~A" port))
+           (provider-port (get-free-port))
+           (provider-acceptor (make-instance 'hunchentoot:easy-acceptor :port provider-port))
+           (req-count 0)
+           (provider-dispatcher
+             (lambda (request)
+               (when (equal (hunchentoot:script-name request) "/stream")
+                 (lambda ()
+                   (setf (hunchentoot:content-type*) "text/event-stream")
+                   (setf (hunchentoot:header-out "Connection") "close")
+                   (incf req-count)
+                   (let ((stream (hunchentoot:send-headers)))
+                     (write-sequence (flexi-streams:string-to-octets
+                                      (format nil "data: {\"error\": \"context_length_exceeded\"}~%")
+                                      :external-format :utf-8)
+                                     stream)
+                     (force-output stream)
+                     ""))))))
+      (let ((init-db (librecode-runner.event-store:connect-db db-path)))
+        (unwind-protect
+             (librecode-runner.event-store:init-db init-db)
+          (sqlite:disconnect init-db)))
+      (push provider-dispatcher hunchentoot:*dispatch-table*)
+      (unwind-protect
+           (progn
+             (hunchentoot:start provider-acceptor)
+             (librecode-runner.http:start-http-bridge :port port :address "127.0.0.1" :db-path "librecode.db" :workspace-root dir)
+             (sleep 0.2)
+             (let* ((payload (com.inuoe.jzon:stringify
+                              (alexandria:plist-hash-table
+                                '("agent_id" "test-agent"))))
+                    (res (dexador:post (format nil "~A/session" url-base)
+                                       :headers '(("Content-Type" . "application/json"))
+                                       :content payload
+                                       :keep-alive nil))
+                    (parsed (com.inuoe.jzon:parse res))
+                    (actual-session-id (gethash "session_id" parsed)))
+               (let ((db (librecode-runner.event-store:connect-db db-path)))
+                 (unwind-protect
+                      (dotimes (i 10)
+                        (let ((msg-id (format nil "msg-pre-~A" i))
+                              (now (librecode-runner.event-store::current-timestamp-ms)))
+                          (sqlite:execute-non-query db
+                            "INSERT INTO session_history (id, session_id, role, content, created_at)
+                             VALUES (?, ?, 'user', 'some long history message content here', ?)"
+                            msg-id actual-session-id now)))
+                   (sqlite:disconnect db)))
+               (let ((prompt-payload (com.inuoe.jzon:stringify
+                                      (alexandria:plist-hash-table
+                                        '("prompt_id" "prompt-resilience-2"
+                                          "prompt_text" "Begin turn execution"
+                                          "delivery_mode" "STEER")))))
+                 (dexador:post (format nil "~A/session/~A/admit" url-base actual-session-id)
+                               :headers '(("Content-Type" . "application/json"))
+                               :content prompt-payload
+                               :keep-alive nil))
+               (let ((old-provider-url librecode-runner.runner::*provider-url*))
+                 (unwind-protect
+                      (progn
+                        (setf librecode-runner.runner::*provider-url*
+                              (format nil "http://127.0.0.1:~A/stream" provider-port))
+                        (let ((old-attempts librecode-runner.http:*max-compact-attempts*))
+                          (unwind-protect
+                               (progn
+                                 (setf librecode-runner.http:*max-compact-attempts* 2)
+                                 (let ((wake-payload (com.inuoe.jzon:stringify
+                                                      (alexandria:plist-hash-table
+                                                        '("provider" "mock-provider"
+                                                          "model" "mock-model"
+                                                          "max_steps" 2)))))
+                                   (dexador:post (format nil "~A/session/~A/wake" url-base actual-session-id)
+                                                 :headers '(("Content-Type" . "application/json"))
+                                                 :content wake-payload
+                                                 :keep-alive nil))
+                                 (loop for i from 1 to 50
+                                       for thread = (find-if (lambda (th)
+                                                               (equal (bt:thread-name th) (format nil "session-drain-~A" actual-session-id)))
+                                                             (bt:all-threads))
+                                       while thread
+                                       do (sleep 0.1))
+                                 (is (= 3 req-count)))
+                            (setf librecode-runner.http:*max-compact-attempts* old-attempts))))
+                   (setf librecode-runner.runner::*provider-url* old-provider-url)))))
+        (progn
+          (librecode-runner.http:stop-http-bridge)
+          (hunchentoot:stop provider-acceptor)
+          (setf hunchentoot:*dispatch-table* (delete provider-dispatcher hunchentoot:*dispatch-table*)))))))
+
+
+
