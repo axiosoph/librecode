@@ -267,5 +267,5 @@ Eliminates redundant JSON serialization."
       ;; Cleanup: safely terminate worker thread if it is still running
       (when (and worker-thread (bt:thread-alive-p worker-thread))
         (handler-case
-            (librecode-runner.protocol:join-thread-with-timeout worker-thread 1.0)
+            (bt:destroy-thread worker-thread)
           (error () nil))))))

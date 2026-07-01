@@ -238,11 +238,6 @@
             (declare (ignore out err))
             (is (not (= 0 exit-code)))))))))
 
-#|
-;; Note: This test is disabled because modifying `src/runner/tool.lisp` (to destroy the worker thread on timeout)
-;; is blocked by the campaign DAG's file-surface constraint for the `builtin-tools` node.
-;; Once `src/runner/tool.lisp` is updated to call `bt:destroy-thread` instead of `join-thread-with-timeout`,
-;; this test can be safely re-enabled.
 (test test-builtin-bash-timeout-subprocess-cleanup
   "Verify that timing out under execute-tool-async destroys the worker thread and terminates the subprocess."
   (librecode-test.event-store::with-tmp-sandbox (dir)
@@ -266,4 +261,3 @@
                 (uiop:run-program (list "kill" "-0" pid-str) :ignore-error-status t)
               (declare (ignore out err))
               (is (not (= 0 exit-code))))))))))
-|#
