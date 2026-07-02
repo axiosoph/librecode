@@ -59,6 +59,13 @@ Its own determinization ratchet: every invariant we can make deterministic, we m
   disparate-model reviewer catches defects a same-model reviewer misses on our own work —
   the thesis's most falsifiable bet, bounded early rather than after maximal scaffolding.
   (The 2026-07-01 decorrelated review is a first data point: it did.)
+- **Forgebot baseline** (the 2026-07-01 invalidation review's residual empirical question):
+  build the minimal forge-native bot — Nickel gates as CI required-checks, branch
+  protection as the assent engine, reject-and-redispatch on failure — and run the same
+  campaign DAG through it and through the metaharness. Measure tokens-to-accepted-node,
+  human-minutes per accepted node, and doomed-walk detection latency. Bounds the
+  supervision ladder's value (economy, not correctness — the gates catch the bad deposit
+  either way) the way the cross-model probe bounds the decorrelation bet.
 
 ### C · Memory & Context *(built on J; early — highest blast radius, do not glaze)*
 Long-term memory (durable) and the context map (ephemeral). **Memory is built *on* the contract
@@ -131,8 +138,10 @@ ratification). The human quality scalar at campaign close is the ground-truth an
   is per-contract (phase design + the monotonic-phase invariant), not systemic.
 
 ### E · Heterogeneity / decorrelation-first *(the manifesto's core value)*
+- **Wire `harness-opencode` for real** — pulled forward from a later slot: it derisks H
+  (a mature harness to exercise the metaharness against beyond a toy runner) and is the
+  heterogeneity play in one move; see "Immediate next."
 - Cross-model **verification seats** (different models, not lenses on one).
-- A real cross-process **opencode backend** — the heterogeneity play.
 - **Arms-length proprietary** via terminal-pane reading driven by a cheap local model —
   disparate models for decorrelation without deep coupling (the freedom-preserving path).
 
@@ -141,15 +150,22 @@ The daemon↔UI **message-first protocol** = the human-seam API (`foundations.md
 a **Rust/ratatui** client (clean boundary, best-in-class UX), doubling as an alternate
 frontend to opencode proper.
 
-### G · opencode-compatible runner
-opencode is the open-source agent harness librecode's runner targets for compatibility.
-Full opencode-spec compliance — the runner's stability measured against that external
-standard; the compatibility surface, added *after* the core is stable.
+### G · opencode seam compatibility *(not spec parity — see the 2026-07-01 invalidation review)*
+opencode is the open-source agent harness librecode's runner grew out of porting. The
+target going forward is **seam compatibility**, not full opencode-spec compliance: shared
+tool schemas and wire shapes so opencode's own TypeScript plugin ecosystem can drive the
+runner across a subprocess/JSON boundary, keeping the CL kernel small and letting the
+broad community's contribution surface stay in TypeScript rather than Lisp. Full
+behavioral parity is explicitly *not* a goal — it would re-couple the runner to an
+upstream it exists to not depend on (the runner's justification is the harness-side
+supervision contract it proves out, not opencode-equivalence; see `foundations.md`).
 - **The augmentation seam:** the runner exposes hooks so the metaharness can enforce its
   invariants on it, while the runner runs standalone as pure-opencode (metaharness an
-  *optional* consumer). **Open prior-art unknown:** how extensible opencode already is
-  (plugins / hooks / events / MCP) — investigate first, and reuse opencode's own extension
-  mechanism if one exists (compat for free) before adding our own.
+  *optional* consumer).
+- **Open prior-art unknown, now the load-bearing question:** how extensible opencode
+  already is (plugins / hooks / events / MCP) — investigate this *first*, since it
+  determines the seam's actual shape; reuse opencode's own extension mechanism if one
+  exists rather than adding ours.
 
 ### H · Runner capability floor *(prerequisite for meaningfully testing the metaharness)*
 A bounded set of the critical features *any* LLM agent harness needs — robust multi-turn
@@ -161,10 +177,17 @@ stabilize an elegant, minimal-but-capable runner API before broadening the code 
 ### I · The multi-stakeholder commons *(the concrete coordination mechanism — prioritized)*
 Make the commons literal — many humans + many sessions under one governance layer — because the
 commons is only compelling once concrete (`foundations.md` Positioning, §5; `design.md §2`).
-- **Build the assent engine.** Delegation and sign-off are currently stubs (no-ops);
-  implement them machine-enforced, then generalize the table so arbitrary humans are
-  first-class seats and a node can carry a hard sign-off gate ("X waits on Alice AND Bob")
-  enforced like any deterministic gate.
+- **Build the assent engine — native, not forge-delegated.** Delegation and sign-off are
+  currently stubs (no-ops); implement them machine-enforced against the journal, then
+  generalize the table so arbitrary humans are first-class seats and a node can carry a
+  hard sign-off gate ("X waits on Alice AND Bob") enforced like any deterministic gate.
+  A git forge's review/approval mechanics are **not** a substitute (forge state is
+  mutable; the journal is the source of truth) — at most an *outbound projection*, below.
+- **Optional outbound forge projection** (not load-bearing; `foundations.md` "The null
+  hypothesis"). Campaign nodes, layer merges, and gate states may be mirrored to forge
+  objects (issues, PRs, commit statuses) so a stakeholder who never installs librecode can
+  still see the commons' progress. Inbound: a forge approval may be mirrored into the
+  journal as *evidence* of a human's sign-off, never as the assent record itself.
 - **The regression transitions.** Implement `reset-to-checkpoint` and
   `cut-clean-and-decorrelate` (`design.md §3`), currently design-only.
 - **Cross-instance coherent view.** Disparate isolated sessions (each stakeholder on their own
@@ -193,6 +216,31 @@ because **A, D, and I all sit on it** and it is currently implicit.
 - Relationships: **A** authors the immutable-core contracts on this; **D**'s actuator commits
   refinements to the basins; **I**'s assent engine is contracts over it.
 
+### K · [PROPOSED, pending architect ratification] The harness supervision contract & the one-event calculus
+Surfaced by the 2026-07-01 invalidation review (full record:
+`.scratch/invalidation-dialectic-2026-07-01.md`); **not yet a committed workstream** — this
+entry exists so it is sequenced and cited, not lost. Requires an architect-grade pass and
+human ratification before any code moves (boundary-design scale: it reshapes both
+systems' event spines).
+
+Two artifacts:
+- **The harness-side supervision contract** — the hooks a walker must expose to be
+  governable (freeze mid-turn, offer a restart, resume in place, deposit emission,
+  trajectory transparency), formalized independently of any one runner. Other harnesses
+  would eventually implement *this*, not the runner.
+- **One event calculus.** Route runtime transitions through the model's `transition-event`
+  directly (functional core / imperative shell) so conformance holds by construction, not
+  by later testing. Unify the runner's SQLite event store and the metaharness's s-expr
+  journal at the vocabulary/fold level — one calculus, multiple projections. Reify
+  supervision as conditions/restarts advertised over the wire — a frozen walk offers
+  `(condition . available-restarts)`; the supervisor selects; harness capability becomes
+  simply its restart set (`{redispatch}` for a thin adapter; the full ladder for a fully
+  cooperative one) — KU9 capability discovery falls out of this for free.
+
+**Sequencing, if ratified:** precedes J — the contract substrate wants to sit on the
+unified event spine, not a fourth event dialect. Timely while the shared code surface with
+opencode stays small.
+
 ---
 
 ## Sequencing
@@ -209,11 +257,19 @@ accumulates. **D** (the self-governing loop) follows the sensor and builds on J.
 **prioritized** — its assent engine is contracts on J; the shutdown fix still comes first (a
 regressed proven invariant is always first), and the exact interleave of I with H/A is a later
 maintainer decision.
-**E / F / G** (heterogeneity, TUI, full opencode-compat) are the broadening surface, deliberately
-after the core is stable per §8 — and G's full compatibility comes only after H's bounded floor.
+**E / F / G** (heterogeneity, TUI, opencode seam compat) are the broadening surface,
+deliberately after the core is stable per §8 — and G's seam work comes only after H's
+bounded floor. **K** (proposed) would, if ratified, precede J for the same reason J
+precedes A, D, and I: the contract substrate wants to sit on the unified event spine.
 
 ## Immediate next
-1. **Landed** (on master): the foundation set, its review and remediation, and the
-   self-governing instruction layer. A fix for the shutdown regression is in review.
-2. **Next:** the **contract substrate (J)** and H (**runner capability floor**) toward
-   A (**formalize stable**); C (memory) sequenced early on J.
+1. **Landed** (on master): the foundation set, its review and remediation, the
+   self-governing instruction layer, and the 2026-07-01 invalidation review (the null
+   hypothesis, the runner's rejustification, seam-not-parity for G — see `foundations.md`
+   and this doc's G/E/I/B entries). A fix for the shutdown regression is in review.
+2. **Next:** wire `harness-opencode` for real (E, pulled forward — derisks H and is the
+   heterogeneity play in one move); the **contract substrate (J)** and H (**runner
+   capability floor**) toward A (**formalize stable**); C (memory) sequenced early on J.
+3. **A maintainer decision, not yet made:** whether to run the architect-grade pass on
+   proposed workstream K (harness supervision contract + one-event calculus) — if
+   ratified, it precedes J.

@@ -4,15 +4,35 @@
 
 ## Goal
 
-Reimplement the core OpenCode multi-agent coordination protocol as a high-performance Common Lisp (SBCL) system (**librecode-runner**), and extend this architecture with a decoupled cross-harness parent orchestrator (**librecode-meta** or the **Metaharness**) capable of supervising multiple child agent harnesses in a "Team of Teams" topology.
+Build a **reference supervisable agent walker** in Common Lisp (SBCL) — a harness whose
+every walk exposes the freeze/inspect/restart contract a parent needs to actually govern
+it (**librecode-runner**) — and a decoupled cross-harness parent orchestrator
+(**librecode-meta** or the **Metaharness**) capable of supervising multiple child agent
+harnesses, including that reference walker, in a "Team of Teams" topology.
 
 The project contains two independent but co-located subsystems:
-1. **`librecode-runner` (The Harness)**: The CL native reimplementation of OpenCode's single-agent execution harness (session loops, EventV2 state projection, local tools, dynamic permissions, LLM calls).
+1. **`librecode-runner` (The Harness)**: A CL-native agent execution harness (session
+   loops, EventV2 state projection, local tools, dynamic permissions, LLM calls) — the
+   existence proof and testbed of the harness-side supervision contract, opencode-**seam**-
+   compatible (shared tool schemas and wire shapes so opencode's own TypeScript plugin
+   ecosystem can front it) rather than spec-parity-compatible. It exists because no
+   upstream harness prioritizes exposing that contract, not to duplicate one that already
+   does.
 2. **`librecode-meta` (The Metaharness)**: The parent coordinator that executes multi-agent campaigns by scheduling DAG tasks, convening councils, and dispatching work across physical process boundaries to heterogeneous child harnesses (e.g. `librecode-runner`, `harness-opencode`, `harness-claude-code`).
 
 ## Alignment to Parent
 
-`librecode` is a **reimplementation and extension** of OpenCode. It ports coordination and execution primitives to native CL equivalents (replacing JS/Effect with dynamic binding, condition/restart, SBCL threads, and mailboxes), and introduces the Metaharness layer to coordinate across disparate agent harnesses.
+`librecode` began as a **port** of OpenCode's coordination and execution primitives to
+native CL equivalents (replacing JS/Effect with dynamic binding, condition/restart, SBCL
+threads, and mailboxes) and has grown two things opencode does not have: a Metaharness
+layer that coordinates across disparate agent harnesses, and a **harness-side supervision
+contract** — the hooks a walker exposes so a parent can freeze, inspect, and resume it in
+place rather than kill-and-restart. Going forward the runner's target is **seam
+compatibility** with opencode (shared tool schemas and wire shapes, so opencode's
+TypeScript plugin ecosystem can drive the runner across a subprocess boundary) — never
+spec parity, which would re-couple the runner to an upstream it exists to not depend on.
+The status tags below track what was ported historically; they are not a parity
+commitment for what comes next.
 
 Status tags below reflect the code as built (verified against `src/`), not the
 original design intent: **[BUILT]**, **[PARTIAL]**, **[STUB]**.
@@ -81,6 +101,10 @@ original design intent: **[BUILT]**, **[PARTIAL]**, **[STUB]**.
   harness-event / failure-relay pattern for parent↔child cross-process supervision.
   (Direct peer agent-to-agent collaboration — R6 — is a planned *augmentation*, not a
   replacement for this parent-child pattern; not built yet, see above.)
+
+As of the 2026-07-01 invalidation review, this exclusion policy generalizes: future
+opencode capabilities are pulled in via the seam (tool schemas, wire shapes, the TS
+plugin boundary) rather than ported wholesale. Spec-parity is not a goal (see roadmap G).
 
 ## Requirements & Specifications
 

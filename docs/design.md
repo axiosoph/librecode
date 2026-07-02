@@ -67,6 +67,13 @@ not standardize on one tool. **[Status: the machine-enforced assent/delegation e
 `convene-council`, `validate-assent`, the human-gated sign-off blockers — is design-pending →
 roadmap I; `src/meta/council.lisp` is currently a stub.]**
 
+**A forge is not the assent engine.** A git forge's review/approval UI may *evidence* a
+human sign-off — worth mirroring outbound (roadmap I) — but forge state is mutable
+(reviews get dismissed, comments edited), so it cannot be the record of assent; the
+journal is. Where a forge integration exists, an approval event is translated into a
+journal entry, never trusted as the entry itself. (Full argument: `foundations.md`, "The
+null hypothesis.")
+
 **Convening trigger (the dual-trigger, §3 of foundations' recurring pattern):** a
 **deterministic signal** (a delegation-table decision-type · gate-non-convergence after
 N attempts · divergence-from-plan) **+ a model-articulated reason** (why *this* council,
@@ -266,6 +273,10 @@ spot-check), and confident-fast-agreement on novel work routes **to the human**.
   runner via **hooks the runner exposes** (the runner runs standalone as pure-opencode;
   the metaharness is an *optional* consumer, and the runner depends on nothing), and how
   extensible opencode already is. **[→ roadmap G; open prior-art unknown.]**
+- **The harness supervision contract + one-event calculus** — reifying supervision as
+  conditions/restarts advertised over the wire, and unifying the runner's event store with
+  the meta journal at the vocabulary/fold level. Proposed, not committed — requires
+  architect ratification before design work proceeds. **[→ roadmap K (proposed).]**
 
 ---
 

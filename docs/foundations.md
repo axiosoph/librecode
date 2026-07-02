@@ -17,7 +17,12 @@ yet machine-checkable, and is marked as such.
 ## Positioning
 
 Agent harnesses (opencode and kin) handle progress in **focused microcosms of concern**:
-one session, short horizon, a bounded task. librecode's **runner** reimplements that.
+one session, short horizon, a bounded task. What none of them expose is a **supervision
+contract**: hooks that let a parent freeze a walk mid-turn, offer it a chosen restart, and
+resume it in place — transparently, without killing and restarting from scratch. librecode's
+**runner** is the reference implementation of that contract, grown out of porting opencode's
+primitives; it exists to prove the contract out, not to duplicate a harness that already
+exists (see "The null hypothesis," below, and `AGENTS.md`).
 
 What is missing — in the field at large — is a formalization of **coherent progress on
 long-horizon, large-goal work**, which is inherently **multi-project and multi-commons**:
@@ -38,6 +43,55 @@ and their disparate machine walkers — work under one non-conflicting goal-stru
 metaharness is not a bigger harness; it is the layer that survives stakeholders refusing to agree
 on a harness. (This is the capture argument of §2 at a second axis: a layer inside one harness is
 captured by that harness, exactly as one inside a vendor is captured by that vendor.)
+
+---
+
+## The null hypothesis — why not a forge and a bot?
+
+The sharpest objection to building any of this: git forges (Forgejo, and its proprietary
+cousins) already give a community an append-only history, required CI gates, and
+machine-enforced human sign-off (branch protection, required reviewers, CODEOWNERS) —
+Ostrom's principles, largely reified, for free. Why not a webhook daemon and a set of
+contracts on top of one, instead of a bespoke metaharness?
+
+Because a forge's coordination unit is the **artifact**, not the **walk**. It samples the
+world at push/PR/comment granularity and human cadence, and it does so *deliberately*: its
+contributors have always been humans, whose reasoning is opaque and unsupervisable
+mid-thought, so the only thing a forge can honestly govern is what they hand it when
+they're done. Push a bespoke bot hard enough to cover librecode's requirements and every
+patch it needs converges on a component librecode already has under a different name:
+forge state is mutable (reviews get dismissed, comments edited), so tamper-evidence
+requires mirroring it into an append-only journal — the journal. CI executes code the
+agent itself authored, so the checker's parameters have to be pinned outside the agent's
+control — gate-parameterization. And a forge is blind between pushes, so the whole
+recovery ladder (freeze, offer a restart, resume in place) collapses to one primitive,
+reject-and-redispatch, discarding everything a doomed walk could have told a supervisor
+watching it in real time.
+
+Agent walks are the first contributors whose trajectories are **observable** end to end —
+every token, every tool call — and that observability is new. A forge's
+artifact-granularity boundary is correct for humans and is simply the wrong boundary for a
+walker that can be watched. The metaharness exists to exploit that difference: **forges
+govern what's merged; the metaharness supervises what's producing it.** Positioning's
+"above any harness" claim has a dual here — the metaharness sits **before any forge**, not
+in competition with one. A forge remains the right home for the durable, merged record and
+for optional outbound visibility into a campaign's state (a non-adopter should be able to
+watch progress without installing anything); it is not a substitute for walk-level
+governance, and nothing here treats it as one.
+
+One design decision survives this stress test unpatched: the gate-checker's
+external-binary property (`design.md §4`) — the contract lives outside the harness process
+and is invoked the same way everywhere — is exactly what lets the identical check run
+inside the harness, in CI, and at a commit hook without librecode itself needing to be
+present on the forge side — the one piece of the architecture already built for a world
+with a forge in it.
+
+None of this is an argument that every mechanism here is individually exotic — most
+aren't; a CI script and forge configuration cheaply reproduce most of what's cited above.
+That was never where the bet lives. Only the five elements in "The novelty boundary" below
+require the synthesis; the honest claim is that governing all of them coherently, over an
+observable walk, is what a forge cannot do — not that any single mechanism needs a bespoke
+system to exist.
 
 ---
 
@@ -105,6 +159,18 @@ right to fork, re-steward, and revise the rules (§5). Freedom is the enabling c
 **trustable, capture-resistant governance layer**, not of the composition mathematics. (Our
 scope rule — proprietary models allowed as arms-length members — is consistent only under
 this reading.)
+
+Capture-resistance also has to survive the metaharness's own implementation choice, not
+just its license. A kernel implemented in a language with few practitioners narrows the
+credible steward pool for that kernel specifically — a real cost, not a hypothetical one.
+What keeps the argument intact is that capture-resistance rests on the **model and
+protocol** being reimplementable and the correctness argument being **legible to
+non-Lispers** (`src/model/` is deliberately dependency-free, CLOS-free, and stated as a
+specification other implementations can be conformance-tested against, not as an appeal to
+trust the Lisp), while the surrounding ecosystem's contribution surface is the opencode
+plugin seam (roadmap G), not the kernel itself. The commons does not need many people
+extending the kernel; it needs the kernel's semantics to be public and checkable by people
+who never touch it.
 
 ### 3 · The human/machine division — and the correlated-bias floor
 As a different substrate, the human's failures are not correlated through any `θ`'s
@@ -308,7 +374,7 @@ claims the second.
 Every mechanism above is grounded (References). What is novel and, to our search, without
 prior art is the **system-level synthesis**: composing disparate `θ` under a deterministic,
 machine-enforced governance layer that reifies commons mechanisms as append-only state and
-*measures its own coherence health, adapting scaffolding inversely to certainty*. Four
+*measures its own coherence health, adapting scaffolding inversely to certainty*. Five
 elements are specifically unverified — contributions, not citations:
 1. **The determinization ratchet** (below): that *hunting new gates* grows the deterministic
    surface and recedes the uncertain frontier as the commons matures. The static half —
@@ -322,7 +388,18 @@ elements are specifically unverified — contributions, not citations:
    own §3 evidence says the diversity term shrinks as frontier models converge (Goel et al.
    2025) and the aggregation literature shows regimes where mixing loses to the best single
    model (Li et al. 2025). The bet is live in the verification/review regime we actually
-   compose in; an early cross-model probe is scheduled rather than deferred (roadmap).
+   compose in; an early cross-model probe is scheduled rather than deferred (roadmap). This is
+   a race against time as much as a measurement: model-internal long-horizon coherence is
+   improving on its own trajectory, so the orchestration delta this project bets on is being
+   squeezed from both ends — shrinking diversity and a shrinking need for external
+   coordination — and the measurement has to outrun that squeeze, not merely happen eventually.
+5. **The human-attention economy.** The ratchet (below) accounts for what determinization
+   *saves*; nothing here yet totals what governance *spends* — IBC authoring, promotion
+   ratification, escalation judgment, close-time quality scalars, decorrelated
+   audit-sampling. There is plausibly a team size or work cadence below which the metaharness
+   is attention-*negative* relative to unmediated review, and no threshold is derived. This is
+   a debt the roadmap must retire (a priced assumption or a measurement), not a footnote to
+   defer indefinitely.
 
 Each mechanism is grounded; the synthesis is the hypothesis this project exists to verify.
 
@@ -350,8 +427,17 @@ the human review that would catch it, and the two ratchet signals can never fire
 fails to fill; nothing recurs un-contracted). This is §6's convergence caveat applied to the
 gate layer itself, and it compounds. The counter-instruments are non-optional: **periodic
 decorrelated audit-sampling of gate-passed deposits**, and **close-time attribution** from the
-human quality scalar back to the contracts that passed the judged work (design §6). The
-engine that drives the ratchet is the self-governing instruction layer, next.
+human quality scalar back to the contracts that passed the judged work (design §6).
+
+**A caveat the ratchet does not resolve.** Its economy pays out precisely where certainty
+is already high — recurring, machine-decidable work — and is by design inert on the
+frontier it exists to protect: the genuinely novel work this project claims to matter most
+for gets none of the ratchet's throughput gain, only its ceremony. There the system's
+honest floor is close to unmediated human review plus the cost of authoring and ratifying
+the boundary around it (the human-attention economy, above) — a cost the roadmap must
+measure, not assume away.
+
+The engine that drives the ratchet is the self-governing instruction layer, next.
 
 ## The self-governing instruction layer
 The metaharness owns its own **prose procedures** and **contracts** as versioned, committable
