@@ -58,12 +58,13 @@ phase at creation or last resolution.
 
 **Event log** — append-only, oldest-first: `(:dispatched id)`
 `(:landed id)` `(:gate-checked id result)` `(:quarantined id)`
-`(:discharged id result)` `(:skipped id)` `(:escalated id)`. `transition-event`
+`(:discharged id result)` `(:skipped id)` `(:escalated id)`
+`(:surface-widened id new-surface)`. `transition-event`
 is the single fold primitive every transition and `replay` route through —
 state is a fold over the log, never a store consulted independently of it.
 
 **Transitions** — `dispatch`, `land`, `gate-check`, `quarantine`,
-`discharge`, `skip`, `escalate`. Every one is total: `(values new-state
+`discharge`, `skip`, `escalate`, `widen-surface`. Every one is total: `(values new-state
 outcome)`, where `outcome` is `:ok` or `(:rejected reason)`. An illegal call
 (wrong status, an unmet dependency, an unknown node) never signals — it
 leaves state untouched. The only place this model signals a Lisp `error` is
@@ -91,7 +92,7 @@ before this model was built, and are exercised as example tests in
    rejected `:dependencies-not-proven` — the DAG phase genuinely does not
    advance past a pending gate.
 
-## The four crown-jewel invariants
+## The five crown-jewel invariants
 
 Defined in `invariants.lisp`, each a pure function of `(dag events)` — a
 trajectory, not a single snapshot, because monotonicity and tamper-evidence
@@ -122,8 +123,17 @@ unchanged against a recorded runtime trace (see the conformance seam below).
    (no transition ever rewrites it), and the schedule is correct: a node's
    `dispatch` is legal only once every dependency was already `:proven` in
    the immediately-preceding state.
+5. **Plan-surface monotonicity** (`surface-monotonic-p`) — closes a blind
+   spot `dag-preserved-p` leaves open: that predicate compares only the
+   DAG's node-id set, not any other `node-state` field, so it would not
+   catch a `file-surface` that shrinks or becomes malformed. `widen-surface`
+   unions a node's surface before emitting its event, so this holds by
+   construction on the safe API path; this predicate checks it against the
+   log directly, the same `(dag events) -> boolean` shape as the other four,
+   so a raw/malformed event (as a real runtime's logged journal might
+   contain) is still caught rather than assumed away.
 
-All four are shipped as `check-it` property tests over randomly generated
+All five are shipped as `check-it` property tests over randomly generated
 (including illegal) operation sequences, not merely asserted against
 hand-picked examples. One adversarial finding surfaced while building that
 suite is worth recording: a generator that includes `skip`/`escalate` (both
