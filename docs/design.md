@@ -279,6 +279,17 @@ spot-check), and confident-fast-agreement on novel work routes **to the human**.
   governance level. Ratified 2026-07-05: one governance *calculus* (the model's
   vocabulary), not one *log* — the runner's session event log stays walk-interior;
   scope, contingencies, and the named open design items live in roadmap K. **[→ roadmap K.]**
+- **The gate-harness contract protocol** — boundary design ratified 2026-07-05 (full
+  record: `.scratch/campaign-6-one-calculus/gate-harness-protocol-proposal-2026-07-05.md`).
+  The DAG gets the same two-tier treatment as the deposit-gate degradation above: a
+  Lisp-native, always-available structural floor (`src/model/dag.lisp`) becomes the
+  load-bearing runtime scheduler; Nickel's `Dag`/`DagNoConflict` become optional Tier-2
+  enrichment (conflict-freedom, discipline validation), never a hard dependency for DAG
+  correctness at charter or mid-campaign amendment. Vocabulary corrected: deposit (data)
+  ≠ contract (the Nickel checker) ≠ verdict (a checker's output) — `src/model`'s `deposit`
+  struct is a mis-named verdict, renamed when J lands. Implementation and the concrete
+  file-level deltas are workstream J's own scope; the full ruling lives in
+  `docs/roadmap.md` §J. **[→ roadmap J.]**
 
 ---
 

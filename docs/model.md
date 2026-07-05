@@ -54,7 +54,13 @@ fields, and only one of them is a plan-level status that can move backward.
 
 **Deposit** — a node's landed work as gated: `validation-state` (`:pending`
 `:proven` `:failed`) and `gate-mode` (`:gated` `:degraded`), stamped with the
-phase at creation or last resolution.
+phase at creation or last resolution. **Naming debt:** the gate-harness-protocol
+design (`.scratch/campaign-6-one-calculus/gate-harness-protocol-proposal-2026-07-05.md`
+§1) corrects the vocabulary this document predates — deposit (a static data
+artifact) ≠ contract (the Nickel checker) ≠ verdict (a checker's output). This
+struct is a *verdict*, not a deposit; `deposit → verdict` is a mechanical
+rename deferred to workstream J (see `docs/roadmap.md` §J), bundled with
+introducing the real deposit-data artifact. Kept as `deposit` here until then.
 
 **Event log** — append-only, oldest-first: `(:dispatched id)`
 `(:landed id)` `(:gate-checked id result)` `(:quarantined id)`
@@ -69,9 +75,14 @@ outcome)`, where `outcome` is `:ok` or `(:rejected reason)`. An illegal call
 (wrong status, an unmet dependency, an unknown node) never signals — it
 leaves state untouched. The only place this model signals a Lisp `error` is
 `transition-event` given a malformed event referencing a node absent from the
-DAG: that is a log-integrity violation, not a legal-domain rejection (the
-same view the existing runtime's `apply-journal-entry`, `src/meta/journal.lisp`,
-takes of its own event log).
+DAG: that is a log-integrity violation, not a legal-domain rejection. The
+runtime's journal reconciliation (`apply-journal-entry`,
+`src/meta/journal.lisp`) shares this signal literally, not merely by analogy:
+four of its six event kinds (`:node-dispatched`/`:node-landed`/`:node-skipped`/
+`:surface-widened`) route directly through `transition-event`, so the same
+condition fires there — one code path, not two implementations kept in sync
+by hand. The remaining two kinds (`:node-accepted`/`:node-rework`) stay
+journal-only bookkeeping, not yet calculus-conformant (workstream J).
 
 ## The three decided edge cases
 
@@ -155,13 +166,17 @@ runtime's own event log (`src/runner/event-store.lisp`,
 `src/meta/journal.lisp`) already journals its transitions in. `replay` folds
 `transition-event` over a `dag` and an event list to reconstruct a
 `model-state` from the log alone, with no other input — "state is a fold
-over the log," never a store consulted independently of it. This is the seam
-a recorded runtime trace can be checked against: translate the runtime's
-journaled events into this model's vocabulary, `replay` them, and run the
-four invariant predicates over the resulting `(dag, events)` pair. Divergence
-between what the runtime actually did and what this model says is legal is
-exactly the signal the conformance test (not built in this pass — wiring
-comes later, per this IBC's boundaries) is meant to catch.
+over the log," never a store consulted independently of it. This seam is
+wired, not hypothetical: `apply-journal-entry` routes the calculus-conformant
+event kinds through `transition-event` directly as it replays a campaign's
+journal (no separate translation step to build), and `run-campaign` runs the
+crown-jewel invariants against the replayed `(dag, events)` trajectory as a
+**resume boot-gate**, before any node dispatch — a trajectory that violates
+one refuses to resume rather than continuing past a corrupted or tampered
+log (`librecode-runner.conditions:journal-invariant-violation`; see
+`t/journal-tests.lisp`'s `test-journal-boot-gate-invariant-violation`).
+Divergence between what the runtime actually did and what this model says is
+legal is exactly what this boot-gate catches.
 
 This is also why every transition routes through the single
 `transition-event` primitive rather than each maintaining its own
