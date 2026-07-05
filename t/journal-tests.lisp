@@ -197,6 +197,33 @@ resolution holds (a3 regression guard)."
       (when (probe-file journal-file)
         (delete-file journal-file)))))
 
+(test test-journal-boot-gate-invariant-violation
+  "A syntactically-valid journal whose replayed trajectory violates a
+crown-jewel invariant must refuse to resume, not proceed to dispatch (a2).
+Here B is dispatched while its dependency A was never proven --
+TRANSITION-EVENT applies :node-dispatched unconditionally (it has no
+scheduling guard; enforcing that is SCHEDULE-CORRECT-P's whole job), so the
+journal is syntactically valid but the replayed trajectory is not."
+  (let* ((nodes (list (make-campaign-node :id "A" :dependencies nil)
+                      (make-campaign-node :id "B" :dependencies '("A"))))
+         (dag (make-campaign-dag :nodes nodes :shared-branch "main"))
+         (journal-file "test-campaign-journal-boot-gate.lisp-expr")
+         (campaign (make-instance 'librecode-meta.campaign:campaign
+                                  :dag dag
+                                  :journal-path journal-file
+                                  :repository-path "."
+                                  :workspace-dir ".")))
+    (when (probe-file journal-file)
+      (delete-file journal-file))
+    (unwind-protect
+         (progn
+           (with-open-file (s journal-file :direction :output :if-exists :supersede :if-does-not-exist :create)
+             (write-journal-entry s '(:node-dispatched "B")))
+           (signals librecode-runner.conditions:journal-invariant-violation
+             (librecode-meta.campaign:run-campaign campaign)))
+      (when (probe-file journal-file)
+        (delete-file journal-file)))))
+
 (test test-journal-rework-before-landing-does-not-error
   "The pre-landing crash-retry ladder (:node-rework written for a node that
 never reached :landed) is exactly the scenario this node froze on: there is

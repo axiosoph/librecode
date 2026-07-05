@@ -38,7 +38,11 @@
            #:protocol-invariant-violation
            #:protocol-invariant-violation-message
            #:protocol-invariant-violation-invariant
-           
+
+           #:journal-invariant-violation
+           #:journal-invariant-violation-message
+           #:journal-invariant-violation-invariant
+
            #:gate-failure
            #:gate-failure-message
            #:gate-failure-command
