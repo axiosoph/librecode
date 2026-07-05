@@ -167,6 +167,28 @@
                      (protocol-invariant-violation-message condition))))
   (:documentation "Signal that an invariant constraint has been violated in the campaign, council, or coordinator layers."))
 
+(define-condition journal-invariant-violation (serious-condition)
+  ((message
+    :initarg :message
+    :reader journal-invariant-violation-message
+    :initform "Replayed journal trajectory failed a crown-jewel invariant."
+    :type string
+    :documentation "The specific violation message.")
+   (invariant
+    :initarg :invariant
+    :reader journal-invariant-violation-invariant
+    :initform "unknown"
+    :type string
+    :documentation "The name of the librecode-model invariant predicate that returned NIL."))
+  (:report (lambda (condition stream)
+             (format stream "Journal Invariant Violation [invariant: ~A]: Replayed trajectory is log-integrity-compromised.~%~
+                             What failed: ~A~%~
+                             Why: A syntactically valid journal folded, via TRANSITION-EVENT, to a state history this invariant forbids.~%~
+                             Where: RUN-CAMPAIGN's resume boot-gate, before any node dispatch."
+                     (journal-invariant-violation-invariant condition)
+                     (journal-invariant-violation-message condition))))
+  (:documentation "Signal that a replayed journal's folded trajectory violates one of librecode-model's crown-jewel invariants -- refuse to resume rather than continue past a corrupted or tampered log."))
+
 (define-condition gate-failure (serious-condition)
   ((message
     :initarg :message
