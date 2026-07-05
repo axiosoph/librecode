@@ -507,7 +507,14 @@ or if any dependency is unresolved."
     (when (and journal-path (probe-file journal-path))
       (multiple-value-bind (replayed-dag last-valid-pos)
           (replay-journal journal-path dag)
-        (declare (ignore replayed-dag))
+        ;; REPLAY-JOURNAL mutates and returns DAG's own identity (topology
+        ;; fields are never touched, only status/phase/deposit/file-surface
+        ;; are folded onto it in place) — thread that forward explicitly
+        ;; rather than silently discarding it, so a future change to
+        ;; REPLAY-JOURNAL's threading contract fails loudly instead of
+        ;; leaving callers reading stale state (p4-discarded-fold).
+        (assert (eq replayed-dag dag) ()
+                "replay-journal must mutate and return DAG's own identity, not a copy")
         #+sbcl
         (sb-posix:truncate (namestring journal-path) last-valid-pos)
         #-sbcl
