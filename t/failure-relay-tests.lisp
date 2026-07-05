@@ -26,7 +26,8 @@
                         (supervisor-mbox
                          worker-mbox
                          :recovery-menu '((use-alternative) (retry-computation))
-                         :message-factory (lambda (desc reply-mbox)
+                         :message-factory (lambda (desc reply-mbox recovery-menu)
+                                            (declare (ignore recovery-menu))
                                             (list :custom-failure desc reply-mbox))
                          :apply-choice (lambda (choice args)
                                          (let ((restart (find-restart choice)))
@@ -76,6 +77,54 @@ Where: HTTP/SSE streaming connection client boundary."))
                  (let ((result (librecode-runner.protocol:join-thread-with-timeout worker-thread 2.0)))
                    (is (equal 42 result))
                    (is (equal '(:worker-start :eval-site :retry :eval-site (:use-alternative 42)) (nreverse step-tracker))))))))
+      (ignore-errors (bt:destroy-thread worker-thread)))))
+
+(test test-failure-relay-serializes-recovery-menu
+  "failure-relay must serialize the recovery-menu into the outgoing message rather
+than discarding it, so a supervisor can learn what restarts are available."
+  (let* ((supervisor-mbox (librecode-runner.protocol:make-mailbox :name "test-supervisor-menu"))
+         (reply-mbox (librecode-runner.protocol:make-mailbox :name "test-reply-menu"))
+         (menu '((retry-thing) (skip-thing)))
+         (worker-thread
+           (bt:make-thread
+            (lambda ()
+              (librecode-runner.protocol:failure-relay
+               supervisor-mbox reply-mbox
+               (librecode-runner.protocol:condition-to-descriptor
+                (make-condition 'librecode-runner.conditions:provider-error
+                                :message "boom" :endpoint "/x" :provider "p"))
+               :recovery-menu menu)))))
+    (unwind-protect
+         (let ((msg (librecode-runner.protocol:receive-message supervisor-mbox :timeout 2.0)))
+           (is (not (null msg)))
+           (is (eq (car msg) :failure))
+           (is (equal menu (fourth msg)))
+           (librecode-runner.protocol:send-message reply-mbox '(:abort)))
+      (ignore-errors (bt:destroy-thread worker-thread)))))
+
+(test test-failure-relay-message-factory-receives-recovery-menu
+  "A custom message-factory must receive the recovery-menu as an argument, so callers
+can place it wherever their own wire-message shape expects it."
+  (let* ((supervisor-mbox (librecode-runner.protocol:make-mailbox :name "test-supervisor-mf-menu"))
+         (reply-mbox (librecode-runner.protocol:make-mailbox :name "test-reply-mf-menu"))
+         (menu '((use-alternative) (retry-computation)))
+         (worker-thread
+           (bt:make-thread
+            (lambda ()
+              (librecode-runner.protocol:failure-relay
+               supervisor-mbox reply-mbox
+               (librecode-runner.protocol:condition-to-descriptor
+                (make-condition 'librecode-runner.conditions:provider-error
+                                :message "boom" :endpoint "/x" :provider "p"))
+               :recovery-menu menu
+               :message-factory (lambda (desc reply recovery-menu)
+                                   (list :custom-failure desc reply recovery-menu)))))))
+    (unwind-protect
+         (let ((msg (librecode-runner.protocol:receive-message supervisor-mbox :timeout 2.0)))
+           (is (not (null msg)))
+           (is (eq (car msg) :custom-failure))
+           (is (equal menu (fourth msg)))
+           (librecode-runner.protocol:send-message reply-mbox '(:abort)))
       (ignore-errors (bt:destroy-thread worker-thread)))))
 
 (test test-failure-descriptor-robust-fallback

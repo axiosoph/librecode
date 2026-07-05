@@ -293,8 +293,8 @@
                                                 (librecode-runner.protocol:*session-mailbox*
                                                  worker-mbox
                                                  :recovery-menu '((skip-and-continue) (retry-tool))
-                                                 :message-factory (lambda (desc reply-mbox)
-                                                                    `(:worker-error ,call-id ,desc ,reply-mbox))
+                                                 :message-factory (lambda (desc reply-mbox recovery-menu)
+                                                                    `(:worker-error ,call-id ,desc ,reply-mbox ,recovery-menu))
                                                  :apply-choice (lambda (choice args)
                                                                  (let ((restart (find-restart choice)))
                                                                    (if restart
@@ -348,9 +348,10 @@
                            (librecode-runner.protocol:broadcast-event session-id :tool-error (list :id call-id :error err-msg))
                            (setf (gethash call-id results) err-msg)))
                         ((eq (car msg) :worker-error)
-                         (destructuring-bind (call-id descriptor reply-mbox) (cdr msg)
+                         (destructuring-bind (call-id descriptor reply-mbox recovery-menu) (cdr msg)
                            (let ((condition (librecode-runner.protocol:descriptor-to-condition descriptor)))
-                             (librecode-runner.protocol:broadcast-event session-id :tool-worker-error (list :id call-id :condition condition))
+                             (librecode-runner.protocol:broadcast-event session-id :tool-worker-error
+                                                                         (list :id call-id :condition condition :recovery-menu recovery-menu))
                              (restart-case
                                  (error condition)
                                (skip-and-continue ()
