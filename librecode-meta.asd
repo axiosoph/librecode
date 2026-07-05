@@ -7,7 +7,7 @@
   :description "OpenCode multi-agent campaign coordinator metaharness."
   :author "nrd"
   :license "MIT"
-  :depends-on (#:librecode-runner)
+  :depends-on (#:librecode-runner #:librecode-model)
   :serial t
   :components
   ((:module "src"

@@ -17,6 +17,8 @@
   (dependencies nil :type list)        ; List of parent node IDs
   (sequential-p nil :type boolean)     ; Must run sequentially, cannot be parallelized
   (status :pending :type keyword)      ; :pending, :dispatched, :landed, :accepted, :rework, :skipped
+  (phase 0 :type (integer 0))          ; librecode-model deposit phase, threaded from the journal fold
+  (deposit nil)                        ; librecode-model deposit struct (or nil, never landed), threaded from the fold
   (harness-type nil :type symbol)      ; Class name of harness (e.g., 'harness-opencode)
   (harness-instance nil)               ; Reference to the active CLOS harness-instance
   (ibc nil :type (or null string)))    ; Initial Boundary Condition text (instructions/goals)
