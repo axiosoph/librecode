@@ -21,10 +21,12 @@ The Design Council (convened on 2026-06-30) has delivered a unanimous **REJECTED
 > | RES-12 | Collapse CLOS agent hierarchy to one class | **BUILT** — single parameterized `agent` class. |
 >
 > **§3 (Lisp-Based Primitives Mapping) is DESIGN-ONLY.** The `deposits` /
-> `deposit_cites` / `deposit_refs` / `findings` tables are created as DDL but never
-> read or written; the P-GROUND/P-ARSENAL/P-COMPOSE/P-INTENT/P-TRACK structs and
-> macros (`with-boundary`, `with-tracker`, `defprocedure`, `select-capability`) are
-> **not implemented**.
+> `deposit_cites` / `deposit_refs` / `findings` tables were schema-only DDL,
+> never read or written — confirmed and **cut entirely** by the one-event-calculus
+> campaign (2026-07-05; see `docs/roadmap.md` §K). No such tables exist in
+> `src/runner/event-store.lisp` anymore. The P-GROUND/P-ARSENAL/P-COMPOSE/
+> P-INTENT/P-TRACK structs and macros (`with-boundary`, `with-tracker`,
+> `defprocedure`, `select-capability`) remain **not implemented**.
 
 ---
 
