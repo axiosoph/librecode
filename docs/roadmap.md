@@ -140,7 +140,17 @@ ratification). The human quality scalar at campaign close is the ground-truth an
 ### E · Heterogeneity / decorrelation-first *(the manifesto's core value)*
 - **Wire `harness-opencode` for real** — pulled forward from a later slot: it derisks H
   (a mature harness to exercise the metaharness against beyond a toy runner) and is the
-  heterogeneity play in one move; see "Immediate next."
+  heterogeneity play in one move; see "Immediate next." The drive surface is proven
+  (2026-07-05 survey, `.scratch/opencode-seam-survey-2026-07-05.md`): `opencode serve`
+  HTTP+SSE — dispatch via `POST /session` + `prompt_async`, observe via SSE `/event`,
+  complete/fail via `session.idle`/`session.error`, cancel via `/abort`, permission
+  interception over HTTP — the same path opencode's own `run --format json` exercises.
+  Its restart set is `{redispatch, abort, answer-permission}` with live observation,
+  richer than the thin-adapter floor K assumes. **Adapter acceptance criteria** (from
+  the survey's risk register): pin the opencode version and diff its `/doc` OpenAPI
+  export on upgrade (no wire-protocol versioning exists upstream); empirically verify
+  the exit-code ↔ `session.error` interaction before trusting exit codes for failure
+  detection.
 - Cross-model **verification seats** (different models, not lenses on one).
 - **Arms-length proprietary** via terminal-pane reading driven by a cheap local model —
   disparate models for decorrelation without deep coupling (the freedom-preserving path).
@@ -162,10 +172,24 @@ supervision contract it proves out, not opencode-equivalence; see `foundations.m
 - **The augmentation seam:** the runner exposes hooks so the metaharness can enforce its
   invariants on it, while the runner runs standalone as pure-opencode (metaharness an
   *optional* consumer).
-- **Open prior-art unknown, now the load-bearing question:** how extensible opencode
-  already is (plugins / hooks / events / MCP) — investigate this *first*, since it
-  determines the seam's actual shape; reuse opencode's own extension mechanism if one
-  exists rather than adding ours.
+- **The load-bearing question — answered** (2026-07-05 prior-art survey of opencode
+  at commit `077f83db`, full record with file:line citations:
+  `.scratch/opencode-seam-survey-2026-07-05.md`). Findings that shape the seam:
+  - opencode has **two plugin systems**: V1 (`@opencode-ai/plugin` Hooks — shipped,
+    documented, externally loadable) and an Effect-based V2 (internal-only,
+    mid-rearchitecture, explicitly not the current API). V1's `PluginInput` assumes
+    in-process Bun execution — no subprocess bridge exists to reuse.
+  - opencode already speaks **MCP** for tools — a standards-based process-boundary
+    protocol that *is* the subprocess/JSON seam this workstream wants.
+  - **Ruling (nrd, 2026-07-05): MCP-first, presumptive.** The runner grows an MCP
+    client for the tool/plugin ecosystem; no V1 Hooks bridge is built. The ruling is
+    presumptive, not final — it reopens if MCP's reach proves insufficient in
+    practice (a needed plugin isn't MCP-reachable) or the seam has unintended
+    effects. opencode-interior hooks (auth, chat-params) stay out of scope: where
+    opencode is the *harness*, its hooks are reached via E's HTTP surface instead.
+  - Wire-protocol fronting (opencode's own clients driving a foreign runner) is a
+    large **unversioned** surface — gated on the `harness-opencode` adapter proving
+    out first (unchanged sequencing: after H).
 
 ### H · Runner capability floor *(prerequisite for meaningfully testing the metaharness)*
 A bounded set of the critical features *any* LLM agent harness needs — robust multi-turn

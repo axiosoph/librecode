@@ -272,7 +272,8 @@ spot-check), and confident-fast-agreement on novel work routes **to the human**.
 - **The augmentation seam** — how metaharness governance reaches an opencode-compatible
   runner via **hooks the runner exposes** (the runner runs standalone as pure-opencode;
   the metaharness is an *optional* consumer, and the runner depends on nothing), and how
-  extensible opencode already is. **[→ roadmap G; open prior-art unknown.]**
+  extensible opencode already is. **[→ roadmap G; prior-art unknown resolved 2026-07-05 —
+  MCP-first ruling, survey record in `.scratch/opencode-seam-survey-2026-07-05.md`.]**
 - **The harness supervision contract + one-event calculus** — reifying supervision as
   conditions/restarts advertised over the wire, and unifying the two event spines at the
   governance level. Ratified 2026-07-05: one governance *calculus* (the model's
