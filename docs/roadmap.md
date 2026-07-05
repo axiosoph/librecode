@@ -55,17 +55,27 @@ Its own determinization ratchet: every invariant we can make deterministic, we m
   instruments (decorrelated audit-sampling of gate-passed deposits; close-time attribution
   from the human quality scalar back to contracts). The human anchor enters the schema as a
   *partially correlated* signal, not unqualified ground truth (`foundations.md §3`).
-- **Early cross-model probe** (pulled forward from E): a cheap measurement of whether a
-  disparate-model reviewer catches defects a same-model reviewer misses on our own work —
-  the thesis's most falsifiable bet, bounded early rather than after maximal scaffolding.
-  (The 2026-07-01 decorrelated review is a first data point: it did.)
+- **Cross-model probe** — a measurement of whether a disparate-model reviewer catches
+  defects a same-model reviewer misses on our own work: the thesis's most falsifiable
+  bet. Protocol designed and pre-registered
+  (`.scratch/cross-model-probe-design-2026-07-05.md`); the formal run is **deferred past
+  the usable-MVP gate by explicit operator call (2026-07-05)** — nrd's own daily
+  cross-model review practice is the standing informal evidence (the 2026-07-01
+  decorrelated review is a recorded data point: it caught same-model-missed findings),
+  and speed-to-usable outranks re-measuring a prior the operator already holds.
+  Reopening triggers: post-MVP; a major model-roster change; or any decision that
+  actually hinges on the delta's magnitude. The staleness risk is accepted and recorded
+  (`foundations.md`, novelty-boundary element 4).
 - **Forgebot baseline** (the 2026-07-01 invalidation review's residual empirical question):
   build the minimal forge-native bot — Nickel gates as CI required-checks, branch
   protection as the assent engine, reject-and-redispatch on failure — and run the same
   campaign DAG through it and through the metaharness. Measure tokens-to-accepted-node,
   human-minutes per accepted node, and doomed-walk detection latency. Bounds the
   supervision ladder's value (economy, not correctness — the gates catch the bad deposit
-  either way) the way the cross-model probe bounds the decorrelation bet.
+  either way) the way the cross-model probe bounds the decorrelation bet. Protocol:
+  `.scratch/forgebot-baseline-design-2026-07-05.md` (carries the attention instrument —
+  element 5's measurement). Cheapest run point: **during MVP dogfooding** — once
+  librecode drives real campaigns, arm-B data falls out of ordinary use for free.
 
 ### C · Memory & Context *(built on J; early — highest blast radius, do not glaze)*
 Long-term memory (durable) and the context map (ephemeral). **Memory is built *on* the contract

@@ -388,7 +388,10 @@ elements are specifically unverified — contributions, not citations:
    own §3 evidence says the diversity term shrinks as frontier models converge (Goel et al.
    2025) and the aggregation literature shows regimes where mixing loses to the best single
    model (Li et al. 2025). The bet is live in the verification/review regime we actually
-   compose in; an early cross-model probe is scheduled rather than deferred (roadmap). This is
+   compose in; the cross-model probe is designed and pre-registered, but its formal run is
+   deferred past the usable-MVP gate by explicit operator call (2026-07-05) — the operator's
+   own daily cross-model review practice stands as the working prior, and the staleness risk
+   against the squeeze below is accepted, not ignored (roadmap B). This is
    a race against time as much as a measurement: model-internal long-horizon coherence is
    improving on its own trajectory, so the orchestration delta this project bets on is being
    squeezed from both ends — shrinking diversity and a shrinking need for external
