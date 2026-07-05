@@ -7,7 +7,7 @@ so we can fill in the missing implementation and reach a fully working stack.
 
 ---
 
-## Where we are (2026-07-01)
+## Where we are (2026-07-05)
 
 - **Runner:** resilience thesis proven (condition/restart tiers, the worker
   freeze/handshake, the reusable failure-relay); concurrency hardened; event-sourced
@@ -21,8 +21,9 @@ so we can fill in the missing implementation and reach a fully working stack.
   mid-run kill/resume; an endpoint-generic OpenAI-compatible provider; and a runnable
   demo against a small local model (Ollama, `qwen2.5-coder:3b`).
 - **Foundations + manifesto:** drafted and reviewed (`foundations.md`, `../MANIFESTO.md`).
-- **Known regression (must-fix):** a recent change reintroduced a raw thread-kill in
-  tool-timeout cleanup and removed its tests — violating the cooperative-shutdown invariant.
+- **The shutdown regression is fixed** (cooperative shutdown restored and gated against
+  raw kills, `93c61ad`); workstream K is ratified; G's seam question is answered
+  (MCP-first); the project README exists.
 
 ## Destination
 
@@ -222,6 +223,11 @@ commons is only compelling once concrete (`foundations.md` Positioning, §5; `de
   objects (issues, PRs, commit statuses) so a stakeholder who never installs librecode can
   still see the commons' progress. Inbound: a forge approval may be mirrored into the
   journal as *evidence* of a human's sign-off, never as the assent record itself.
+  **Active as a manual discipline since campaign 6** (2026-07-05; spec:
+  `.ledger/process-feedback/forge-projection-discipline.md` — meta-PR per campaign
+  branch, draft PR per node, findings issues under a tracking umbrella, git-CLI merges,
+  context-free forge prose, durable permalinks). This workstream later mechanizes what
+  is now run by hand.
 - **The regression transitions.** Implement `reset-to-checkpoint` and
   `cut-clean-and-decorrelate` (`design.md §3`), currently design-only.
 - **Cross-instance coherent view.** Disparate isolated sessions (each stakeholder on their own
@@ -321,15 +327,38 @@ deliberately after the core is stable per §8 — and G's seam work comes only a
 bounded floor. **K** (ratified 2026-07-05) precedes J for the same reason J
 precedes A, D, and I: the contract substrate wants to sit on the unified event spine.
 
-## Immediate next
-1. **Landed** (on master): the foundation set, its review and remediation, the
-   self-governing instruction layer, and the 2026-07-01 invalidation review (the null
-   hypothesis, the runner's rejustification, seam-not-parity for G — see `foundations.md`
-   and this doc's G/E/I/B entries). A fix for the shutdown regression is in review.
-2. **Next:** wire `harness-opencode` for real (E, pulled forward — derisks H and is the
-   heterogeneity play in one move); the **contract substrate (J)** and H (**runner
-   capability floor**) toward A (**formalize stable**); C (memory) sequenced early on J.
-3. **Decided (2026-07-05):** workstream K is ratified (see K) — the one-calculus
-   rearchitecture precedes J. Its implementation campaign is chartered separately; the
-   evidence track (G's prior-art sweep, the forgebot baseline and cross-model probe in
-   B/E) runs in parallel, needing nothing from K's spine.
+## The MVP path (plan of record, 2026-07-05)
+
+**Metagoal (nrd):** a usable system as fast as possible without sacrificing the
+foundation — then iterate from real use.
+
+**The MVP gate, defined:** librecode replaces the operator's manual campaign
+choreography for one real campaign — IBC in, walkers dispatched on a capable harness,
+Nickel gates checking deposits, journal + ledger recording everything, the human
+surfaced only where judgment is needed, a merged auditable branch out. Graduation test
+(unfakeable): **librecode runs its own next campaign.**
+
+The sequence — four campaigns, two design passes:
+1. **Campaign 6 — K, the kernel.** Journal fold routed through `transition-event`,
+   vocabulary reconciliation (the plan-amendment event class is the one open design
+   decision), the four invariants as boot gates on replay, the dead-table cut, and the
+   supervision-contract artifact with the minimal restart ladder. ~2 layers, ~6 nodes.
+2. **Campaign 7 — the capable harness.** `harness-opencode` on the proven HTTP+SSE
+   surface (acceptance criteria in E) plus provider auth (B). Daily use does **not**
+   wait on H: opencode is the workhorse walker while the reference runner matures at
+   its own pace (its F3 identity).
+3. **Campaign 8 — J, the contract substrate** on the unified spine (§7's settled
+   shaping design). The largest — may split in two — and cannot be thinned: it is the
+   homework premise made real.
+4. **Campaign 9 — the seam + the bootstrap.** Minimal message-first human seam
+   (CLI/REPL, not the TUI), the attention instrument (element 5), then the graduation
+   run: campaign 10 chartered *through* librecode. Forgebot arm-B data accrues from
+   here at no extra cost.
+
+**Design passes, not campaigns:** the C memory dialectic runs **before heavy
+dogfooding** (C's own warning: cross-session state must not accumulate undesigned);
+the README/front-door pass is done (2026-07-05).
+
+**Deliberately post-MVP, pulled by real usage signal:** A (the machine-checked stable
+spec), D (the living loop), C's build, H, F (the full TUI), G's MCP client, I
+(multi-stakeholder generalization).
