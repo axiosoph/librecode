@@ -85,11 +85,25 @@ original design intent: **[BUILT]**, **[PARTIAL]**, **[STUB]**.
   writer, append-only, `force-output` per event.
 - **[BUILT]** The reference state-machine model (roadmap workstream A's first
   piece, workstream J's spine) — `src/model/`, a pure applicative Common Lisp
-  model (dag/status/phase/deposit/event-log/transitions) with the four
+  model (dag/status/phase/deposit/event-log/transitions) with the five
   crown-jewel invariants (phase monotonicity, no-pending-proven,
-  tamper-evidence, DAG soundness) as `check-it` property tests. Not the
-  runtime; defines the conformance seam the runtime will later be checked
-  against. See [model.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/model.md).
+  tamper-evidence, DAG soundness, plan-surface monotonicity) as `check-it`
+  property tests. Not the runtime itself, but no longer merely a future
+  conformance target either — see the journal-calculus reconciliation entry
+  below. See [model.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/model.md).
+- **[BUILT]** Journal-calculus reconciliation and resume boot-gate — the
+  metaharness journal's `apply-journal-entry` (`src/meta/journal.lisp`) routes
+  its calculus-conformant event kinds (`:node-dispatched`/`:node-landed`/
+  `:node-skipped`/`:surface-widened`) through `librecode-model`'s
+  `transition-event` directly, so a replayed journal folds through the same
+  code the model's own invariants are proven against; `:node-accepted`/
+  `:node-rework` remain journal-only bookkeeping, named as not-yet-conformant
+  (workstream J). `run-campaign` runs all five crown-jewel invariants against
+  the replayed trajectory as a resume boot-gate before any node dispatch,
+  refusing to resume on a violation
+  (`librecode-runner.conditions:journal-invariant-violation`, tested in
+  `t/journal-tests.lisp`). See
+  [model.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/model.md).
 
 ### Not ported (deliberately excluded)
 
@@ -238,14 +252,15 @@ librecode-runner.asd:
   packages → runner/conditions → protocol → event-store → agent → session
            → tool → runner → compaction → audit → http
 
-librecode-meta.asd (depends-on librecode-runner):
+librecode-meta.asd (depends-on librecode-runner, librecode-model):
   meta/multiplexer → multiplexer-tmux → harness → harness-subprocess
            → harness-opencode → harness-librecode → journal → campaign
            → gate → council → conditioning → metaharness
 
-librecode-model.asd (no depends-on — deliberately independent of both the
-above; it is the reference model the runtime will later be conformance-
-tested against, not a consumer of it):
+librecode-model.asd (no depends-on of its own — still dependency-free,
+loads in unadorned SBCL with no CLOS or threads; but librecode-meta now
+depends on it, so it is a genuine consumer, not merely the conformance
+reference it started as):
   model/packages → dag → state-machine → invariants
 ```
 
