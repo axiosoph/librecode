@@ -21,14 +21,16 @@
                 #:deposit-gate-mode #:deposit-phase
                 #:node-state #:node-state-p #:node-state-id
                 #:node-state-status #:node-state-phase #:node-state-deposit
+                #:node-state-file-surface
                 #:model-state #:model-state-p #:model-state-dag
                 #:model-state-node-states #:model-state-events
                 #:initial-state #:find-node-state
                 #:rejected-p #:rejection-reason
                 #:dispatch #:land #:gate-check #:quarantine #:discharge #:escalate
+                #:widen-surface
                 #:transition-event #:replay
                 #:phase-monotonic-p #:no-pending-proven-p #:tamper-evident-p
-                #:dag-preserved-p #:schedule-correct-p)
+                #:dag-preserved-p #:schedule-correct-p #:surface-monotonic-p)
   (:export #:model-suite))
 
 (in-package #:librecode-test.model)
@@ -193,6 +195,71 @@ not part of the model's public API."
       (is (eq :dependencies-not-proven (rejection-reason outcome)))
       (is (eq :queued (node-state-status (find-node-state state2 "B")))))))
 
+;;; --- Plan-amendment: WIDEN-SURFACE and INVARIANT 5 (surface monotonicity) -
+
+(test test-widen-surface-grows-file-surface
+  (let ((state (initial-state (linear-dag))))
+    (is (null (node-state-file-surface (find-node-state state "A"))))
+    (multiple-value-bind (s o) (dispatch state "A") (is (eq :ok o)) (setf state s))
+    (multiple-value-bind (s o) (widen-surface state "A" '("x.lisp"))
+      (is (eq :ok o))
+      (setf state s))
+    (is (equal '("x.lisp") (node-state-file-surface (find-node-state state "A"))))
+    ;; A second widening unions with, rather than replaces, the prior surface.
+    (multiple-value-bind (s o) (widen-surface state "A" '("y.lisp"))
+      (is (eq :ok o))
+      (setf state s))
+    (is (null (set-exclusive-or '("x.lisp" "y.lisp")
+                                 (node-state-file-surface (find-node-state state "A"))
+                                 :test #'string=)))))
+
+(test test-widen-surface-rejects-terminal-node
+  (let ((state (initial-state (linear-dag))))
+    (multiple-value-bind (s o) (librecode-model:skip state "A") (is (eq :ok o)) (setf state s))
+    (multiple-value-bind (state2 outcome) (widen-surface state "A" '("x.lisp"))
+      (is (rejected-p outcome))
+      (is (eq :already-terminal (rejection-reason outcome)))
+      (is (eq state state2)))))
+
+(test test-widen-surface-rejects-malformed-surface
+  (let ((state (initial-state (linear-dag))))
+    (multiple-value-bind (state2 outcome) (widen-surface state "A" "not-a-list")
+      (is (rejected-p outcome))
+      (is (eq :invalid-surface (rejection-reason outcome)))
+      (is (eq state state2)))
+    (multiple-value-bind (state2 outcome) (widen-surface state "A" '("ok" 42))
+      (is (rejected-p outcome))
+      (is (eq :invalid-surface (rejection-reason outcome)))
+      (is (eq state state2)))))
+
+(test test-surface-monotonic-holds-through-widen-surface
+  "Positive control: a trajectory built only from the safe WIDEN-SURFACE API
+never violates INVARIANT 5."
+  (let ((state (initial-state (linear-dag))))
+    (multiple-value-bind (s o) (dispatch state "A") (is (eq :ok o)) (setf state s))
+    (multiple-value-bind (s o) (widen-surface state "A" '("x.lisp"))
+      (is (eq :ok o)) (setf state s))
+    (multiple-value-bind (s o) (widen-surface state "A" '("y.lisp"))
+      (is (eq :ok o)) (setf state s))
+    (is-true (surface-monotonic-p (linear-dag) (model-state-events state)))))
+
+(test test-surface-monotonic-rejects-shrinking-raw-event
+  "A raw, directly-constructed event log (bypassing WIDEN-SURFACE's own
+union-before-emit safety) can still shrink a FILE-SURFACE — exactly the
+DAG-PRESERVED-P blind spot this invariant exists to close. Demonstrates the
+invariant correctly returns NIL rather than passing vacuously."
+  (let* ((dag (linear-dag))
+         (events '((:dispatched "A") (:surface-widened "A" ("x.lisp" "y.lisp"))
+                   (:surface-widened "A" ("x.lisp")))))
+    (is-false (surface-monotonic-p dag events))))
+
+(test test-surface-monotonic-rejects-malformed-raw-event
+  "A raw event can also set a FILE-SURFACE to a non-list-of-strings value;
+INVARIANT 5's well-formedness half catches this too."
+  (let* ((dag (linear-dag))
+         (events '((:dispatched "A") (:surface-widened "A" "not-a-list"))))
+    (is-false (surface-monotonic-p dag events))))
+
 ;;; --- The conformance seam: replay reconstructs the live trajectory --------
 
 (test test-replay-reconstructs-live-state
@@ -237,7 +304,8 @@ total-function behavior under fuzzing this property suite exists to check."
               (:quarantine (quarantine state id))
               (:discharge (discharge state id arg))
               (:skip (librecode-model:skip state id))
-              (:escalate (escalate state id))))))
+              (:escalate (escalate state id))
+              (:widen-surface (widen-surface state id arg))))))
 
 (defun run-ops (dag ops)
   "Fold OPS through the model from DAG's initial state."
@@ -365,3 +433,48 @@ vacuously green, so this is checked directly rather than assumed."
                                          *happy-path-num-trials*)))
       (is (< adversarial-rate 1/10))
       (is (> happy-path-rate 1/2)))))
+
+;;; --- INVARIANT 5, fuzzed: plan-surface monotonicity -----------------------
+;;;
+;;; A dedicated generator, deliberately separate from *OPS-GENERATOR* and
+;;; *HAPPY-PATH-GENERATOR* above: those two are precision-calibrated against
+;;; TEST-PROPERTY-PROVEN-NODES-ACTUALLY-OCCUR's exact proven-rate thresholds,
+;;; and folding an eighth op kind into either would perturb those thresholds
+;;; for no benefit — WIDEN-SURFACE never changes STATUS, so it has nothing to
+;;; contribute to that sanity control. This generator instead mixes
+;;; WIDEN-SURFACE with just enough of the other kinds to reach varied
+;;; statuses (including terminal ones, to fuzz the :already-terminal
+;;; rejection path) while staying decorrelated from the calibrated pair.
+
+(defparameter *surface-generator*
+  (generator
+   (list (or (map (lambda (id) (list :dispatch id))
+                  (or (quote "A") (quote "B") (quote "C") (quote "D")))
+             (map (lambda (id) (list :land id))
+                  (or (quote "A") (quote "B") (quote "C") (quote "D")))
+             (map (lambda (id result) (list :gate-check id result))
+                  (or (quote "A") (quote "B") (quote "C") (quote "D"))
+                  (or (quote :pass) (quote :fail) (quote :timeout)))
+             (map (lambda (id) (list :skip id))
+                  (or (quote "A") (quote "B") (quote "C") (quote "D")))
+             (map (lambda (id surface) (list :widen-surface id surface))
+                  (or (quote "A") (quote "B") (quote "C") (quote "D"))
+                  (list (or (quote "x") (quote "y") (quote "z")) :max-length 3)))
+         :max-length 60))
+  "Mixes WIDEN-SURFACE (with a small-alphabet, up-to-3-element generated
+surface) alongside dispatch/land/gate-check/skip — enough to drive nodes
+through non-terminal and terminal statuses so both INVARIANT 5's monotonic
+and well-formed halves get exercised, without touching the two calibrated
+adversarial generators above.")
+
+(defparameter *surface-list-size* 60)
+(defparameter *surface-num-trials* 300)
+
+(test test-property-surface-monotonic
+  "INVARIANT 5, fuzzed: no random op sequence including WIDEN-SURFACE ever
+shrinks or malforms a node's FILE-SURFACE — the safe API's union-before-emit
+construction (widen-surface's own precondition checks) holds up under
+fuzzing, including illegal orderings (e.g. widening a :skipped node, which
+WIDEN-SURFACE itself rejects and so leaves the trajectory untouched)."
+  (is-true (run-property *surface-generator* *surface-list-size* *surface-num-trials*
+                         #'surface-monotonic-p)))

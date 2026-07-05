@@ -37,13 +37,31 @@ the phase value stamped when this deposit was created or last resolved."
   (gate-mode nil :type (member :gated :degraded) :read-only t)
   (phase nil :type (integer 0) :read-only t))
 
-(defstruct (node-state (:constructor make-node-state (id status phase deposit)))
+(defstruct (node-state (:constructor make-node-state (id status phase deposit file-surface)))
   "A node's runtime state: its plan-level STATUS, its monotonic gate PHASE,
-and its current DEPOSIT (or NIL before it has ever landed)."
+its current DEPOSIT (or NIL before it has ever landed), and its FILE-SURFACE
+— the set of paths it may touch, NIL until first widened by WIDEN-SURFACE.
+Like PHASE, FILE-SURFACE only ever grows on the safe transition path; see
+WIDEN-SURFACE and INVARIANT 5 (SURFACE-MONOTONIC-P, invariants.lisp).
+Deliberately untyped (unlike ID/STATUS/PHASE): TRANSITION-EVENT's
+:SURFACE-WIDENED case stores a raw event's payload directly, unvalidated —
+by design, so a malformed raw event (this model's replay of a real runtime's
+logged journal, not merely its own safe API) can still be constructed and
+checked as a BOOLEAN by SURFACE-MONOTONIC-P, rather than crashing the fold
+itself on a struct type mismatch."
   (id nil :type string :read-only t)
   (status nil :type keyword :read-only t)
   (phase nil :type (integer 0) :read-only t)
-  (deposit nil :read-only t))
+  (deposit nil :read-only t)
+  (file-surface nil :read-only t))
+
+(defun %well-formed-surface-p (surface)
+  "True if SURFACE has the shape a FILE-SURFACE must have: a proper list of
+strings. Used both to reject a malformed WIDEN-SURFACE call at the
+transition boundary and, from invariants.lisp, to check the same shape holds
+at every point of a replayed trajectory (a raw event bypasses the
+transition's check)."
+  (and (listp surface) (every #'stringp surface)))
 
 (defstruct (model-state (:constructor make-model-state (dag node-states events)))
   "The full reference-model state: the immutable DAG, the current NODE-STATES
@@ -61,7 +79,7 @@ fold over EVENTS — see REPLAY — never a store consulted independently of it.
   "The state of a freshly-constructed campaign over DAG: every node :queued,
 phase 0, no deposit, an empty event log."
   (make-model-state dag
-                     (mapcar (lambda (spec) (make-node-state (dag-node-id spec) :queued 0 nil))
+                     (mapcar (lambda (spec) (make-node-state (dag-node-id spec) :queued 0 nil nil))
                              (dag-node-specs dag))
                      nil))
 
@@ -108,28 +126,40 @@ DAG: that is a malformed log, not a legal-domain rejection."
         state
         (ecase kind
           (:dispatched
-           (make-node-state id :dispatched (node-state-phase ns) (node-state-deposit ns)))
+           (make-node-state id :dispatched (node-state-phase ns) (node-state-deposit ns)
+                             (node-state-file-surface ns)))
           (:landed
            (make-node-state id :landed (node-state-phase ns)
-                             (make-deposit :pending :gated (node-state-phase ns))))
+                             (make-deposit :pending :gated (node-state-phase ns))
+                             (node-state-file-surface ns)))
           (:gate-checked
            (let ((phase (1+ (node-state-phase ns))))
              (if (eq arg :pass)
-                 (make-node-state id :proven phase (make-deposit :proven :gated phase))
-                 (make-node-state id :rework phase (make-deposit :failed :gated phase)))))
+                 (make-node-state id :proven phase (make-deposit :proven :gated phase)
+                                   (node-state-file-surface ns))
+                 (make-node-state id :rework phase (make-deposit :failed :gated phase)
+                                   (node-state-file-surface ns)))))
           (:quarantined
            (let ((phase (1+ (node-state-phase ns))))
-             (make-node-state id :quarantined phase (make-deposit :pending :degraded phase))))
+             (make-node-state id :quarantined phase (make-deposit :pending :degraded phase)
+                               (node-state-file-surface ns))))
           (:discharged
            (let ((phase (1+ (node-state-phase ns)))
                  (mode (deposit-gate-mode (node-state-deposit ns))))
              (if (eq arg :pass)
-                 (make-node-state id :proven phase (make-deposit :proven mode phase))
-                 (make-node-state id :rework phase (make-deposit :failed mode phase)))))
+                 (make-node-state id :proven phase (make-deposit :proven mode phase)
+                                   (node-state-file-surface ns))
+                 (make-node-state id :rework phase (make-deposit :failed mode phase)
+                                   (node-state-file-surface ns)))))
           (:skipped
-           (make-node-state id :skipped (node-state-phase ns) (node-state-deposit ns)))
+           (make-node-state id :skipped (node-state-phase ns) (node-state-deposit ns)
+                             (node-state-file-surface ns)))
           (:escalated
-           (make-node-state id :escalated (node-state-phase ns) (node-state-deposit ns)))))
+           (make-node-state id :escalated (node-state-phase ns) (node-state-deposit ns)
+                             (node-state-file-surface ns)))
+          (:surface-widened
+           (make-node-state id (node-state-status ns) (node-state-phase ns)
+                             (node-state-deposit ns) arg))))
        event))))
 
 (defun replay (dag events)
@@ -215,3 +245,24 @@ was never :proven). Illegal once terminal (:proven/:skipped/:escalated)."
   (if (member (node-state-status ns) '(:proven :skipped :escalated))
       (values :rejected :already-terminal)
       (list :escalated id)))
+
+(define-transition widen-surface (state id new-surface)
+  "Widen ID's FILE-SURFACE — a plan-amendment governance event, legal from
+any non-terminal status (mirrors SKIP/ESCALATE's terminal exclusion; a
+node's plan-level work is over once :proven/:skipped/:escalated, so its
+surface has nothing left to widen for). NEW-SURFACE is unioned with ID's
+current file-surface here, before the event is emitted, so any call through
+this API is monotonic by construction — decision: widening is enforced
+transition-side (the simpler option, mirroring how PHASE's (1+ ...) is
+computed once here rather than re-validated by every caller), not merely
+left to the invariant. A raw event bypassing this transition (as REPLAY
+would apply against a real runtime's logged journal) is NOT protected by
+this union — that residual risk is exactly what INVARIANT 5
+(SURFACE-MONOTONIC-P, invariants.lisp) exists to catch."
+  (cond
+    ((member (node-state-status ns) '(:proven :skipped :escalated))
+     (values :rejected :already-terminal))
+    ((not (%well-formed-surface-p new-surface))
+     (values :rejected :invalid-surface))
+    (t (list :surface-widened id
+             (union (node-state-file-surface ns) new-surface :test #'string=)))))
