@@ -79,6 +79,35 @@ invariant held, rather than merely assuming it."
     (every (lambda (state) (equal ids (dag-node-ids (model-state-dag state))))
            (%trajectory dag events))))
 
+(defun %monotonic-widening-p (surfaces)
+  "True if SURFACES (oldest first) never shrinks step to step, under
+STRING= set inclusion. Recursive rather than a LOOP destructuring pattern —
+easier to read as \"empty or single is trivially fine; otherwise the first
+two must nest, and the rest of the tail must hold too.\""
+  (or (null surfaces)
+      (null (rest surfaces))
+      (and (subsetp (first surfaces) (second surfaces) :test #'string=)
+           (%monotonic-widening-p (rest surfaces)))))
+
+(defun surface-monotonic-p (dag events)
+  "INVARIANT 5 — plan-surface monotonicity: a node's FILE-SURFACE is
+well-formed (a proper list of strings) and never shrinks across the
+trajectory. Closes the blind spot DAG-PRESERVED-P leaves open — that
+predicate compares only the DAG's node-id set, not any other NODE-STATE
+field — for exactly the same conformance-seam reason TAMPER-EVIDENT-P checks
+phase-adjacent tampering: WIDEN-SURFACE's own union-before-emit makes
+widening monotonic BY CONSTRUCTION on the safe API path, but a raw event
+(e.g. a real runtime's logged journal, replayed here) is not constrained by
+that transition-side check, so this must verify the property against the
+log directly rather than assume it."
+  (let ((states (%trajectory dag events)))
+    (every (lambda (id)
+             (let ((surfaces (mapcar (lambda (s) (node-state-file-surface (find-node-state s id)))
+                                     states)))
+               (and (every #'%well-formed-surface-p surfaces)
+                    (%monotonic-widening-p surfaces))))
+           (dag-node-ids dag))))
+
 (defun schedule-correct-p (dag events)
   "INVARIANT 4b — DAG soundness (schedule half): a node runs only after its
 dependencies are proven. Checked against the log alone: for every
