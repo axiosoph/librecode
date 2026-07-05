@@ -132,7 +132,7 @@ Recursively coerces plists and alists into hash-tables so they serialize to JSON
     (error () nil)))
 
 (defun init-db (db)
-  "Initialize the 10 SQLite database tables and indices on the DB connection."
+  "Initialize the 7 SQLite database tables and indices on the DB connection."
   ;; 1. event_log
   (sqlite:execute-non-query db
     "CREATE TABLE IF NOT EXISTS event_log (
@@ -204,53 +204,7 @@ Recursively coerces plists and alists into hash-tables so they serialize to JSON
         FOREIGN KEY(session_id) REFERENCES session_state(session_id) ON DELETE CASCADE
     );")
 
-  ;; 7. deposits
-  (sqlite:execute-non-query db
-    "CREATE TABLE IF NOT EXISTS deposits (
-        id TEXT PRIMARY KEY,
-        step TEXT NOT NULL,
-        evidence TEXT NOT NULL CHECK(length(evidence) > 0),
-        created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
-    );")
-
-  ;; 8. deposit_cites
-  (sqlite:execute-non-query db
-    "CREATE TABLE IF NOT EXISTS deposit_cites (
-        deposit_id TEXT NOT NULL,
-        path TEXT NOT NULL,
-        PRIMARY KEY (deposit_id, path),
-        FOREIGN KEY (deposit_id) REFERENCES deposits(id) ON DELETE CASCADE
-    );")
-
-  ;; 9. deposit_refs
-  (sqlite:execute-non-query db
-    "CREATE TABLE IF NOT EXISTS deposit_refs (
-        source_id TEXT NOT NULL,
-        target_id TEXT NOT NULL,
-        ref_type TEXT NOT NULL,
-        PRIMARY KEY (source_id, target_id, ref_type),
-        FOREIGN KEY (source_id) REFERENCES deposits(id) ON DELETE CASCADE,
-        FOREIGN KEY (target_id) REFERENCES deposits(id) ON DELETE CASCADE
-    );")
-
-  ;; 10. findings
-  (sqlite:execute-non-query db
-    "CREATE TABLE IF NOT EXISTS findings (
-        id TEXT PRIMARY KEY,
-        session_id TEXT NOT NULL,
-        rule_id TEXT,
-        status TEXT NOT NULL CHECK(status IN ('open', 'resolved')),
-        evaluator TEXT,
-        resolved_at INTEGER,
-        resolution_deposit_id TEXT,
-        FOREIGN KEY(id) REFERENCES deposits(id) ON DELETE CASCADE,
-        FOREIGN KEY(session_id) REFERENCES session_state(session_id) ON DELETE CASCADE,
-        FOREIGN KEY(resolution_deposit_id) REFERENCES deposits(id) ON DELETE SET NULL
-    );")
-  (sqlite:execute-non-query db
-    "CREATE INDEX IF NOT EXISTS idx_findings_session ON findings(session_id);")
-
-  ;; 11. session_provider_config
+  ;; 7. session_provider_config
   (sqlite:execute-non-query db
     "CREATE TABLE IF NOT EXISTS session_provider_config (
         session_id TEXT PRIMARY KEY,
