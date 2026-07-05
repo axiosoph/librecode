@@ -253,6 +253,43 @@ because **A, D, and I all sit on it** and it is currently implicit.
   the phase never advances past a pending gate (proof advancement deferred, never retracted),
   failed discharge reverts to rework; recorded, never silent. **Non-terminating contracts are
   a bounded-timeout FAIL**, never a pass or a third state.
+- **The gate-harness contract protocol — boundary design ratified 2026-07-05** (full record:
+  `.scratch/campaign-6-one-calculus/gate-harness-protocol-proposal-2026-07-05.md`).
+  Implementation is J's own scope, not pulled forward into campaign 6; this fixes its shape.
+  - **Vocabulary corrected.** Deposit (data) ≠ contract (the Nickel checker) ≠ verdict (a
+    checker's output). `src/model`'s `deposit` struct is a mis-named verdict; the rename to
+    `verdict` is mechanical and deferred to J itself, bundled with introducing the real
+    deposit-*data* artifact. Both the work-product deposit and its contract are currently
+    missing — J authors both fresh, in a new librecode-owned `.ledger/contracts/`, since
+    predicate's own `deposit.ncl` checks process-provenance, not code-content acceptance.
+  - **The DAG is two-tiered**, the same pattern as the deposit gate below. `src/model/dag.lisp`
+    (`make-dag`/`dag-layers`) becomes the **load-bearing Tier-1 structural authority** — always
+    available, no Nickel dependency, validating id-uniqueness/referential-integrity/acyclicity
+    and computing the real Kahn layering — and *is* the runtime scheduler once wired
+    (`librecode-meta` gains a `librecode-model` dependency edge; `campaign.lisp`'s ad-hoc third
+    Kahn, `compute-kahn-layers`, is cut with no fallback). Nickel's `Dag`/`DagNoConflict` become
+    **optional Tier-2 enrichment** — concurrent-surface conflict-freedom and discipline
+    validation — never a hard dependency for DAG correctness at charter *or* mid-campaign
+    amendment (amendment is the norm here, not an edge case). A degraded amendment (Nickel
+    absent) lands structurally-quarantined once Tier 1 clears; the composer serializes the
+    affected concurrent nodes until Tier 2 discharges.
+  - **The deposit gate stays a bare keyword in** (`gate-check`/`discharge` still take
+    `:pass`/`:fail`/`:timeout`; `src/model` stays dependency-free) **but a structured verdict
+    out**: the deposit contract attaches a normalized deposit, the gate-derived effective phase
+    (§7's typestate override), and the durable checked view, which `campaign.lisp` routes
+    five ways (pass-and-merge / fail-or-timeout-to-rework / checker-absent-quarantine /
+    later discharge-pass / discharge-fail).
+  - **Degradation is uniform** across both the DAG and deposits: a Lisp-native Tier-1
+    structural floor is always load-bearing; the Nickel Tier-2 semantic layer defers
+    gracefully rather than blocking. Nothing is a hard-Nickel precondition anywhere.
+  - **Concrete file-level deltas J will make:** add `librecode-model` to
+    `librecode-meta.asd`'s `depends-on`; route `campaign.lisp`'s scheduler through
+    `librecode-model:make-dag`/`dag-layers` and delete `compute-kahn-layers` (no fallback);
+    author `.ledger/contracts/deposit.ncl`; keep `dag.ncl`'s `Dag`/`DagNoConflict` as the
+    Tier-2 gate, carrying the conflict-freedom verdict rather than the layering; give
+    `gate.lisp` a deposit-gate entry point returning `(values result stdout stderr)` with
+    checker-absent distinct from contract-violation; rename
+    `src/model/state-machine.lisp`'s `deposit` struct to `verdict`.
 - Relationships: **A** authors the immutable-core contracts on this; **D**'s actuator commits
   refinements to the basins; **I**'s assent engine is contracts over it.
 
