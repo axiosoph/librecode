@@ -17,6 +17,8 @@
   (dependencies nil :type list)        ; List of parent node IDs
   (sequential-p nil :type boolean)     ; Must run sequentially, cannot be parallelized
   (status :pending :type keyword)      ; :pending, :dispatched, :landed, :accepted, :rework, :skipped
+  (phase 0 :type (integer 0))          ; librecode-model deposit phase, threaded from the journal fold
+  (deposit nil)                        ; librecode-model deposit struct (or nil, never landed), threaded from the fold
   (harness-type nil :type symbol)      ; Class name of harness (e.g., 'harness-opencode)
   (harness-instance nil)               ; Reference to the active CLOS harness-instance
   (ibc nil :type (or null string)))    ; Initial Boundary Condition text (instructions/goals)
@@ -505,7 +507,14 @@ or if any dependency is unresolved."
     (when (and journal-path (probe-file journal-path))
       (multiple-value-bind (replayed-dag last-valid-pos)
           (replay-journal journal-path dag)
-        (declare (ignore replayed-dag))
+        ;; REPLAY-JOURNAL mutates and returns DAG's own identity (topology
+        ;; fields are never touched, only status/phase/deposit/file-surface
+        ;; are folded onto it in place) — thread that forward explicitly
+        ;; rather than silently discarding it, so a future change to
+        ;; REPLAY-JOURNAL's threading contract fails loudly instead of
+        ;; leaving callers reading stale state (p4-discarded-fold).
+        (assert (eq replayed-dag dag) ()
+                "replay-journal must mutate and return DAG's own identity, not a copy")
         #+sbcl
         (sb-posix:truncate (namestring journal-path) last-valid-pos)
         #-sbcl
@@ -529,7 +538,6 @@ or if any dependency is unresolved."
                                           layer-nodes
                                           :key #'campaign-node-status)))
           (when eligible-nodes
-            (safe-write-journal-entry campaign journal-stream (list :layer-advanced layer-idx))
             (let ((batches (group-nodes-for-scheduling eligible-nodes)))
               (dolist (batch batches)
                 (execute-node-batch campaign batch journal-stream))))))))
