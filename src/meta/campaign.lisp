@@ -531,7 +531,6 @@ or if any dependency is unresolved."
                                           layer-nodes
                                           :key #'campaign-node-status)))
           (when eligible-nodes
-            (safe-write-journal-entry campaign journal-stream (list :layer-advanced layer-idx))
             (let ((batches (group-nodes-for-scheduling eligible-nodes)))
               (dolist (batch batches)
                 (execute-node-batch campaign batch journal-stream))))))))
