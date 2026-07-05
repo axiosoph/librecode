@@ -216,30 +216,55 @@ because **A, D, and I all sit on it** and it is currently implicit.
 - Relationships: **A** authors the immutable-core contracts on this; **D**'s actuator commits
   refinements to the basins; **I**'s assent engine is contracts over it.
 
-### K · [PROPOSED, pending architect ratification] The harness supervision contract & the one-event calculus
+### K · The harness supervision contract & the one-event calculus *(ratified 2026-07-05; precedes J)*
 Surfaced by the 2026-07-01 invalidation review (full record:
-`.scratch/invalidation-dialectic-2026-07-01.md`); **not yet a committed workstream** — this
-entry exists so it is sequenced and cited, not lost. Requires an architect-grade pass and
-human ratification before any code moves (boundary-design scale: it reshapes both
-systems' event spines).
+`.scratch/invalidation-dialectic-2026-07-01.md`); ratified by the 2026-07-05
+architect pass with the scoping below. Implementation is its own (small) campaign,
+chartered separately — this entry fixes its boundary.
 
 Two artifacts:
 - **The harness-side supervision contract** — the hooks a walker must expose to be
   governable (freeze mid-turn, offer a restart, resume in place, deposit emission,
   trajectory transparency), formalized independently of any one runner. Other harnesses
-  would eventually implement *this*, not the runner.
-- **One event calculus.** Route runtime transitions through the model's `transition-event`
-  directly (functional core / imperative shell) so conformance holds by construction, not
-  by later testing. Unify the runner's SQLite event store and the metaharness's s-expr
-  journal at the vocabulary/fold level — one calculus, multiple projections. Reify
-  supervision as conditions/restarts advertised over the wire — a frozen walk offers
+  would eventually implement *this*, not the runner. Supervision is reified as
+  conditions/restarts advertised over the wire — a frozen walk offers
   `(condition . available-restarts)`; the supervisor selects; harness capability becomes
   simply its restart set (`{redispatch}` for a thin adapter; the full ladder for a fully
-  cooperative one) — KU9 capability discovery falls out of this for free.
+  cooperative one) — KU9 capability discovery falls out of this for free. The *contract*
+  is committed; the *depth* of the restart ladder built into the runner is scoped by B's
+  forgebot baseline — a negative baseline result shrinks the ladder investment, never
+  the contract.
+- **One event calculus — one *calculus*, not one *log*.** The model's event vocabulary
+  (`transition-event`/`replay`, `src/model/`) is the single governance calculus: runtime
+  transitions on both sides route through it directly (functional core / imperative
+  shell), so conformance holds by construction and the four crown-jewel invariants run
+  as boot gates — a replay that violates them refuses to resume. Two granularities stay
+  separate by design: the meta journal becomes a *storage backend* for calculus events
+  (its private fold in `apply-journal-entry` replaced by the model's), while the
+  runner's session event log (turns, compaction, provider config) remains
+  *walk-interior* — below the governance boundary, its own event-sourced system.
+  What changes runner-side: governance-relevant moments (deposit emission, gate
+  outcomes, a raised condition) become emissions *into* the calculus rather than a
+  private dialect. This resolves the review's open sub-question — the SQLite store
+  survives as the walk-interior log, not as a projection of the calculus; "journal +
+  projections" is the answer at the governance level only. (The runner's
+  `deposits`/`deposit_cites`/`deposit_refs`/`findings` tables are schema-only — no
+  writer exists anywhere in `src/` — and are cut; durable deposit views, where wanted,
+  are projections of calculus events.)
 
-**Sequencing, if ratified:** precedes J — the contract substrate wants to sit on the
-unified event spine, not a fourth event dialect. Timely while the shared code surface with
-opencode stays small.
+**In-scope design work (named, not resolved here):** reconciling the journal dialect
+with the calculus — `:node-accepted` ≈ `:gate-checked :pass`; `:node-rework` carries an
+IBC payload the calculus's rework outcome does not; `:surface-widened` mutates the DAG
+the model holds immutable, so the calculus needs a distinct plan-amendment event class
+(mirroring the `dag-amendment` decision-type) or surface-widening folds into rework;
+`:layer-advanced` is derivable from the DAG and statuses (cut candidate). The live-image
+joint (REPL/SLIME attach to frozen walks; supervisor as a long-lived image
+reconstructing from the journal) is ratified as direction, sequenced last within K.
+
+**Sequencing:** precedes J — the contract substrate wants to sit on the unified event
+spine, not a fourth event dialect. Timely now: the governance vocabulary has exactly one
+live implementation (the meta journal) plus the reference model, so the unification
+surface is at its smallest.
 
 ---
 
@@ -259,7 +284,7 @@ regressed proven invariant is always first), and the exact interleave of I with 
 maintainer decision.
 **E / F / G** (heterogeneity, TUI, opencode seam compat) are the broadening surface,
 deliberately after the core is stable per §8 — and G's seam work comes only after H's
-bounded floor. **K** (proposed) would, if ratified, precede J for the same reason J
+bounded floor. **K** (ratified 2026-07-05) precedes J for the same reason J
 precedes A, D, and I: the contract substrate wants to sit on the unified event spine.
 
 ## Immediate next
@@ -270,6 +295,7 @@ precedes A, D, and I: the contract substrate wants to sit on the unified event s
 2. **Next:** wire `harness-opencode` for real (E, pulled forward — derisks H and is the
    heterogeneity play in one move); the **contract substrate (J)** and H (**runner
    capability floor**) toward A (**formalize stable**); C (memory) sequenced early on J.
-3. **A maintainer decision, not yet made:** whether to run the architect-grade pass on
-   proposed workstream K (harness supervision contract + one-event calculus) — if
-   ratified, it precedes J.
+3. **Decided (2026-07-05):** workstream K is ratified (see K) — the one-calculus
+   rearchitecture precedes J. Its implementation campaign is chartered separately; the
+   evidence track (G's prior-art sweep, the forgebot baseline and cross-model probe in
+   B/E) runs in parallel, needing nothing from K's spine.

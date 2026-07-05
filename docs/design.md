@@ -274,9 +274,10 @@ spot-check), and confident-fast-agreement on novel work routes **to the human**.
   the metaharness is an *optional* consumer, and the runner depends on nothing), and how
   extensible opencode already is. **[→ roadmap G; open prior-art unknown.]**
 - **The harness supervision contract + one-event calculus** — reifying supervision as
-  conditions/restarts advertised over the wire, and unifying the runner's event store with
-  the meta journal at the vocabulary/fold level. Proposed, not committed — requires
-  architect ratification before design work proceeds. **[→ roadmap K (proposed).]**
+  conditions/restarts advertised over the wire, and unifying the two event spines at the
+  governance level. Ratified 2026-07-05: one governance *calculus* (the model's
+  vocabulary), not one *log* — the runner's session event log stays walk-interior;
+  scope, contingencies, and the named open design items live in roadmap K. **[→ roadmap K.]**
 
 ---
 
