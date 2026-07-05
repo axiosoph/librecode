@@ -159,7 +159,7 @@ The implementation of `librecode` is divided into key modules, each documented e
   * **Common Lisp Developer Guidance**: Style constraints, approved library dependencies, and dynamic binding/restarts guidelines.
 
 * **[model.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/model.md)**
-  * **The Reference State Machine (roadmap A/J)**: The pure applicative DAG/phase/deposit/gate model, its four crown-jewel invariants, the three decided degraded-mode edge cases, and the conformance seam to the runtime.
+  * **The Reference State Machine (roadmap A/J)**: The pure applicative DAG/phase/deposit/gate model, its five crown-jewel invariants, the three decided degraded-mode edge cases, and the conformance seam to the runtime.
 
 ## Invariants
 
@@ -240,7 +240,7 @@ src/
     packages.lisp              — the librecode-model package
     dag.lisp                   — work DAG: validity, Kahn layering
     state-machine.lisp         — node status/phase/deposit, transitions, event log, replay
-    invariants.lisp            — the four crown-jewel invariants as pure predicates
+    invariants.lisp            — the five crown-jewel invariants as pure predicates
 ```
 
 ### Dependency Edges (load order)
