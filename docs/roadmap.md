@@ -314,7 +314,7 @@ Two artifacts:
 - **One event calculus — one *calculus*, not one *log*.** The model's event vocabulary
   (`transition-event`/`replay`, `src/model/`) is the single governance calculus: runtime
   transitions on both sides route through it directly (functional core / imperative
-  shell), so conformance holds by construction and the four crown-jewel invariants run
+  shell), so conformance holds by construction and the five crown-jewel invariants run
   as boot gates — a replay that violates them refuses to resume. Two granularities stay
   separate by design: the meta journal becomes a *storage backend* for calculus events
   (its private fold in `apply-journal-entry` replaced by the model's), while the
@@ -378,7 +378,7 @@ surfaced only where judgment is needed, a merged auditable branch out. Graduatio
 The sequence — four campaigns, two design passes:
 1. **Campaign 6 — K, the kernel.** Journal fold routed through `transition-event`,
    vocabulary reconciliation (the plan-amendment event class is the one open design
-   decision), the four invariants as boot gates on replay, the dead-table cut, and the
+   decision), the five invariants as boot gates on replay, the dead-table cut, and the
    supervision-contract artifact with the minimal restart ladder. ~2 layers, ~6 nodes.
 2. **Campaign 7 — the capable harness.** `harness-opencode` on the proven HTTP+SSE
    surface (acceptance criteria in E) plus provider auth (B). Daily use does **not**
