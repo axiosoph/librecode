@@ -253,3 +253,25 @@ raw thread-kill fired: under bt:destroy-thread it would never set thread-finishe
     ;; on its own. A raw bt:destroy-thread would leave thread-finished NIL forever.
     (sleep 1.3)
     (is-true thread-finished)))
+
+(test test-async-execution-timeout-condition-slots
+  "TOOL-TIMEOUT must carry accurate tool-id/duration/message slots at the real
+timeout site, not just be signaled as the right condition type."
+  (let ((tool (make-instance 'tool
+                             :name "slot-check-tool"
+                             :description "Desc"
+                             :parameters nil
+                             :capabilities nil
+                             :handler (lambda (args)
+                                        (declare (ignore args))
+                                        (sleep 1.0)
+                                        "done"))))
+    (handler-case
+        (progn
+          (execute-tool-async tool nil :timeout 0.2)
+          (fail "Expected TOOL-TIMEOUT to be signaled"))
+      (tool-timeout (c)
+        (is (equal "slot-check-tool" (tool-timeout-tool-id c)))
+        (is (= 0.2 (tool-timeout-duration c)))
+        (is (search "slot-check-tool" (tool-timeout-message c)))
+        (is (search "0.2" (tool-timeout-message c)))))))

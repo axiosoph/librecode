@@ -327,11 +327,12 @@ Only deserializes known custom conditions or simple-conditions directly; other t
 
 (defun failure-relay (supervisor-mailbox reply-mbox descriptor &key recovery-menu apply-choice message-factory)
   "Signal a failure DESCRIPTOR to a supervising mailbox, block preserving the failing context,
-and receive a recovery choice from REPLY-MBOX. Returns (values success-p choice)."
-  (declare (ignore recovery-menu))
+and receive a recovery choice from REPLY-MBOX. Returns (values success-p choice).
+RECOVERY-MENU is serialized alongside DESCRIPTOR into the outgoing message (an
+additive field) so the supervisor learns which restarts are actually available."
   (let ((message (if message-factory
-                     (funcall message-factory descriptor reply-mbox)
-                     (list :failure descriptor reply-mbox))))
+                     (funcall message-factory descriptor reply-mbox recovery-menu)
+                     (list :failure descriptor reply-mbox recovery-menu))))
     (send-message supervisor-mailbox message)
     (let ((reply (receive-message reply-mbox)))
       (cond
