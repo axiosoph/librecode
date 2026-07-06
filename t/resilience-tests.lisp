@@ -362,6 +362,90 @@ unsupervised path."
             (hunchentoot:stop acceptor)
             (setf hunchentoot:*dispatch-table* (delete dispatcher hunchentoot:*dispatch-table*))))))))
 
+(test test-tool-timeout-unsupervised-continues-session
+  "Verify that a tool call given NO explicit :timeout argument is still bounded
+by *default-tool-timeout* on the live path -- driving the real pipeline
+execute-provider-turn -> execute-parallel-tools -> run-tool-worker, not just
+execute-tool-async in isolation -- and settles as a role:tool tool-timeout
+error while the (default, unsupervised) session continues, rather than hanging
+forever. This is the exact gap named F19: only bash, and only when the model
+supplied its own :timeout, was ever bounded before this fix."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (librecode-test.event-store::with-test-db (db dir)
+      (let* ((session-id "sess-tool-timeout-unsupervised")
+             (port (get-free-port))
+             (acceptor (make-instance 'hunchentoot:easy-acceptor :port port))
+             (test-registry (make-instance 'tool-registry))
+             (mock-tool (make-instance 'tool
+                                       :name "mock_slow_tool"
+                                       :description "Tool that sleeps far past the test's bounded default timeout"
+                                       :parameters nil
+                                       :capabilities nil
+                                       :handler (lambda (args)
+                                                  (declare (ignore args))
+                                                  (sleep 5)
+                                                  "should never settle -- timeout must win the race")))
+             (dispatcher (lambda (request)
+                           (when (equal (hunchentoot:script-name request) "/stream")
+                             (lambda ()
+                               (setf (hunchentoot:content-type*) "text/event-stream")
+                               (let ((stream (hunchentoot:send-headers))
+                                     ;; No :timeout key in the tool-call arguments -- the
+                                     ;; default-floor path is what this test exercises.
+                                     (tool-call-payload "{\"id\": \"call-slow-1\", \"type\": \"function\", \"function\": {\"name\": \"mock_slow_tool\", \"arguments\": \"{}\"}}"))
+                                 (write-sequence (flexi-streams:string-to-octets
+                                                  (format nil "data: {\"choices\": [{\"delta\": {\"tool_calls\": [~A]}}]}~%" tool-call-payload)
+                                                  :external-format :utf-8)
+                                                 stream)
+                                 (write-sequence (flexi-streams:string-to-octets
+                                                  (format nil "data: [DONE]~%")
+                                                  :external-format :utf-8)
+                                                 stream)
+                                 (force-output stream)
+                                 ""))))))
+        (register-tool test-registry mock-tool)
+        (sqlite:execute-non-query db
+          "INSERT INTO session_state (session_id, agent_id, version, status, last_updated)
+           VALUES (?, ?, 1, 'active', ?)"
+          session-id "agent-1" (librecode-runner.event-store::current-timestamp-ms))
+        (sqlite:execute-non-query db
+          "INSERT INTO permission_saved (project_id, action, resource, effect, timestamp)
+           VALUES ('default', 'execute_tool', 'mock_slow_tool', 'allow', 123456)")
+        (push dispatcher hunchentoot:*dispatch-table*)
+        (unwind-protect
+             (progn
+               (hunchentoot:start acceptor)
+               (let ((librecode-runner.runner::*provider-url* (format nil "http://127.0.0.1:~A/stream" port))
+                     (librecode-runner.runner::*tool-registry* test-registry)
+                     (librecode-runner.protocol::*session-mailbox* (librecode-runner.protocol:make-mailbox))
+                     ;; Mutate the global default (not a dynamic LET) -- RUN-TOOL-WORKER
+                     ;; executes in a spawned thread that does not inherit this test
+                     ;; thread's dynamic bindings, only the special var's global value.
+                     (saved-default librecode-runner.tool:*default-tool-timeout*))
+                 (unwind-protect
+                      (progn
+                        (setf librecode-runner.tool:*default-tool-timeout* 0.3)
+                        (let ((continuation-result (execute-provider-turn session-id "mock-provider" "mock-model")))
+                          (is (eq t continuation-result)))
+                        (let ((content (sqlite:execute-single db "SELECT content FROM session_history WHERE role = 'tool'")))
+                          (is (not (null content)))
+                          (is (search "Tool Timeout" content))
+                          (is (search "mock_slow_tool" content))))
+                   (setf librecode-runner.tool:*default-tool-timeout* saved-default))))
+          (progn
+            (hunchentoot:stop acceptor)
+            (setf hunchentoot:*dispatch-table* (delete dispatcher hunchentoot:*dispatch-table*))))))))
+
+;; NOTE: no supervised-mode equivalent of
+;; test-tool-timeout-unsupervised-continues-session exists here yet. Wiring
+;; EXECUTE-TOOL-ASYNC into the supervised branch of RUN-TOOL-WORKER was
+;; attempted and reverted -- it breaks WITH-FAILURE-RELAY's no-stack-unwind
+;; guarantee (TEST-NO-UNWIND-HANDSHAKE above), because EXECUTE-TOOL-ASYNC
+;; relays its outcome by re-signaling in the caller's thread rather than
+;; resolving the condition on the tool handler's own original stack. See the
+;; P9 handoff report for the full conflict and reconsideration options; this
+;; is a reported gap, not a silent omission.
+
 (test test-tool-malformed-json-args-validation-error
   "Malformed tool-argument JSON must yield a validation-error tool result -- the
 handler must never be invoked with silently-nil args in its place."

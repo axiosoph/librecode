@@ -184,6 +184,7 @@
            #:materialize-tools
            #:execute-tool
            #:execute-tool-async
+           #:*default-tool-timeout*
            #:deep-merge-plists
            #:*active-subprocesses*
            #:register-active-subprocess
