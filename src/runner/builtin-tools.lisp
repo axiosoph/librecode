@@ -161,6 +161,91 @@
         (error 'simple-error :format-control "Failed to write file ~A: ~A"
                              :format-arguments (list path c))))))
 
+(defun count-string-occurrences (content target)
+  "Count non-overlapping occurrences of the exact substring target within content.
+An empty target counts as zero -- treated as a non-match, since exact-string
+replacement against an existing file requires a concrete, non-empty search string."
+  (if (zerop (length target))
+      0
+      (loop with count = 0
+            with start = 0
+            for pos = (search target content :start2 start)
+            while pos
+            do (incf count)
+               (setf start (+ pos (length target)))
+            finally (return count))))
+
+(defun replace-string-occurrences (content old new replace-all)
+  "Replace occurrences of old with new in content.
+When replace-all is true, replaces every non-overlapping occurrence; otherwise
+replaces the single occurrence (the caller guarantees exactly one match exists)."
+  (if (not replace-all)
+      (let ((pos (search old content)))
+        (concatenate 'string (subseq content 0 pos) new (subseq content (+ pos (length old)))))
+      (with-output-to-string (out)
+        (loop with start = 0
+              for pos = (search old content :start2 start)
+              while pos
+              do (write-string content out :start start :end pos)
+                 (write-string new out)
+                 (setf start (+ pos (length old)))
+              finally (write-string content out :start start)))))
+
+(defun handle-edit (args)
+  "Perform an exact-string replacement of oldString with newString within an
+existing file inside the workspace-root, sandboxed identically to
+read_file/write_file."
+  (let* ((path (getf args :filePath))
+         (old-string (getf args :oldString))
+         (new-string (getf args :newString))
+         (replace-all (getf args :replaceAll))
+         (resolved (resolve-safe-path path)))
+    (check-resource-permission "edit" (namestring resolved))
+    (when (librecode-runner.tool:tool-cancelled-p)
+      (error "Tool execution was cancelled."))
+    (when (string= old-string new-string)
+      (error 'simple-error
+             :format-control "No changes to apply: oldString and newString are identical for ~A."
+             :format-arguments (list path)))
+    (unless (probe-file resolved)
+      (error 'simple-error
+             :format-control "File not found: ~A"
+             :format-arguments (list path)))
+    (let ((content (handler-case
+                        (read-file-with-limit resolved path)
+                      (error (c)
+                        (error 'simple-error :format-control "Failed to read file ~A for editing: ~A"
+                                             :format-arguments (list path c))))))
+      (let ((count (count-string-occurrences content old-string)))
+        (cond
+          ((zerop count)
+           (error 'simple-error
+                  :format-control "Could not find oldString in ~A; it must match the file content exactly, including whitespace and line endings."
+                  :format-arguments (list path)))
+          ((and (> count 1) (not replace-all))
+           (error 'simple-error
+                  :format-control "Found ~D matches for oldString in ~A; provide more surrounding context to make the match unique, or pass replaceAll: true."
+                  :format-arguments (list count path)))
+          (t
+           (let ((new-content (replace-string-occurrences content old-string new-string replace-all)))
+             (when (> (length new-content) (* 10 1024 1024))
+               (error 'simple-error
+                      :format-control "Resulting content size ~D characters exceeds 10MB limit for ~A."
+                      :format-arguments (list (length new-content) path)))
+             (handler-case
+                 (progn
+                   (with-open-file (stream resolved
+                                           :direction :output
+                                           :if-exists :supersede
+                                           :if-does-not-exist :error
+                                           :element-type 'character
+                                           :external-format :utf-8)
+                     (write-sequence new-content stream))
+                   (format nil "Edit applied successfully to ~A (~D replacement~:P)." path count))
+               (error (c)
+                 (error 'simple-error :format-control "Failed to write edited file ~A: ~A"
+                                      :format-arguments (list path c)))))))))))
+
 (defun handle-bash (args)
   "Execute a shell command inside the workspace-root and return combined stdout/stderr."
   (let* ((command (getf args :command))
@@ -227,11 +312,25 @@
                  :capabilities nil
                  :handler #'handle-bash))
 
+(defparameter edit-tool
+  (make-instance 'librecode-runner.tool:tool
+                 :name "edit"
+                 :description "Perform an exact-string replacement within an existing file in the workspace."
+                 :parameters '(:type "object"
+                               :properties (:filePath (:type "string" :description "Relative path of the file to edit.")
+                                            :oldString (:type "string" :description "The exact text to replace.")
+                                            :newString (:type "string" :description "The text to replace it with; must differ from oldString.")
+                                            :replaceAll (:type "boolean" :description "Replace all occurrences of oldString (default false)."))
+                               :required #(:filePath :oldString :newString))
+                 :capabilities nil
+                 :handler #'handle-edit))
+
 (defun register-builtin-tools (registry)
-  "Register the built-in tools (read_file, write_file, and bash) in the given registry."
+  "Register the built-in tools (read_file, write_file, bash, and edit) in the given registry."
   (librecode-runner.tool:register-tool registry read-file-tool)
   (librecode-runner.tool:register-tool registry write-file-tool)
   (librecode-runner.tool:register-tool registry bash-tool)
+  (librecode-runner.tool:register-tool registry edit-tool)
   registry)
 
 ;; Automatically register into default tool registry
