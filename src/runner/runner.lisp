@@ -17,6 +17,12 @@
 (defvar *worker-marker* nil
   "Dynamic marker to verify stack preservation during worker restart invocation.")
 
+(defvar *last-skip-preserved-stack-p* nil
+  "Internal, test-only proof that a supervised skip-and-continue restart ran
+without unwinding the failing worker's stack -- set from *worker-marker*'s
+value as observed at the restart's invocation site. Never surfaced as tool
+output; inspect via the internal symbol from tests only.")
+
 (defun get-latest-epoch-baseline (session-id)
   "Retrieve the latest baseline text from context_epoch read projection."
   (when (and (boundp 'librecode-runner.event-store:*db*)
@@ -249,6 +255,74 @@
        VALUES (?, ?, 'tool', ?, ?)"
       (format nil "tool-~A-~A" call-id (random 100000)) session-id content now)))
 
+(defun parse-tool-arguments (arguments-str)
+  "Parse ARGUMENTS-STR (a JSON object string) into a keyword plist.
+Signals an error if the JSON is malformed; a well-formed non-object JSON
+value yields NIL args (an empty plist), not a parse error."
+  (let ((parsed (com.inuoe.jzon:parse (strip-jsonc-comments arguments-str))))
+    (if (hash-table-p parsed)
+        (let ((plist nil))
+          (maphash (lambda (k v)
+                     (push (intern (string-upcase k) :keyword) plist)
+                     (push v plist))
+                   parsed)
+          (nreverse plist))
+        nil)))
+
+(defun run-tool-worker (session-id call-id name tool args-plist agent worker-mbox)
+  "Execute TOOL in the current (worker) thread and relay its outcome to the
+coordinator's session mailbox. In a supervised session (*session-supervised-p*),
+an ordinary handler error is relayed through the failure-relay handshake so a
+live supervisor may choose to skip or retry it. Otherwise -- the default --
+the error settles locally as a :tool-error result and the turn continues."
+  (if librecode-runner.protocol:*session-supervised-p*
+      (loop
+        (restart-case
+            (librecode-runner.protocol:with-failure-relay
+                (librecode-runner.protocol:*session-mailbox*
+                 worker-mbox
+                 :recovery-menu '((skip-and-continue) (retry-tool))
+                 :message-factory (lambda (desc reply-mbox recovery-menu)
+                                    `(:worker-error ,call-id ,desc ,reply-mbox ,recovery-menu))
+                 :apply-choice (lambda (choice args)
+                                 (let ((restart (find-restart choice)))
+                                   (if restart
+                                       (if (eq choice 'skip-and-continue)
+                                           (let ((marker-val (and (boundp '*worker-marker*) *worker-marker*)))
+                                             (apply #'invoke-restart restart marker-val args))
+                                           (apply #'invoke-restart restart args))
+                                       (error "Restart ~A not found on worker stack" choice)))))
+              ;; Evaluate permission request at execution site
+              (librecode-runner.agent:check-permission agent "execute_tool" name)
+              (let ((res (librecode-runner.tool:execute-tool tool args-plist)))
+                (librecode-runner.protocol:send-message
+                 librecode-runner.protocol:*session-mailbox*
+                 `(:tool-success ,call-id ,res)))
+              (return))
+          (skip-and-continue (&optional marker-val)
+            :report "Skip this tool execution and continue session."
+            (setf *last-skip-preserved-stack-p* (eq marker-val :active))
+            (librecode-runner.protocol:broadcast-event session-id :tool-skipped (list :id call-id :name name))
+            (librecode-runner.protocol:send-message
+             librecode-runner.protocol:*session-mailbox*
+             `(:tool-success ,call-id "Warning: Tool execution skipped."))
+            (return))
+          (retry-tool ()
+            :report "Retry executing the tool."
+            ;; Loop back and retry
+            )))
+      (handler-case
+          (progn
+            (librecode-runner.agent:check-permission agent "execute_tool" name)
+            (let ((res (librecode-runner.tool:execute-tool tool args-plist)))
+              (librecode-runner.protocol:send-message
+               librecode-runner.protocol:*session-mailbox*
+               `(:tool-success ,call-id ,res))))
+        (serious-condition (c)
+          (librecode-runner.protocol:send-message
+           librecode-runner.protocol:*session-mailbox*
+           `(:tool-error ,call-id ,(format nil "Error: ~A" c)))))))
+
 (defun execute-parallel-tools (session-id tool-calls registry)
   "Execute multiple tool-calls concurrently. Relays results or errors back to coordinator mailbox."
   (let ((pending-calls (length tool-calls))
@@ -262,71 +336,34 @@
              (let* ((call-id (getf tc :id))
                     (name (getf tc :name))
                     (arguments-str (getf tc :arguments))
-                    (args-plist (handler-case
-                                    (let ((parsed (com.inuoe.jzon:parse (strip-jsonc-comments arguments-str))))
-                                      (if (hash-table-p parsed)
-                                          (let ((plist nil))
-                                            (maphash (lambda (k v)
-                                                       (push (intern (string-upcase k) :keyword) plist)
-                                                       (push v plist))
-                                                     parsed)
-                                            (nreverse plist))
-                                          nil))
-                                  (error () nil)))
                     (tool (bt:with-lock-held ((librecode-runner.tool::registry-lock registry))
                             (gethash name (librecode-runner.tool::registry-tools registry)))))
-               (if (not tool)
-                   (setf (gethash call-id results) (format nil "Error: Tool ~A not found" name))
-                   (let ((worker-mbox (librecode-runner.protocol:make-mailbox :name (format nil "worker-mbox-~A" call-id))))
-                     (push worker-mbox spawned-mailboxes)
-                     (librecode-runner.protocol:register-worker-mailbox session-id worker-mbox)
-                     (librecode-runner.protocol:broadcast-event session-id :tool-start (list :id call-id :name name :arguments arguments-str))
-                     (let ((thread
-                            (bt:make-thread
-                             (librecode-runner.protocol:with-session-context-captured
-                               (let ((self (bt:current-thread)))
-                                 (librecode-runner.protocol:register-worker-thread session-id self)
-                                 (unwind-protect
-                                      (loop
-                                        (restart-case
-                                            (librecode-runner.protocol:with-failure-relay
-                                                (librecode-runner.protocol:*session-mailbox*
-                                                 worker-mbox
-                                                 :recovery-menu '((skip-and-continue) (retry-tool))
-                                                 :message-factory (lambda (desc reply-mbox recovery-menu)
-                                                                    `(:worker-error ,call-id ,desc ,reply-mbox ,recovery-menu))
-                                                 :apply-choice (lambda (choice args)
-                                                                 (let ((restart (find-restart choice)))
-                                                                   (if restart
-                                                                       (if (eq choice 'skip-and-continue)
-                                                                           (let ((marker-val (and (boundp '*worker-marker*) *worker-marker*)))
-                                                                             (apply #'invoke-restart restart marker-val args))
-                                                                           (apply #'invoke-restart restart args))
-                                                                       (error "Restart ~A not found on worker stack" choice)))))
-                                              ;; Evaluate permission request at execution site
-                                              (librecode-runner.agent:check-permission agent "execute_tool" name)
-                                              (let ((res (funcall (librecode-runner.tool:tool-handler tool) args-plist)))
-                                                (librecode-runner.protocol:send-message
-                                                 librecode-runner.protocol:*session-mailbox*
-                                                 `(:tool-success ,call-id ,res)))
-                                              (return))
-                                          (skip-and-continue (&optional marker-val)
-                                            :report "Skip this tool execution and continue session."
-                                            (librecode-runner.protocol:broadcast-event session-id :tool-skipped (list :id call-id :name name))
-                                            (librecode-runner.protocol:send-message
-                                             librecode-runner.protocol:*session-mailbox*
-                                             `(:tool-success ,call-id ,(if (eq marker-val :active)
-                                                                           "Marker active! No unwind!"
-                                                                           "Warning: Tool execution skipped.")))
-                                            (return))
-                                          (retry-tool ()
-                                            :report "Retry executing the tool."
-                                            ;; Loop back and retry
-                                            )))
-                                   (librecode-runner.protocol:unregister-worker-thread session-id self)
-                                   (librecode-runner.protocol:unregister-worker-mailbox session-id worker-mbox))))
-                             :name (format nil "tool-worker-~A" name))))
-                       (push thread spawned-threads))))))
+               (multiple-value-bind (args-plist parse-condition)
+                   (handler-case
+                       (values (parse-tool-arguments arguments-str) nil)
+                     (error (c) (values nil c)))
+                 (cond
+                   ((not tool)
+                    (setf (gethash call-id results) (format nil "Error: Tool ~A not found" name)))
+                   (parse-condition
+                    (setf (gethash call-id results)
+                          (format nil "Error: malformed tool arguments JSON: ~A" parse-condition)))
+                   (t
+                    (let ((worker-mbox (librecode-runner.protocol:make-mailbox :name (format nil "worker-mbox-~A" call-id))))
+                      (push worker-mbox spawned-mailboxes)
+                      (librecode-runner.protocol:register-worker-mailbox session-id worker-mbox)
+                      (librecode-runner.protocol:broadcast-event session-id :tool-start (list :id call-id :name name :arguments arguments-str))
+                      (let ((thread
+                             (bt:make-thread
+                              (librecode-runner.protocol:with-session-context-captured
+                                (let ((self (bt:current-thread)))
+                                  (librecode-runner.protocol:register-worker-thread session-id self)
+                                  (unwind-protect
+                                       (run-tool-worker session-id call-id name tool args-plist agent worker-mbox)
+                                    (librecode-runner.protocol:unregister-worker-thread session-id self)
+                                    (librecode-runner.protocol:unregister-worker-mailbox session-id worker-mbox))))
+                              :name (format nil "tool-worker-~A" name))))
+                        (push thread spawned-threads))))))))
 
            ;; Read from unified session mailbox for all tools to settle
            (loop while (> pending-calls (hash-table-count results))
