@@ -329,10 +329,22 @@ value yields NIL args (an empty plist), not a parse error."
 
 (defun run-tool-worker (session-id call-id name tool args-plist agent worker-mbox)
   "Execute TOOL in the current (worker) thread and relay its outcome to the
-coordinator's session mailbox. In a supervised session (*session-supervised-p*),
-an ordinary handler error is relayed through the failure-relay handshake so a
-live supervisor may choose to skip or retry it. Otherwise -- the default --
-the error settles locally as a :tool-error result and the turn continues."
+coordinator's session mailbox. In the DEFAULT (unsupervised) branch, execution
+is bounded by a real timeout via EXECUTE-TOOL-ASYNC's cooperative-cancellation
+machinery: the tool call's own :timeout argument (e.g. bash's) wins when
+supplied, otherwise *DEFAULT-TOOL-TIMEOUT* applies as the floor for every
+tool. The SUPERVISED branch below still calls the bare, unbounded
+EXECUTE-TOOL -- wiring EXECUTE-TOOL-ASYNC in here was found to break
+WITH-FAILURE-RELAY's no-stack-unwind guarantee (see TEST-NO-UNWIND-HANDSHAKE):
+EXECUTE-TOOL-ASYNC runs the handler on a separate worker thread and relays the
+outcome by re-signaling in the caller's thread, which necessarily loses the
+original stack/dynamic-binding context a live supervisor's skip-and-continue
+restart depends on. This is a known, reported gap -- see the P9 handoff
+report -- not a silent omission.
+In a supervised session (*session-supervised-p*), an ordinary handler error is
+relayed through the failure-relay handshake so a live supervisor may choose to
+skip or retry it. Otherwise -- the default -- the error settles locally as a
+:tool-error result and the turn continues."
   (if librecode-runner.protocol:*session-supervised-p*
       (loop
         (restart-case
@@ -372,7 +384,10 @@ the error settles locally as a :tool-error result and the turn continues."
       (handler-case
           (progn
             (librecode-runner.agent:check-permission agent "execute_tool" name)
-            (let ((res (librecode-runner.tool:execute-tool tool args-plist)))
+            (let ((res (librecode-runner.tool:execute-tool-async
+                        tool args-plist
+                        :timeout (or (getf args-plist :timeout)
+                                     librecode-runner.tool:*default-tool-timeout*))))
               (librecode-runner.protocol:send-message
                librecode-runner.protocol:*session-mailbox*
                `(:tool-success ,call-id ,res))))

@@ -240,6 +240,15 @@ Eliminates redundant JSON serialization."
                     result)))))
       result)))
 
+(defparameter *default-tool-timeout* 60
+  "Default wall-clock timeout, in seconds, applied to a tool call on the live
+execution path (RUN-TOOL-WORKER) when the call's own arguments don't specify
+one. 60s balances a genuinely slow bash command (build, install, long-running
+script) against a test suite exercising the no-explicit-timeout path not
+taking forever; individual tool calls that need longer should pass their own
+:timeout argument (e.g. bash's), which always takes precedence over this
+default.")
+
 (defun execute-tool (tool arguments)
   "Synchronously execute the tool with given arguments."
   (validate-arguments tool arguments)
@@ -265,7 +274,7 @@ Eliminates redundant JSON serialization."
                (multiple-value-bind (val err)
                    (handler-case
                        (funcall (tool-handler tool) arguments)
-                     (error (c)
+                     (serious-condition (c)
                        (values nil c)))
                  (bt:with-lock-held (lock)
                    (if err
