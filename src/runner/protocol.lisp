@@ -26,6 +26,12 @@
 (defvar *session-mailbox* nil
   "Dynamic variable for the active session's mailbox.")
 
+(defvar *session-supervised-p* nil
+  "Dynamic variable indicating whether a live supervisor is listening for this
+session's tool-worker errors and may choose to intervene (skip/retry) via the
+failure-relay handshake. When NIL (the default), an ordinary tool handler error
+settles locally as an error-as-result tool message instead of relaying.")
+
 (defun register-worker-mailbox (session-id mbox)
   "Register an active worker mailbox."
   (bt:with-lock-held (*coordinator-lock*)
@@ -227,26 +233,30 @@ lexically and returns a lambda that rebinds them and executes BODY."
         (session-val (gensym "SESSION"))
         (mailbox-val (gensym "MAILBOX"))
         (interactive-val (gensym "INTERACTIVE"))
-        (project-val (gensym "PROJECT")))
+        (project-val (gensym "PROJECT"))
+        (supervised-val (gensym "SUPERVISED")))
     `(let ((,db-val (and (boundp 'librecode-runner.event-store:*db*) librecode-runner.event-store:*db*))
            (,workspace-val (and (boundp 'librecode-runner.event-store:*workspace-root*) librecode-runner.event-store:*workspace-root*))
            (,session-val (and (boundp 'librecode-runner.agent:*current-session-id*) librecode-runner.agent:*current-session-id*))
            (,mailbox-val (and (boundp 'librecode-runner.protocol:*session-mailbox*) librecode-runner.protocol:*session-mailbox*))
            (,interactive-val (and (boundp 'librecode-runner.agent:*interactive-p*) librecode-runner.agent:*interactive-p*))
-           (,project-val (and (boundp 'librecode-runner.agent:*project-id*) librecode-runner.agent:*project-id*)))
+           (,project-val (and (boundp 'librecode-runner.agent:*project-id*) librecode-runner.agent:*project-id*))
+           (,supervised-val (and (boundp 'librecode-runner.protocol:*session-supervised-p*) librecode-runner.protocol:*session-supervised-p*)))
        (lambda ()
          (let ((librecode-runner.event-store:*db* ,db-val)
                (librecode-runner.event-store:*workspace-root* ,workspace-val)
                (librecode-runner.agent:*current-session-id* ,session-val)
                (librecode-runner.protocol:*session-mailbox* ,mailbox-val)
                (librecode-runner.agent:*interactive-p* ,interactive-val)
-               (librecode-runner.agent:*project-id* ,project-val))
+               (librecode-runner.agent:*project-id* ,project-val)
+               (librecode-runner.protocol:*session-supervised-p* ,supervised-val))
            (declare (special librecode-runner.event-store:*db*
                              librecode-runner.event-store:*workspace-root*
                              librecode-runner.agent:*current-session-id*
                              librecode-runner.protocol:*session-mailbox*
                              librecode-runner.agent:*interactive-p*
-                             librecode-runner.agent:*project-id*))
+                             librecode-runner.agent:*project-id*
+                             librecode-runner.protocol:*session-supervised-p*))
            ,@body)))))
 
 ;;; --- Failure Relay Primitive ---

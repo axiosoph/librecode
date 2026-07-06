@@ -80,6 +80,7 @@
            #:receive-message
            #:flush-mailbox
            #:*session-mailbox*
+           #:*session-supervised-p*
            #:*active-worker-mailboxes*
            #:register-worker-mailbox
            #:unregister-worker-mailbox

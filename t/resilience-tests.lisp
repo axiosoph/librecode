@@ -210,7 +210,9 @@
                (let ((librecode-runner.runner::*provider-url* (format nil "http://127.0.0.1:~A/stream" port))
                      (librecode-runner.runner::*tool-registry* test-registry)
                      (librecode-runner.protocol::*session-mailbox* (librecode-runner.protocol:make-mailbox))
+                     (librecode-runner.protocol:*session-supervised-p* t)
                      (worker-error-caught nil))
+                 (setf librecode-runner.runner::*last-skip-preserved-stack-p* nil)
                  (handler-bind
                      ((provider-error
                         (lambda (c)
@@ -219,8 +221,12 @@
                           (invoke-restart 'skip-and-continue))))
                    (execute-provider-turn session-id "mock-provider" "mock-model"))
                  (is-true worker-error-caught)
+                 ;; The tool-visible result carries no test-fixture scaffolding...
                  (let ((content (sqlite:execute-single db "SELECT content FROM session_history WHERE role = 'tool'")))
-                   (is (equal "Marker active! No unwind!" content)))))
+                   (is (equal "Warning: Tool execution skipped." content)))
+                 ;; ...but *worker-marker*'s value at the restart's invocation site still
+                 ;; proves the worker's stack was not unwound before skip-and-continue ran.
+                 (is-true librecode-runner.runner::*last-skip-preserved-stack-p*)))
           (progn
             (hunchentoot:stop acceptor)
             (setf hunchentoot:*dispatch-table* (delete dispatcher hunchentoot:*dispatch-table*))))))))
@@ -278,6 +284,7 @@
                (let ((librecode-runner.runner::*provider-url* (format nil "http://127.0.0.1:~A/stream" port))
                      (librecode-runner.runner::*tool-registry* test-registry)
                      (librecode-runner.protocol::*session-mailbox* (librecode-runner.protocol:make-mailbox))
+                     (librecode-runner.protocol:*session-supervised-p* t)
                      (worker-error-caught nil))
                  (handler-bind
                      ((provider-error
@@ -290,6 +297,192 @@
                  (is (= 2 call-count))
                  (let ((content (sqlite:execute-single db "SELECT content FROM session_history WHERE role = 'tool'")))
                    (is (equal "Success on retry!" content)))))
+          (progn
+            (hunchentoot:stop acceptor)
+            (setf hunchentoot:*dispatch-table* (delete dispatcher hunchentoot:*dispatch-table*))))))))
+
+(test test-tool-error-continues-session
+  "Verify that an ordinary tool handler error settles as a role:tool error result
+and the turn continues -- rather than propagating out of execute-provider-turn and
+ending the session. No supervisor handler-bind wraps this call: this is the DEFAULT,
+unsupervised path."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (librecode-test.event-store::with-test-db (db dir)
+      (let* ((session-id "sess-tool-error-continue")
+             (port (get-free-port))
+             (acceptor (make-instance 'hunchentoot:easy-acceptor :port port))
+             (test-registry (make-instance 'tool-registry))
+             (mock-tool (make-instance 'tool
+                                       :name "mock_erroring_tool"
+                                       :description "Tool that always errors"
+                                       :parameters nil
+                                       :capabilities nil
+                                       :handler (lambda (args)
+                                                  (declare (ignore args))
+                                                  (error "boom: deliberate tool failure"))))
+             (dispatcher (lambda (request)
+                           (when (equal (hunchentoot:script-name request) "/stream")
+                             (lambda ()
+                               (setf (hunchentoot:content-type*) "text/event-stream")
+                               (let ((stream (hunchentoot:send-headers))
+                                     (tool-call-payload "{\"id\": \"call-tool-err-1\", \"type\": \"function\", \"function\": {\"name\": \"mock_erroring_tool\", \"arguments\": \"{}\"}}"))
+                                 (write-sequence (flexi-streams:string-to-octets
+                                                  (format nil "data: {\"choices\": [{\"delta\": {\"tool_calls\": [~A]}}]}~%" tool-call-payload)
+                                                  :external-format :utf-8)
+                                                 stream)
+                                 (write-sequence (flexi-streams:string-to-octets
+                                                  (format nil "data: [DONE]~%")
+                                                  :external-format :utf-8)
+                                                 stream)
+                                 (force-output stream)
+                                 ""))))))
+        (register-tool test-registry mock-tool)
+        (sqlite:execute-non-query db
+          "INSERT INTO session_state (session_id, agent_id, version, status, last_updated)
+           VALUES (?, ?, 1, 'active', ?)"
+          session-id "agent-1" (librecode-runner.event-store::current-timestamp-ms))
+        (sqlite:execute-non-query db
+          "INSERT INTO permission_saved (project_id, action, resource, effect, timestamp)
+           VALUES ('default', 'execute_tool', 'mock_erroring_tool', 'allow', 123456)")
+        (push dispatcher hunchentoot:*dispatch-table*)
+        (unwind-protect
+             (progn
+               (hunchentoot:start acceptor)
+               (let ((librecode-runner.runner::*provider-url* (format nil "http://127.0.0.1:~A/stream" port))
+                     (librecode-runner.runner::*tool-registry* test-registry)
+                     (librecode-runner.protocol::*session-mailbox* (librecode-runner.protocol:make-mailbox)))
+                 ;; No handler-bind wraps this call -- proves the default unsupervised path.
+                 (let ((continuation-result (execute-provider-turn session-id "mock-provider" "mock-model")))
+                   (is (eq t continuation-result)))
+                 (let ((content (sqlite:execute-single db "SELECT content FROM session_history WHERE role = 'tool'")))
+                   (is (not (null content)))
+                   (is (search "boom: deliberate tool failure" content))
+                   (is (not (search "Marker active" content))))))
+          (progn
+            (hunchentoot:stop acceptor)
+            (setf hunchentoot:*dispatch-table* (delete dispatcher hunchentoot:*dispatch-table*))))))))
+
+(test test-tool-malformed-json-args-validation-error
+  "Malformed tool-argument JSON must yield a validation-error tool result -- the
+handler must never be invoked with silently-nil args in its place."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (librecode-test.event-store::with-test-db (db dir)
+      (let* ((session-id "sess-tool-malformed-json")
+             (port (get-free-port))
+             (acceptor (make-instance 'hunchentoot:easy-acceptor :port port))
+             (test-registry (make-instance 'tool-registry))
+             (handler-invoked-p nil)
+             (mock-tool (make-instance 'tool
+                                       :name "mock_json_tool"
+                                       :description "Tool that records whether it was invoked"
+                                       :parameters nil
+                                       :capabilities nil
+                                       :handler (lambda (args)
+                                                  (declare (ignore args))
+                                                  (setf handler-invoked-p t)
+                                                  "should not run")))
+             (dispatcher (lambda (request)
+                           (when (equal (hunchentoot:script-name request) "/stream")
+                             (lambda ()
+                               (setf (hunchentoot:content-type*) "text/event-stream")
+                               ;; Deliberately malformed JSON in the arguments string.
+                               (let ((stream (hunchentoot:send-headers))
+                                     (tool-call-payload "{\"id\": \"call-tool-json-1\", \"type\": \"function\", \"function\": {\"name\": \"mock_json_tool\", \"arguments\": \"{not valid json\"}}"))
+                                 (write-sequence (flexi-streams:string-to-octets
+                                                  (format nil "data: {\"choices\": [{\"delta\": {\"tool_calls\": [~A]}}]}~%" tool-call-payload)
+                                                  :external-format :utf-8)
+                                                 stream)
+                                 (write-sequence (flexi-streams:string-to-octets
+                                                  (format nil "data: [DONE]~%")
+                                                  :external-format :utf-8)
+                                                 stream)
+                                 (force-output stream)
+                                 ""))))))
+        (register-tool test-registry mock-tool)
+        (sqlite:execute-non-query db
+          "INSERT INTO session_state (session_id, agent_id, version, status, last_updated)
+           VALUES (?, ?, 1, 'active', ?)"
+          session-id "agent-1" (librecode-runner.event-store::current-timestamp-ms))
+        (sqlite:execute-non-query db
+          "INSERT INTO permission_saved (project_id, action, resource, effect, timestamp)
+           VALUES ('default', 'execute_tool', 'mock_json_tool', 'allow', 123456)")
+        (push dispatcher hunchentoot:*dispatch-table*)
+        (unwind-protect
+             (progn
+               (hunchentoot:start acceptor)
+               (let ((librecode-runner.runner::*provider-url* (format nil "http://127.0.0.1:~A/stream" port))
+                     (librecode-runner.runner::*tool-registry* test-registry)
+                     (librecode-runner.protocol::*session-mailbox* (librecode-runner.protocol:make-mailbox)))
+                 (let ((continuation-result (execute-provider-turn session-id "mock-provider" "mock-model")))
+                   (is (eq t continuation-result)))
+                 (is-false handler-invoked-p)
+                 (let ((content (sqlite:execute-single db "SELECT content FROM session_history WHERE role = 'tool'")))
+                   (is (not (null content)))
+                   (is (search "Error" content)))))
+          (progn
+            (hunchentoot:stop acceptor)
+            (setf hunchentoot:*dispatch-table* (delete dispatcher hunchentoot:*dispatch-table*))))))))
+
+(test test-tool-schema-invalid-args-validation-error
+  "Schema-invalid arguments (missing a required field) on the live tool-execution
+path must yield a validation-error tool result without invoking the handler --
+closing the gap where the live path bypasses validate-arguments entirely."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (librecode-test.event-store::with-test-db (db dir)
+      (let* ((session-id "sess-tool-schema-invalid")
+             (port (get-free-port))
+             (acceptor (make-instance 'hunchentoot:easy-acceptor :port port))
+             (test-registry (make-instance 'tool-registry))
+             (handler-invoked-p nil)
+             (mock-tool (make-instance 'tool
+                                       :name "mock_schema_tool"
+                                       :description "Tool requiring a path argument"
+                                       :parameters '(:type "object"
+                                                     :properties (:path (:type "string"))
+                                                     :required #(:path))
+                                       :capabilities nil
+                                       :handler (lambda (args)
+                                                  (declare (ignore args))
+                                                  (setf handler-invoked-p t)
+                                                  "should not run")))
+             (dispatcher (lambda (request)
+                           (when (equal (hunchentoot:script-name request) "/stream")
+                             (lambda ()
+                               (setf (hunchentoot:content-type*) "text/event-stream")
+                               ;; Well-formed JSON, but missing the required "path" field.
+                               (let ((stream (hunchentoot:send-headers))
+                                     (tool-call-payload "{\"id\": \"call-tool-schema-1\", \"type\": \"function\", \"function\": {\"name\": \"mock_schema_tool\", \"arguments\": \"{}\"}}"))
+                                 (write-sequence (flexi-streams:string-to-octets
+                                                  (format nil "data: {\"choices\": [{\"delta\": {\"tool_calls\": [~A]}}]}~%" tool-call-payload)
+                                                  :external-format :utf-8)
+                                                 stream)
+                                 (write-sequence (flexi-streams:string-to-octets
+                                                  (format nil "data: [DONE]~%")
+                                                  :external-format :utf-8)
+                                                 stream)
+                                 (force-output stream)
+                                 ""))))))
+        (register-tool test-registry mock-tool)
+        (sqlite:execute-non-query db
+          "INSERT INTO session_state (session_id, agent_id, version, status, last_updated)
+           VALUES (?, ?, 1, 'active', ?)"
+          session-id "agent-1" (librecode-runner.event-store::current-timestamp-ms))
+        (sqlite:execute-non-query db
+          "INSERT INTO permission_saved (project_id, action, resource, effect, timestamp)
+           VALUES ('default', 'execute_tool', 'mock_schema_tool', 'allow', 123456)")
+        (push dispatcher hunchentoot:*dispatch-table*)
+        (unwind-protect
+             (progn
+               (hunchentoot:start acceptor)
+               (let ((librecode-runner.runner::*provider-url* (format nil "http://127.0.0.1:~A/stream" port))
+                     (librecode-runner.runner::*tool-registry* test-registry)
+                     (librecode-runner.protocol::*session-mailbox* (librecode-runner.protocol:make-mailbox)))
+                 (let ((continuation-result (execute-provider-turn session-id "mock-provider" "mock-model")))
+                   (is (eq t continuation-result)))
+                 (is-false handler-invoked-p)
+                 (let ((content (sqlite:execute-single db "SELECT content FROM session_history WHERE role = 'tool'")))
+                   (is (not (null content)))
+                   (is (search "Error" content)))))
           (progn
             (hunchentoot:stop acceptor)
             (setf hunchentoot:*dispatch-table* (delete dispatcher hunchentoot:*dispatch-table*))))))))
@@ -347,6 +540,7 @@
                (let ((librecode-runner.runner::*provider-url* (format nil "http://127.0.0.1:~A/stream" port))
                      (librecode-runner.runner::*tool-registry* test-registry)
                      (librecode-runner.protocol::*session-mailbox* (librecode-runner.protocol:make-mailbox))
+                     (librecode-runner.protocol:*session-supervised-p* t)
                      (aborted nil))
                  (catch 'abort-tag
                    (handler-bind
