@@ -14,9 +14,6 @@
 
 (in-suite http-suite)
 
-(defun get-free-port ()
-  (+ 20000 (random 5000)))
-
 (defun query-test-db (dir sql &rest args)
   (let* ((db-path (merge-pathnames "librecode.db" dir))
          (db (librecode-runner.event-store:connect-db db-path)))
@@ -35,7 +32,7 @@
            (librecode-runner.event-store:init-db init-db)
         (sqlite:disconnect init-db)))
 
-    (let* ((port (get-free-port))
+    (let* ((port (librecode-test.mock-provider:get-free-port))
            (url-base (format nil "http://127.0.0.1:~A" port))
            (session-id nil))
       ;; Start the HTTP bridge
@@ -128,63 +125,50 @@
                (sleep 0.2)
 
                ;; Now wake the session using mock LLM endpoint.
-               (let* ((mock-port (get-free-port))
-                      (mock-acceptor (make-instance 'hunchentoot:easy-acceptor :port mock-port))
-                      (dispatcher (lambda (request)
-                                    (when (equal (hunchentoot:script-name request) "/provider-stream")
-                                      (lambda ()
-                                        (setf (hunchentoot:content-type*) "text/event-stream")
-                                        (setf (hunchentoot:header-out "Connection") "close")
-                                        (let ((stream (hunchentoot:send-headers)))
-                                          (write-sequence (flexi-streams:string-to-octets (format nil "data: {\"choices\": [{\"delta\": {\"content\": \"Hello response!\"}}]}~%") :external-format :utf-8) stream)
-                                          (force-output stream)
-                                          (write-sequence (flexi-streams:string-to-octets (format nil "data: [DONE]~%") :external-format :utf-8) stream)
-                                          (force-output stream)
-                                          ""))))))
-                 (push dispatcher hunchentoot:*dispatch-table*)
+               (librecode-test.mock-provider:with-mock-provider
+                   (mock-port :path "/provider-stream"
+                              :connection-close t
+                              :responder (lambda (request call-index)
+                                           (declare (ignore request call-index))
+                                           (list (list :content "Hello response!"))))
                  (unwind-protect
-                      (progn
-                        (hunchentoot:start mock-acceptor)
-                        ;; Use setf to globally update provider url so the spawned coordinate thread sees it
-                        (let ((old-provider-url librecode-runner.runner::*provider-url*))
-                          (unwind-protect
-                               (progn
-                                 (setf librecode-runner.runner::*provider-url* (format nil "http://127.0.0.1:~A/provider-stream" mock-port))
-                                 ;; Trigger POST /session/:id/wake
-                                 (let* ((wake-payload (com.inuoe.jzon:stringify
-                                                       (alexandria:plist-hash-table
-                                                        `("provider" "mock-provider"
-                                                          "model" "mock-model"))))
-                                        (wake-res (dexador:post (format nil "~A/session/~A/wake" url-base session-id)
-                                                                :headers '(("Content-Type" . "application/json"))
-                                                                :content wake-payload
-                                                                :keep-alive nil))
-                                        (wake-parsed (com.inuoe.jzon:parse wake-res)))
-                                   (is (equal "woken" (gethash "status" wake-parsed)))
+                      ;; Use setf to globally update provider url so the spawned coordinate thread sees it
+                      (let ((old-provider-url librecode-runner.runner::*provider-url*))
+                        (unwind-protect
+                             (progn
+                               (setf librecode-runner.runner::*provider-url* (format nil "http://127.0.0.1:~A/provider-stream" mock-port))
+                               ;; Trigger POST /session/:id/wake
+                               (let* ((wake-payload (com.inuoe.jzon:stringify
+                                                     (alexandria:plist-hash-table
+                                                      `("provider" "mock-provider"
+                                                        "model" "mock-model"))))
+                                      (wake-res (dexador:post (format nil "~A/session/~A/wake" url-base session-id)
+                                                              :headers '(("Content-Type" . "application/json"))
+                                                              :content wake-payload
+                                                              :keep-alive nil))
+                                      (wake-parsed (com.inuoe.jzon:parse wake-res)))
+                                 (is (equal "woken" (gethash "status" wake-parsed)))
 
-                                   ;; Read events from sse-events mailbox
-                                   (let* ((evt-open-str (librecode-runner.protocol:receive-message sse-events :timeout 4.0))
-                                          (evt-open (and evt-open-str (com.inuoe.jzon:parse evt-open-str)))
-                                          (evt1-str (librecode-runner.protocol:receive-message sse-events :timeout 4.0))
-                                          (evt1 (and evt1-str (com.inuoe.jzon:parse evt1-str)))
-                                          (evt2-str (librecode-runner.protocol:receive-message sse-events :timeout 4.0))
-                                          (evt2 (and evt2-str (com.inuoe.jzon:parse evt2-str)))
-                                          (evt3-str (librecode-runner.protocol:receive-message sse-events :timeout 4.0))
-                                          (evt3 (and evt3-str (com.inuoe.jzon:parse evt3-str))))
-                                     (is (not (null evt-open)))
-                                     (is (equal "open" (gethash "event" evt-open)))
-                                     (is (not (null evt1)))
-                                     (is (equal "session_start" (gethash "event" evt1)))
-                                     (is (not (null evt2)))
-                                     (is (equal "delta" (gethash "event" evt2)))
-                                     (is (equal "Hello response!" (gethash "content" evt2)))
-                                     (is (not (null evt3)))
-                                     (is (equal "complete" (gethash "event" evt3))))))
-                            (setf librecode-runner.runner::*provider-url* old-provider-url))))
-                     (progn
-                       (hunchentoot:stop mock-acceptor)
-                       (setf hunchentoot:*dispatch-table* (delete dispatcher hunchentoot:*dispatch-table*))
-                       (ignore-errors (bt:destroy-thread sse-thread)))))))
+                                 ;; Read events from sse-events mailbox
+                                 (let* ((evt-open-str (librecode-runner.protocol:receive-message sse-events :timeout 4.0))
+                                        (evt-open (and evt-open-str (com.inuoe.jzon:parse evt-open-str)))
+                                        (evt1-str (librecode-runner.protocol:receive-message sse-events :timeout 4.0))
+                                        (evt1 (and evt1-str (com.inuoe.jzon:parse evt1-str)))
+                                        (evt2-str (librecode-runner.protocol:receive-message sse-events :timeout 4.0))
+                                        (evt2 (and evt2-str (com.inuoe.jzon:parse evt2-str)))
+                                        (evt3-str (librecode-runner.protocol:receive-message sse-events :timeout 4.0))
+                                        (evt3 (and evt3-str (com.inuoe.jzon:parse evt3-str))))
+                                   (is (not (null evt-open)))
+                                   (is (equal "open" (gethash "event" evt-open)))
+                                   (is (not (null evt1)))
+                                   (is (equal "session_start" (gethash "event" evt1)))
+                                   (is (not (null evt2)))
+                                   (is (equal "delta" (gethash "event" evt2)))
+                                   (is (equal "Hello response!" (gethash "content" evt2)))
+                                   (is (not (null evt3)))
+                                   (is (equal "complete" (gethash "event" evt3))))))
+                          (setf librecode-runner.runner::*provider-url* old-provider-url)))
+                   (ignore-errors (bt:destroy-thread sse-thread))))))
         (stop-http-bridge)))))
 
 (test test-http-prompt-endpoint
@@ -198,7 +182,7 @@
            (librecode-runner.event-store:init-db init-db)
         (sqlite:disconnect init-db)))
 
-    (let* ((port (get-free-port))
+    (let* ((port (librecode-test.mock-provider:get-free-port))
            (url-base (format nil "http://127.0.0.1:~A" port))
            (session-id nil))
       ;; Start the HTTP bridge
@@ -240,59 +224,46 @@
                (sleep 0.2)
 
                ;; Now prompt the session using mock LLM endpoint.
-               (let* ((mock-port (get-free-port))
-                      (mock-acceptor (make-instance 'hunchentoot:easy-acceptor :port mock-port))
-                      (dispatcher (lambda (request)
-                                    (when (equal (hunchentoot:script-name request) "/provider-stream")
-                                      (lambda ()
-                                        (setf (hunchentoot:content-type*) "text/event-stream")
-                                        (setf (hunchentoot:header-out "Connection") "close")
-                                        (let ((stream (hunchentoot:send-headers)))
-                                          (write-sequence (flexi-streams:string-to-octets (format nil "data: {\"choices\": [{\"delta\": {\"content\": \"Prompt response!\"}}]}~%") :external-format :utf-8) stream)
-                                          (force-output stream)
-                                          (write-sequence (flexi-streams:string-to-octets (format nil "data: [DONE]~%") :external-format :utf-8) stream)
-                                          (force-output stream)
-                                          ""))))))
-                 (push dispatcher hunchentoot:*dispatch-table*)
+               (librecode-test.mock-provider:with-mock-provider
+                   (mock-port :path "/provider-stream"
+                              :connection-close t
+                              :responder (lambda (request call-index)
+                                           (declare (ignore request call-index))
+                                           (list (list :content "Prompt response!"))))
                  (unwind-protect
-                      (progn
-                        (hunchentoot:start mock-acceptor)
-                        ;; Use setf to globally update provider url so the spawned coordinate thread sees it
-                        (let ((old-provider-url librecode-runner.runner::*provider-url*))
-                          (unwind-protect
-                               (progn
-                                 (setf librecode-runner.runner::*provider-url* (format nil "http://127.0.0.1:~A/provider-stream" mock-port))
-                                 ;; Trigger POST /session/:id/prompt
-                                 (let* ((prompt-payload (com.inuoe.jzon:stringify
-                                                         (alexandria:plist-hash-table
-                                                          `("id" "prompt-test-id"
-                                                            "prompt" ,(alexandria:plist-hash-table '("text" "Hello bot"))
-                                                            "resume" t))))
-                                        (prompt-res (dexador:post (format nil "~A/session/~A/prompt" url-base session-id)
-                                                                  :headers '(("Content-Type" . "application/json"))
-                                                                  :content prompt-payload
-                                                                  :keep-alive nil))
-                                        (prompt-parsed (com.inuoe.jzon:parse prompt-res)))
-                                   (is (not (null (gethash "data" prompt-parsed))))
-                                   (let ((data-obj (gethash "data" prompt-parsed)))
-                                     (is (equal "prompt-test-id" (gethash "id" data-obj)))
-                                     (is (equal session-id (gethash "session_id" data-obj)))
-                                     (is (equal "Hello bot" (gethash "text" (gethash "prompt" data-obj)))))
+                      ;; Use setf to globally update provider url so the spawned coordinate thread sees it
+                      (let ((old-provider-url librecode-runner.runner::*provider-url*))
+                        (unwind-protect
+                             (progn
+                               (setf librecode-runner.runner::*provider-url* (format nil "http://127.0.0.1:~A/provider-stream" mock-port))
+                               ;; Trigger POST /session/:id/prompt
+                               (let* ((prompt-payload (com.inuoe.jzon:stringify
+                                                       (alexandria:plist-hash-table
+                                                        `("id" "prompt-test-id"
+                                                          "prompt" ,(alexandria:plist-hash-table '("text" "Hello bot"))
+                                                          "resume" t))))
+                                      (prompt-res (dexador:post (format nil "~A/session/~A/prompt" url-base session-id)
+                                                                :headers '(("Content-Type" . "application/json"))
+                                                                :content prompt-payload
+                                                                :keep-alive nil))
+                                      (prompt-parsed (com.inuoe.jzon:parse prompt-res)))
+                                 (is (not (null (gethash "data" prompt-parsed))))
+                                 (let ((data-obj (gethash "data" prompt-parsed)))
+                                   (is (equal "prompt-test-id" (gethash "id" data-obj)))
+                                   (is (equal session-id (gethash "session_id" data-obj)))
+                                   (is (equal "Hello bot" (gethash "text" (gethash "prompt" data-obj)))))
 
-                                   ;; Read events from sse-events mailbox
-                                   (let* ((evt-open-str (librecode-runner.protocol:receive-message sse-events :timeout 4.0))
-                                          (evt-open (and evt-open-str (com.inuoe.jzon:parse evt-open-str)))
-                                          (evt1-str (librecode-runner.protocol:receive-message sse-events :timeout 4.0))
-                                          (evt1 (and evt1-str (com.inuoe.jzon:parse evt1-str))))
-                                     (is (not (null evt-open)))
-                                     (is (equal "open" (gethash "event" evt-open)))
-                                     (is (not (null evt1)))
-                                     (is (equal "session_start" (gethash "event" evt1))))))
-                            (setf librecode-runner.runner::*provider-url* old-provider-url))))
-                   (progn
-                     (hunchentoot:stop mock-acceptor)
-                     (setf hunchentoot:*dispatch-table* (delete dispatcher hunchentoot:*dispatch-table*))
-                     (ignore-errors (bt:destroy-thread sse-thread)))))))
+                                 ;; Read events from sse-events mailbox
+                                 (let* ((evt-open-str (librecode-runner.protocol:receive-message sse-events :timeout 4.0))
+                                        (evt-open (and evt-open-str (com.inuoe.jzon:parse evt-open-str)))
+                                        (evt1-str (librecode-runner.protocol:receive-message sse-events :timeout 4.0))
+                                        (evt1 (and evt1-str (com.inuoe.jzon:parse evt1-str))))
+                                   (is (not (null evt-open)))
+                                   (is (equal "open" (gethash "event" evt-open)))
+                                   (is (not (null evt1)))
+                                   (is (equal "session_start" (gethash "event" evt1))))))
+                          (setf librecode-runner.runner::*provider-url* old-provider-url)))
+                   (ignore-errors (bt:destroy-thread sse-thread))))))
         (stop-http-bridge)))))
 
 (test test-http-step-cap
@@ -306,12 +277,11 @@
            (librecode-runner.event-store:init-db init-db)
         (sqlite:disconnect init-db)))
 
-    (let* ((port (get-free-port))
+    (let* ((port (librecode-test.mock-provider:get-free-port))
            (url-base (format nil "http://127.0.0.1:~A" port))
            (session-id nil)
            (provider-calls-count 0)
-           (bodies-list nil)
-           (lock (bt:make-lock "provider-calls-lock")))
+           (bodies-list nil))
 
       ;; Register a mock tool
       (let ((tool (make-instance 'librecode-runner.tool:tool
@@ -345,88 +315,73 @@
                (setf session-id (gethash "session_id" parsed)))
 
              ;; Set up mock provider that always returns tool calls.
-             (let* ((mock-port (get-free-port))
-                    (mock-acceptor (make-instance 'hunchentoot:easy-acceptor :port mock-port))
-                    (dispatcher (lambda (request)
-                                  (when (equal (hunchentoot:script-name request) "/provider-stream")
-                                    (lambda ()
-                                      (bt:with-lock-held (lock)
-                                        (incf provider-calls-count)
-                                        (let ((body (hunchentoot:raw-post-data :force-text t)))
-                                          (push body bodies-list)))
-                                      (setf (hunchentoot:content-type*) "text/event-stream")
-                                      (setf (hunchentoot:header-out "Connection") "close")
-                                      (let ((stream (hunchentoot:send-headers)))
-                                        (write-sequence (flexi-streams:string-to-octets (format nil "data: {\"choices\": [{\"delta\": {\"tool_calls\": [{\"index\": 0, \"id\": \"call-~A\", \"function\": {\"name\": \"mock-tool\", \"arguments\": \"{}\"}}]}}]}~%" provider-calls-count) :external-format :utf-8) stream)
-                                        (force-output stream)
-                                        (write-sequence (flexi-streams:string-to-octets (format nil "data: [DONE]~%") :external-format :utf-8) stream)
-                                        (force-output stream)
-                                        ""))))))
-               (push dispatcher hunchentoot:*dispatch-table*)
-               (unwind-protect
-                    (progn
-                      (hunchentoot:start mock-acceptor)
-                      (let ((old-provider-url librecode-runner.runner::*provider-url*))
-                        (unwind-protect
-                             (progn
-                               (setf librecode-runner.runner::*provider-url* (format nil "http://127.0.0.1:~A/provider-stream" mock-port))
-                               
-                               ;; Admit prompt
-                               (let* ((prompt-payload (com.inuoe.jzon:stringify
-                                                       (alexandria:plist-hash-table
-                                                        `("prompt_id" "prompt-test-cap"
-                                                          "prompt_text" "Keep calling tool please"
-                                                          "delivery_mode" "STEER"))))
-                                      (admit-res (dexador:post (format nil "~A/session/~A/admit" url-base session-id)
-                                                               :headers '(("Content-Type" . "application/json"))
-                                                               :content prompt-payload
-                                                               :keep-alive nil)))
-                                 (is (not (null admit-res))))
+             (librecode-test.mock-provider:with-mock-provider
+                 (mock-port :path "/provider-stream"
+                            :connection-close t
+                            :responder (lambda (request call-index)
+                                         (push (hunchentoot:raw-post-data :force-text t :request request) bodies-list)
+                                         (setf provider-calls-count call-index)
+                                         (list (list :tool-calls
+                                                     (list (list :id (format nil "call-~A" call-index)
+                                                                 :name "mock-tool" :arguments "{}"))))))
+               (let ((old-provider-url librecode-runner.runner::*provider-url*))
+                 (unwind-protect
+                      (progn
+                        (setf librecode-runner.runner::*provider-url* (format nil "http://127.0.0.1:~A/provider-stream" mock-port))
 
-                               ;; We want to run with max_steps = 3.
-                               (let* ((wake-payload (com.inuoe.jzon:stringify
-                                                     (alexandria:plist-hash-table
-                                                      `("provider" "mock-provider"
-                                                        "model" "mock-model"
-                                                        "max_steps" 3))))
-                                      (wake-thread
-                                        (bt:make-thread
-                                         (lambda ()
-                                           (handler-case
-                                               (dexador:post (format nil "~A/session/~A/wake" url-base session-id)
-                                                             :headers '(("Content-Type" . "application/json"))
-                                                             :content wake-payload
-                                                             :keep-alive nil)
-                                             (error (c) (format nil "error: ~A" c)))))))
-                                 ;; Wait up to 3 seconds for the wake thread to finish
-                                 (let ((finished (loop for i from 1 to 30
-                                                       while (bt:thread-alive-p wake-thread)
-                                                       do (sleep 0.1)
-                                                       finally (return (not (bt:thread-alive-p wake-thread))))))
-                                   (if finished
-                                       (bt:join-thread wake-thread)
-                                       (progn
-                                         (bt:destroy-thread wake-thread)
-                                         (error "Wake session hung! Step cap failed to terminate."))))
+                        ;; Admit prompt
+                        (let* ((prompt-payload (com.inuoe.jzon:stringify
+                                                (alexandria:plist-hash-table
+                                                 `("prompt_id" "prompt-test-cap"
+                                                   "prompt_text" "Keep calling tool please"
+                                                   "delivery_mode" "STEER"))))
+                               (admit-res (dexador:post (format nil "~A/session/~A/admit" url-base session-id)
+                                                        :headers '(("Content-Type" . "application/json"))
+                                                        :content prompt-payload
+                                                        :keep-alive nil)))
+                          (is (not (null admit-res))))
 
-                                 ;; Let's inspect provider-calls-count
-                                 (is (= 3 provider-calls-count))
+                        ;; We want to run with max_steps = 3.
+                        (let* ((wake-payload (com.inuoe.jzon:stringify
+                                              (alexandria:plist-hash-table
+                                               `("provider" "mock-provider"
+                                                 "model" "mock-model"
+                                                 "max_steps" 3))))
+                               (wake-thread
+                                 (bt:make-thread
+                                  (lambda ()
+                                    (handler-case
+                                        (dexador:post (format nil "~A/session/~A/wake" url-base session-id)
+                                                      :headers '(("Content-Type" . "application/json"))
+                                                      :content wake-payload
+                                                      :keep-alive nil)
+                                      (error (c) (format nil "error: ~A" c)))))))
+                          ;; Wait up to 3 seconds for the wake thread to finish
+                          (let ((finished (loop for i from 1 to 30
+                                                while (bt:thread-alive-p wake-thread)
+                                                do (sleep 0.1)
+                                                finally (return (not (bt:thread-alive-p wake-thread))))))
+                            (if finished
+                                (bt:join-thread wake-thread)
+                                (progn
+                                  (bt:destroy-thread wake-thread)
+                                  (error "Wake session hung! Step cap failed to terminate."))))
 
-                                 ;; Inspect the bodies of each call
-                                 (is (= 3 (length bodies-list)))
-                                 (let* ((body1 (com.inuoe.jzon:parse (third bodies-list)))
-                                        (body2 (com.inuoe.jzon:parse (second bodies-list)))
-                                        (body3 (com.inuoe.jzon:parse (first bodies-list))))
-                                   ;; 1st and 2nd should have tools
-                                   (is-true (gethash "tools" body1))
-                                   (is-true (gethash "tools" body2))
-                                   ;; 3rd (final) should NOT have tools
-                                   (is-false (gethash "tools" body3)))))
-                          (setf librecode-runner.runner::*provider-url* old-provider-url))))
-                 (progn
-                   (hunchentoot:stop mock-acceptor)
-                   (setf hunchentoot:*dispatch-table* (delete dispatcher hunchentoot:*dispatch-table*)))))))
+                          ;; Let's inspect provider-calls-count
+                          (is (= 3 provider-calls-count))
+
+                          ;; Inspect the bodies of each call
+                          (is (= 3 (length bodies-list)))
+                          (let* ((body1 (com.inuoe.jzon:parse (third bodies-list)))
+                                 (body2 (com.inuoe.jzon:parse (second bodies-list)))
+                                 (body3 (com.inuoe.jzon:parse (first bodies-list))))
+                            ;; 1st and 2nd should have tools
+                            (is-true (gethash "tools" body1))
+                            (is-true (gethash "tools" body2))
+                            ;; 3rd (final) should NOT have tools
+                            (is-false (gethash "tools" body3)))))
+                   (setf librecode-runner.runner::*provider-url* old-provider-url)))))
         (progn
           (stop-http-bridge)
           (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
-            (remhash "mock-tool" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*)))))))
+            (remhash "mock-tool" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*))))))))
