@@ -2,10 +2,21 @@
 
 > **Status (as-built against `src/runner/`):** the unified `agent` class (§1) and the
 > permission model (§3) are **BUILT** and verified by unit + property tests
-> (`t/agent-tests.lisp`). The tool registry (§2) is **PARTIAL**: materialization,
+> (`t/agent-tests.lisp`). The tool registry (§2) is **BUILT**: materialization,
 > permission/capability filtering, JSON-schema advertising to the model, and parallel
-> `unwind-protect` settlement are built, but **only test-fixture tools are
-> registered** — no real `file` / `run_command` tools exist yet.
+> `unwind-protect` settlement are all live, and four real tools are registered by
+> `register-builtin-tools` (`src/runner/builtin-tools.lisp:396-400`):
+> * **`read_file`** — reads a UTF-8 file inside the workspace root, with directory-
+>   traversal protection and a 10MB size limit.
+> * **`write_file`** — writes UTF-8 content to a file inside the workspace root,
+>   creating parent directories as needed.
+> * **`edit`** — performs an exact-string replacement in an existing file, sandboxed
+>   identically to the other file tools.
+> * **`bash`** — executes a command in a shell inside the workspace root, with an
+>   optional wall-clock timeout.
+>
+> Every call is resolved to a workspace-confined path and checked against the active
+> agent's permission ruleset (`check-resource-permission`, §3) before it runs.
 
 `librecode` replaces ad-hoc flags and structural checks with a unified agent class and polymorphic generic dispatch over tool permissions and dynamic behaviors.
 

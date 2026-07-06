@@ -51,10 +51,10 @@ original design intent: **[BUILT]**, **[PARTIAL]**, **[STUB]**.
 - **[PARTIAL]** Compaction engine — real (`compaction.lisp`) but summarization is a
   naive text concatenation with a heuristic `length/4` token estimate, not an LLM
   summarization pass.
-- **[PARTIAL]** Tool registry, materialization, and settlement — the registry,
+- **[BUILT]** Tool registry, materialization, and settlement — the registry,
   permission/capability filtering, JSON-schema materialization, and parallel
-  settlement are built and advertised to the model, but only test-fixture tools are
-  registered; no real `file`/`bash` tools exist yet.
+  settlement are built and advertised to the model; four real, sandboxed tools are
+  registered (`read_file`, `write_file`, `edit`, `bash` — `builtin-tools.lisp`).
 
 ### Novel to librecode (no TypeScript counterpart)
 
@@ -307,7 +307,7 @@ Each entry has a **decision/lean** and a **signpost** tracking its implementatio
 
 ### KU3 — Tool registry scope
 * **Decision**: Separated tool scopes. The Metaharness exposes its own high-level orchestrator tools (such as workspace file operations, git branch creation, and gate execution), while child harnesses run their own lower-level tools natively.
-* **Status**: **PARTIAL.** The runner tool registry (materialization, filtering, settlement) is built but registers only test-fixture tools. Metaharness orchestration is exposed as gate/campaign functions, not as an advertised tool set. See [agent-system.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/agent-system.md).
+* **Status**: **PARTIAL.** The runner tool registry (materialization, filtering, settlement) is built and registers four real tools — `read_file`, `write_file`, `edit`, `bash` (`register-builtin-tools`, `src/runner/builtin-tools.lisp:396-400`) — each workspace-sandboxed and permission-checked. Metaharness orchestration is exposed as gate/campaign functions, not as an advertised tool set. See [agent-system.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/agent-system.md).
 
 ### KU4 — MCP integration
 * **Decision**: Delegated. `librecode` will not directly implement an MCP client or OAuth flow. All MCP interactions are delegated to child OpenCode process harnesses, which naturally populate context maps.

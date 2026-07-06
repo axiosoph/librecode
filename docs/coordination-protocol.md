@@ -260,7 +260,7 @@ To prevent dependency cycles and maintain isolation:
 
 ## 8. SQLite DDL Schemas
 
-`librecode-runner` manages its session stores, admitted inputs, and permission history using SQLite. The following schemas define the database structures:
+`librecode-runner` manages its session stores, admitted inputs, and permission history using SQLite. `init-db` (`event-store.lisp`) creates 7 tables; the following schemas define the database structures:
 
 ### Event Log Table (`event_log`)
 
@@ -327,6 +327,11 @@ CREATE TABLE IF NOT EXISTS session_state (
 ### Session History Table (`session_history`)
 
 Stores historical message transcripts for model continuation and context building.
+`tool_call_id` links a `tool`-role row back to the assistant tool call it answers;
+rows written before this linkage existed carry a null value, which callers must
+handle rather than assume (`reconstruct-wire-message` signals the
+`legacy-history-row` condition on unlinked `tool`-role rows —
+`runner.lisp:64-77`, `conditions.lisp:221-252`).
 
 ```sql
 CREATE TABLE IF NOT EXISTS session_history (
@@ -335,6 +340,7 @@ CREATE TABLE IF NOT EXISTS session_history (
   role TEXT NOT NULL, -- 'system', 'user', 'assistant', 'tool'
   content TEXT NOT NULL,
   created_at INTEGER NOT NULL,
+  tool_call_id TEXT,
   FOREIGN KEY(session_id) REFERENCES session_state(session_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_session_history_session ON session_history(session_id);
@@ -351,6 +357,20 @@ CREATE TABLE IF NOT EXISTS context_epoch (
   baseline_text TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   FOREIGN KEY(session_id) REFERENCES session_state(session_id) ON DELETE CASCADE
+);
+```
+
+### Session Provider Config Table (`session_provider_config`)
+
+Stores a per-session override of the LLM provider endpoint, model, and auth token,
+read back by `provider.lisp` when a session's execution loop opens a connection.
+
+```sql
+CREATE TABLE IF NOT EXISTS session_provider_config (
+  session_id TEXT PRIMARY KEY,
+  base_url TEXT,
+  model TEXT,
+  auth TEXT
 );
 ```
 
