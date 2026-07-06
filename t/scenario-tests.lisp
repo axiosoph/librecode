@@ -21,14 +21,6 @@
 
 (in-suite scenario-suite)
 
-(defun tool-role-messages (body)
-  "Return, in wire order, the tool-role message hash-tables from a parsed
-request BODY's \"messages\" array (a JSON array, which com.inuoe.jzon parses
-to a vector; COERCE keeps this responder agnostic to that representation
-detail)."
-  (remove-if-not (lambda (m) (equal "tool" (gethash "role" m)))
-                  (coerce (gethash "messages" body) 'list)))
-
 (test test-scenario-in-process-read-edit-fail-correct-succeed
   "Constraint [c7-in-process-full-arc]: a scripted model reads scenario.txt,
 edits it via the edit tool, runs a bash command that FAILS, is handed that
@@ -68,7 +60,7 @@ exists in history."
                   (lambda (request call-index)
                     (declare (ignore call-index))
                     (let* ((body (com.inuoe.jzon:parse (hunchentoot:raw-post-data :force-text t :request request)))
-                           (tool-msgs (tool-role-messages body))
+                           (tool-msgs (librecode-test.mock-provider:tool-role-messages body))
                            (n (length tool-msgs))
                            (last-content (and tool-msgs (gethash "content" (car (last tool-msgs))))))
                       (cond

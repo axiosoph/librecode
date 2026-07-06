@@ -295,12 +295,6 @@ campaign."
     (values (lambda (tag) (bt:with-lock-held (lock) (push tag decisions)))
             (lambda () (bt:with-lock-held (lock) (reverse decisions))))))
 
-(defun scenario-tool-role-messages (body)
-  "Return, in wire order, the tool-role message hash-tables from a parsed
-request BODY's \"messages\" array."
-  (remove-if-not (lambda (m) (equal "tool" (gethash "role" m)))
-                  (coerce (gethash "messages" body) 'list)))
-
 (defun make-scenario-responder (record-decision)
   "Build a dispatcher scripting write_file(e2e-artifact.txt) -> a bash command
 that FAILS -> a different, corrective bash command that succeeds ->
@@ -324,7 +318,7 @@ requirement, not in place of it."
   (lambda (request call-index)
     (declare (ignore call-index))
     (let* ((body (com.inuoe.jzon:parse (hunchentoot:raw-post-data :force-text t :request request)))
-           (tool-msgs (scenario-tool-role-messages body))
+           (tool-msgs (librecode-test.mock-provider:tool-role-messages body))
            (n (length tool-msgs))
            (last-content (and tool-msgs (gethash "content" (car (last tool-msgs))))))
       (cond
