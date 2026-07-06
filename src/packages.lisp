@@ -38,7 +38,11 @@
            #:protocol-invariant-violation
            #:protocol-invariant-violation-message
            #:protocol-invariant-violation-invariant
-           
+
+           #:journal-invariant-violation
+           #:journal-invariant-violation-message
+           #:journal-invariant-violation-invariant
+
            #:gate-failure
            #:gate-failure-message
            #:gate-failure-command
@@ -268,6 +272,8 @@
            #:campaign-node-dependencies
            #:campaign-node-sequential-p
            #:campaign-node-status
+           #:campaign-node-phase
+           #:campaign-node-deposit
            #:campaign-node-harness-type
            #:campaign-node-harness-instance
            #:campaign-node-ibc

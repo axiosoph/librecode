@@ -17,6 +17,8 @@
   (dependencies nil :type list)        ; List of parent node IDs
   (sequential-p nil :type boolean)     ; Must run sequentially, cannot be parallelized
   (status :pending :type keyword)      ; :pending, :dispatched, :landed, :accepted, :rework, :skipped
+  (phase 0 :type (integer 0))          ; librecode-model deposit phase, threaded from the journal fold
+  (deposit nil)                        ; librecode-model deposit struct (or nil, never landed), threaded from the fold
   (harness-type nil :type symbol)      ; Class name of harness (e.g., 'harness-opencode)
   (harness-instance nil)               ; Reference to the active CLOS harness-instance
   (ibc nil :type (or null string)))    ; Initial Boundary Condition text (instructions/goals)
@@ -497,15 +499,57 @@ or if any dependency is unresolved."
                 (merge-node-branch campaign node)))
             (return))))))
 
+(defparameter *replay-invariants*
+  (list (cons "phase-monotonic-p" 'librecode-model:phase-monotonic-p)
+        (cons "no-pending-proven-p" 'librecode-model:no-pending-proven-p)
+        (cons "tamper-evident-p" 'librecode-model:tamper-evident-p)
+        (cons "dag-preserved-p" 'librecode-model:dag-preserved-p)
+        (cons "surface-monotonic-p" 'librecode-model:surface-monotonic-p)
+        (cons "schedule-correct-p" 'librecode-model:schedule-correct-p))
+  "Every invariant exported from src/model/packages.lisp's invariants.lisp
+export block, paired with its name for error reporting. This list is the
+source of truth for \"which invariants gate resume\" and must track that
+export block -- if a future node adds a seventh invariant there, add it
+here too.")
+
+(defun check-replay-invariants (model-dag events)
+  "Run every entry in *REPLAY-INVARIANTS* against MODEL-DAG/EVENTS (the
+(dag events) pair every librecode-model invariant predicate takes), and
+signal a JOURNAL-INVARIANT-VIOLATION naming the first one that returns NIL.
+Fails fast rather than collecting every violation: the six invariants are
+independent boolean checks over the same replayed trajectory, not sequenced
+diagnostics, so there is no 'later' violation a fail-fast exit would hide
+information about that isn't already implied by the first."
+  (dolist (entry *replay-invariants*)
+    (destructuring-bind (name . predicate) entry
+      (unless (funcall predicate model-dag events)
+        (error 'librecode-runner.conditions:journal-invariant-violation
+               :invariant name
+               :message (format nil "~A returned NIL for the replayed journal's trajectory." name))))))
+
 (defun run-campaign (campaign)
   (let* ((dag (campaign-dag campaign))
          (journal-path (campaign-journal-path campaign))
          (layers (campaign-dag-layers dag)))
     ;; 1. Replay journal if it exists to restore state
     (when (and journal-path (probe-file journal-path))
-      (multiple-value-bind (replayed-dag last-valid-pos)
+      (multiple-value-bind (replayed-dag last-valid-pos model-state)
           (replay-journal journal-path dag)
-        (declare (ignore replayed-dag))
+        ;; REPLAY-JOURNAL mutates and returns DAG's own identity (topology
+        ;; fields are never touched, only status/phase/deposit/file-surface
+        ;; are folded onto it in place) — thread that forward explicitly
+        ;; rather than silently discarding it, so a future change to
+        ;; REPLAY-JOURNAL's threading contract fails loudly instead of
+        ;; leaving callers reading stale state (p4-discarded-fold).
+        (assert (eq replayed-dag dag) ()
+                "replay-journal must mutate and return DAG's own identity, not a copy")
+        ;; Boot-gate: a replayed trajectory that fails a crown-jewel
+        ;; invariant is a log-integrity problem, not something to continue
+        ;; silently past -- check BEFORE truncating, so a rejected journal
+        ;; is left on disk untouched for inspection rather than truncated
+        ;; against a state we're about to refuse.
+        (check-replay-invariants (librecode-model:model-state-dag model-state)
+                                  (librecode-model:model-state-events model-state))
         #+sbcl
         (sb-posix:truncate (namestring journal-path) last-valid-pos)
         #-sbcl
@@ -529,7 +573,6 @@ or if any dependency is unresolved."
                                           layer-nodes
                                           :key #'campaign-node-status)))
           (when eligible-nodes
-            (safe-write-journal-entry campaign journal-stream (list :layer-advanced layer-idx))
             (let ((batches (group-nodes-for-scheduling eligible-nodes)))
               (dolist (batch batches)
                 (execute-node-batch campaign batch journal-stream))))))))

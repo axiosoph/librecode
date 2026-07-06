@@ -41,6 +41,7 @@ src/runner and src/meta), which will later be replayed against it.")
    #:node-state-status
    #:node-state-phase
    #:node-state-deposit
+   #:node-state-file-surface
    #:model-state
    #:model-state-p
    #:model-state-dag
@@ -57,6 +58,7 @@ src/runner and src/meta), which will later be replayed against it.")
    #:discharge
    #:skip
    #:escalate
+   #:widen-surface
    #:transition-event
    #:replay
 
@@ -65,4 +67,5 @@ src/runner and src/meta), which will later be replayed against it.")
    #:no-pending-proven-p
    #:tamper-evident-p
    #:dag-preserved-p
-   #:schedule-correct-p))
+   #:schedule-correct-p
+   #:surface-monotonic-p))
