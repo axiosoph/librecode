@@ -503,3 +503,210 @@ target file."
             (dotimes (i 11) (write-sequence chunk stream))))
         (signals error
           (execute-tool edit-tool (list :filePath "huge.txt" :oldString "a" :newString "b")))))))
+
+;;; --- Regression tests for finding F20 (concurrent tool-call file races) ---
+;;;
+;;; execute-parallel-tools (runner.lisp) spawns one thread per tool_call in a
+;;; turn with zero locking between them. edit is read-modify-write (read ->
+;;; count -> compute -> write); two concurrent tool_calls resolving to the SAME
+;;; path could previously interleave their read-modify-write sections and
+;;; silently lose one side's change while both reported success. The fix adds
+;;; a per-resolved-path lock (librecode-runner.tool:get-path-lock /
+;;; with-path-lock) that read_file/write_file/edit each acquire for the
+;;; duration of their file operation.
+
+(test test-builtin-concurrent-same-path-serializes
+  "Mechanism-level, deterministic proof of c10-same-path-serializes: a
+write_file call against a path whose lock the test itself is holding must
+block for as long as the lock is held, and complete only once it is
+released. This proves write_file acquires the SAME per-path lock object
+get-path-lock returns for that resolved path -- not merely that two calls
+happen to finish eventually."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (let* ((*workspace-root* dir)
+           (write-tool (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
+                         (gethash "write_file" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*))))
+           (rel-path "locked.txt")
+           (abs-path (merge-pathnames rel-path (uiop:ensure-directory-pathname dir))))
+      (is (not (null write-tool)))
+      (when write-tool
+        (execute-tool write-tool (list :path rel-path :content "original"))
+        (let* ((resolved (librecode-runner.builtin-tools::resolve-safe-path rel-path))
+               (path-lock (librecode-runner.tool:get-path-lock (namestring resolved)))
+               (finished-p nil)
+               (finished-lock (bt:make-lock "finished-lock"))
+               (worker nil))
+          (bt:acquire-lock path-lock)
+          (unwind-protect
+              (progn
+                (setf worker
+                      (bt:make-thread
+                       (lambda ()
+                         (let ((*workspace-root* dir))
+                           (execute-tool write-tool (list :path rel-path :content "from-worker")))
+                         (bt:with-lock-held (finished-lock) (setf finished-p t)))
+                       :name "path-lock-blocking-test"))
+                ;; Ample time for the worker to reach and block on the path lock.
+                (sleep 0.3)
+                (let ((still-blocked-p (not (bt:with-lock-held (finished-lock) finished-p))))
+                  (is (eq t still-blocked-p)
+                      "write_file completed while the test held the path lock for its resolved path -- write_file is not serializing on get-path-lock.")))
+            (bt:release-lock path-lock))
+          (when worker
+            (let ((join-result (librecode-runner.protocol:join-thread-with-timeout worker 5.0)))
+              (is (not (eq join-result :timeout))
+                  "write_file never completed after the path lock was released."))
+            (let ((finished-after-release-p (bt:with-lock-held (finished-lock) finished-p)))
+              (is (eq t finished-after-release-p)))
+            (is (string= "from-worker" (uiop:read-file-string abs-path)))))))))
+
+(test test-builtin-concurrent-different-paths-not-serialized
+  "c10-different-paths-unaffected: holding one path's lock must NOT block a
+concurrent write_file call to a DIFFERENT path -- the lock is per-path, not a
+single global mutex over all file tool calls."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (let* ((*workspace-root* dir)
+           (write-tool (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
+                         (gethash "write_file" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*))))
+           (locked-rel-path "held.txt")
+           (other-rel-path "unrelated.txt"))
+      (is (not (null write-tool)))
+      (when write-tool
+        (execute-tool write-tool (list :path locked-rel-path :content "original"))
+        (let* ((resolved (librecode-runner.builtin-tools::resolve-safe-path locked-rel-path))
+               (path-lock (librecode-runner.tool:get-path-lock (namestring resolved))))
+          (bt:acquire-lock path-lock)
+          (unwind-protect
+              (let ((worker (bt:make-thread
+                             (lambda ()
+                               (let ((*workspace-root* dir))
+                                 (execute-tool write-tool (list :path other-rel-path :content "unrelated-content"))))
+                             :name "different-path-not-blocked-test")))
+                (let ((join-result (librecode-runner.protocol:join-thread-with-timeout worker 3.0)))
+                  (is (not (eq join-result :timeout))
+                      "write_file to a DIFFERENT path blocked while an unrelated path's lock was held -- the lock is not per-path.")))
+            (bt:release-lock path-lock)))))))
+
+(test test-builtin-concurrent-edit-edit-no-lost-write
+  "Behavioral proof of c10-same-path-serializes for the exact scenario premise
+p10-edit-is-read-modify-write names: two concurrent edit calls against the
+same file, each targeting a disjoint substring. Without serialization, both
+could read the same stale content and whichever writes last would silently
+discard the other's replacement even though both report success. With the
+per-path lock making each edit's read+write atomic, whichever edit runs
+second always observes the first edit's already-applied change, so BOTH
+replacements are present in the final content -- every iteration, not just
+probabilistically. Repeated across many trials to make the pre-fix race
+(narrow, timing-dependent) reliably surface if it still existed."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (let* ((*workspace-root* dir)
+           (edit-tool (edit-tool%))
+           (write-tool (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
+                         (gethash "write_file" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*))))
+           (read-tool (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
+                        (gethash "read_file" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*))))
+           (rel-path "race.txt")
+           ;; Padding widens the window between each edit's read and write
+           ;; (search/replace over more content takes measurably longer),
+           ;; making the pre-fix race far more likely to actually trigger
+           ;; across the trials below rather than relying on luck alone.
+           (padding (make-string 200000 :initial-element #\x)))
+      (is (not (null edit-tool)))
+      (is (not (null write-tool)))
+      (is (not (null read-tool)))
+      (when (and edit-tool write-tool read-tool)
+        (dotimes (trial 20)
+          (execute-tool write-tool
+                        (list :path rel-path
+                              :content (format nil "MARKER_A ~A MARKER_B" padding)))
+          (let* ((barrier-lock (bt:make-lock "race-barrier-lock"))
+                 (ready-count 0)
+                 (go-p nil)
+                 (t1 (bt:make-thread
+                      (lambda ()
+                        (let ((*workspace-root* dir))
+                          (bt:with-lock-held (barrier-lock) (incf ready-count))
+                          (loop until (bt:with-lock-held (barrier-lock) go-p) do (sleep 0.001))
+                          (execute-tool edit-tool (list :filePath rel-path :oldString "MARKER_A" :newString "REPLACED_A"))))
+                      :name (format nil "race-a-~D" trial)))
+                 (t2 (bt:make-thread
+                      (lambda ()
+                        (let ((*workspace-root* dir))
+                          (bt:with-lock-held (barrier-lock) (incf ready-count))
+                          (loop until (bt:with-lock-held (barrier-lock) go-p) do (sleep 0.001))
+                          (execute-tool edit-tool (list :filePath rel-path :oldString "MARKER_B" :newString "REPLACED_B"))))
+                      :name (format nil "race-b-~D" trial))))
+            ;; Release both threads together once both have reached the gate,
+            ;; so their edit calls genuinely overlap in time rather than
+            ;; running sequentially by construction.
+            (loop until (>= (bt:with-lock-held (barrier-lock) ready-count) 2) do (sleep 0.001))
+            (bt:with-lock-held (barrier-lock) (setf go-p t))
+            (let ((j1 (librecode-runner.protocol:join-thread-with-timeout t1 5.0))
+                  (j2 (librecode-runner.protocol:join-thread-with-timeout t2 5.0)))
+              (is (not (eq j1 :timeout)) (format nil "trial ~D: edit A never completed" trial))
+              (is (not (eq j2 :timeout)) (format nil "trial ~D: edit B never completed" trial)))
+            (let ((final (execute-tool read-tool (list :path rel-path))))
+              (is (not (null (search "REPLACED_A" final)))
+                  (format nil "trial ~D: edit A's replacement is missing from the final content -- a concurrent edit silently lost it." trial))
+              (is (not (null (search "REPLACED_B" final)))
+                  (format nil "trial ~D: edit B's replacement is missing from the final content -- a concurrent edit silently lost it." trial)))))))))
+
+(test test-builtin-concurrent-edit-write-file-no-corruption
+  "edit racing write_file: write_file is an unconditional overwrite by design,
+so ordering between a concurrent edit and write_file is legitimately
+ambiguous (last-to-commit wins, same as two racing write_file calls) -- that
+is not the F20 bug. What the per-path lock must still guarantee is that
+neither call's critical section ever interleaves with the other's: the
+final content must always be one of the two fully-formed, non-corrupted
+outcomes (edit's replacement applied on top of write_file's content, or
+write_file's content with no trace of edit at all if write_file committed
+last) -- never a torn hybrid produced by both writers' bytes interleaving."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (let* ((*workspace-root* dir)
+           (edit-tool (edit-tool%))
+           (write-tool (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
+                         (gethash "write_file" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*))))
+           (read-tool (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
+                        (gethash "read_file" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*))))
+           (rel-path "race-write-edit.txt")
+           (padding (make-string 200000 :initial-element #\x))
+           (write-content (format nil "MARKER_A ~A tail" padding))
+           (edit-applied-content (format nil "REPLACED_A ~A tail" padding)))
+      (is (not (null edit-tool)))
+      (is (not (null write-tool)))
+      (is (not (null read-tool)))
+      (when (and edit-tool write-tool read-tool)
+        (dotimes (trial 20)
+          (execute-tool write-tool (list :path rel-path :content write-content))
+          (let* ((barrier-lock (bt:make-lock "race-barrier-lock"))
+                 (ready-count 0)
+                 (go-p nil)
+                 (tw (bt:make-thread
+                      (lambda ()
+                        (let ((*workspace-root* dir))
+                          (bt:with-lock-held (barrier-lock) (incf ready-count))
+                          (loop until (bt:with-lock-held (barrier-lock) go-p) do (sleep 0.001))
+                          (execute-tool write-tool (list :path rel-path :content write-content))))
+                      :name (format nil "race-write-~D" trial)))
+                 (te (bt:make-thread
+                      (lambda ()
+                        (let ((*workspace-root* dir))
+                          (bt:with-lock-held (barrier-lock) (incf ready-count))
+                          (loop until (bt:with-lock-held (barrier-lock) go-p) do (sleep 0.001))
+                          (handler-case
+                              (execute-tool edit-tool (list :filePath rel-path :oldString "MARKER_A" :newString "REPLACED_A"))
+                            ;; A clean, distinguishable error (e.g. write_file
+                            ;; already ran and MARKER_A is gone) is an
+                            ;; acceptable serialized outcome -- only silent
+                            ;; corruption is not.
+                            (error () nil))))
+                      :name (format nil "race-edit-~D" trial))))
+            (loop until (>= (bt:with-lock-held (barrier-lock) ready-count) 2) do (sleep 0.001))
+            (bt:with-lock-held (barrier-lock) (setf go-p t))
+            (let ((jw (librecode-runner.protocol:join-thread-with-timeout tw 5.0))
+                  (je (librecode-runner.protocol:join-thread-with-timeout te 5.0)))
+              (is (not (eq jw :timeout)) (format nil "trial ~D: write_file never completed" trial))
+              (is (not (eq je :timeout)) (format nil "trial ~D: edit never completed" trial)))
+            (let ((final (execute-tool read-tool (list :path rel-path))))
+              (is (or (string= final write-content) (string= final edit-applied-content))
+                  (format nil "trial ~D: final content is neither write_file's content nor edit-applied-on-top-of-it -- the writers' critical sections interleaved and corrupted the file." trial)))))))))

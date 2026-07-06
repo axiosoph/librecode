@@ -130,7 +130,8 @@
     (when (librecode-runner.tool:tool-cancelled-p)
       (error "Tool execution was cancelled."))
     (handler-case
-        (read-file-with-limit resolved path)
+        (librecode-runner.tool:with-path-lock ((namestring resolved))
+          (read-file-with-limit resolved path))
       (error (c)
         (error 'simple-error :format-control "Failed to read file ~A: ~A"
                              :format-arguments (list path c))))))
@@ -147,7 +148,7 @@
       (error 'simple-error :format-control "Content size ~D characters exceeds 10MB limit."
                            :format-arguments (list (length content))))
     (handler-case
-        (progn
+        (librecode-runner.tool:with-path-lock ((namestring resolved))
           (ensure-directories-exist resolved)
           (with-open-file (stream resolved
                                   :direction :output
@@ -207,44 +208,51 @@ read_file/write_file."
       (error 'simple-error
              :format-control "No changes to apply: oldString and newString are identical for ~A."
              :format-arguments (list path)))
-    (unless (probe-file resolved)
-      (error 'simple-error
-             :format-control "File not found: ~A"
-             :format-arguments (list path)))
-    (let ((content (handler-case
-                        (read-file-with-limit resolved path)
-                      (error (c)
-                        (error 'simple-error :format-control "Failed to read file ~A for editing: ~A"
-                                             :format-arguments (list path c))))))
-      (let ((count (count-string-occurrences content old-string)))
-        (cond
-          ((zerop count)
-           (error 'simple-error
-                  :format-control "Could not find oldString in ~A; it must match the file content exactly, including whitespace and line endings."
-                  :format-arguments (list path)))
-          ((and (> count 1) (not replace-all))
-           (error 'simple-error
-                  :format-control "Found ~D matches for oldString in ~A; provide more surrounding context to make the match unique, or pass replaceAll: true."
-                  :format-arguments (list count path)))
-          (t
-           (let ((new-content (replace-string-occurrences content old-string new-string replace-all)))
-             (when (> (length new-content) (* 10 1024 1024))
-               (error 'simple-error
-                      :format-control "Resulting content size ~D characters exceeds 10MB limit for ~A."
-                      :format-arguments (list (length new-content) path)))
-             (handler-case
-                 (progn
-                   (with-open-file (stream resolved
-                                           :direction :output
-                                           :if-exists :supersede
-                                           :if-does-not-exist :error
-                                           :element-type 'character
-                                           :external-format :utf-8)
-                     (write-sequence new-content stream))
-                   (format nil "Edit applied successfully to ~A (~D replacement~:P)." path count))
-               (error (c)
-                 (error 'simple-error :format-control "Failed to write edited file ~A: ~A"
-                                      :format-arguments (list path c)))))))))))
+    ;; The whole read -> count -> compute -> write sequence is a single
+    ;; critical section: it must run atomically with respect to any other
+    ;; concurrent read_file/write_file/edit call against this same resolved
+    ;; path, or two concurrent edits (or an edit racing a write_file) could
+    ;; both read the same stale content and one's write would silently
+    ;; clobber the other's (finding F20).
+    (librecode-runner.tool:with-path-lock ((namestring resolved))
+      (unless (probe-file resolved)
+        (error 'simple-error
+               :format-control "File not found: ~A"
+               :format-arguments (list path)))
+      (let ((content (handler-case
+                          (read-file-with-limit resolved path)
+                        (error (c)
+                          (error 'simple-error :format-control "Failed to read file ~A for editing: ~A"
+                                               :format-arguments (list path c))))))
+        (let ((count (count-string-occurrences content old-string)))
+          (cond
+            ((zerop count)
+             (error 'simple-error
+                    :format-control "Could not find oldString in ~A; it must match the file content exactly, including whitespace and line endings."
+                    :format-arguments (list path)))
+            ((and (> count 1) (not replace-all))
+             (error 'simple-error
+                    :format-control "Found ~D matches for oldString in ~A; provide more surrounding context to make the match unique, or pass replaceAll: true."
+                    :format-arguments (list count path)))
+            (t
+             (let ((new-content (replace-string-occurrences content old-string new-string replace-all)))
+               (when (> (length new-content) (* 10 1024 1024))
+                 (error 'simple-error
+                        :format-control "Resulting content size ~D characters exceeds 10MB limit for ~A."
+                        :format-arguments (list (length new-content) path)))
+               (handler-case
+                   (progn
+                     (with-open-file (stream resolved
+                                             :direction :output
+                                             :if-exists :supersede
+                                             :if-does-not-exist :error
+                                             :element-type 'character
+                                             :external-format :utf-8)
+                       (write-sequence new-content stream))
+                     (format nil "Edit applied successfully to ~A (~D replacement~:P)." path count))
+                 (error (c)
+                   (error 'simple-error :format-control "Failed to write edited file ~A: ~A"
+                                        :format-arguments (list path c))))))))))))
 
 (defparameter *bash-output-cap-bytes* (* 1024 1024)
   "Maximum size, in characters, of combined bash output returned to the caller.

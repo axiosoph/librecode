@@ -34,6 +34,40 @@ If the context has been cancelled, terminates the process immediately."
       (bt:with-lock-held (lock)
         (cdr registry)))))
 
+(defvar *path-locks-registry* (cons (make-hash-table :test 'equal) (bt:make-lock "path-locks-registry-lock"))
+  "Registry of per-resolved-path locks serializing file-touching tool calls
+(read_file/write_file/edit) against the SAME path within a turn's
+concurrently-dispatched tool_calls. Bound to (cons hash-table meta-lock),
+mirroring *active-subprocesses*'s (registry . lock) shape: the hash table
+maps a resolved path's namestring to the bt:lock guarding that single file's
+critical section. Locks are created lazily on first use and never removed --
+the table only ever holds one entry per distinct path a tool call has
+touched, and retaining a small lock object for the life of the process is
+cheap. Different paths get different locks, so concurrent calls to distinct
+files never block each other.")
+
+(defun get-path-lock (path-key)
+  "Return the bt:lock serializing tool access to PATH-KEY (a resolved path's
+namestring), creating it under the registry's meta-lock on first use."
+  (destructuring-bind (table . meta-lock) *path-locks-registry*
+    (bt:with-lock-held (meta-lock)
+      (or (gethash path-key table)
+          (setf (gethash path-key table)
+                (bt:make-lock (format nil "path-lock-~A" path-key)))))))
+
+(defmacro with-path-lock ((path-key) &body body)
+  "Execute BODY while holding the single mutual-exclusion lock for PATH-KEY (a
+resolved path's namestring). Concurrent tool_calls -- read_file, write_file,
+edit -- that resolve to the SAME path serialize on this lock, so edit's
+read -> compute -> write critical section can never interleave with another
+concurrent call against the same file (the race that silently drops one
+side's write); calls against DIFFERENT paths acquire different locks and
+are not serialized against each other."
+  (let ((lock-var (gensym "PATH-LOCK")))
+    `(let ((,lock-var (get-path-lock ,path-key)))
+       (bt:with-lock-held (,lock-var)
+         ,@body))))
+
 (defclass tool ()
   ((name :initarg :name :reader tool-name :type string)
    (description :initarg :description :reader tool-description :type string)
