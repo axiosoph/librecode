@@ -329,7 +329,9 @@ CREATE TABLE IF NOT EXISTS session_state (
 Stores historical message transcripts for model continuation and context building.
 `tool_call_id` links a `tool`-role row back to the assistant tool call it answers;
 rows written before this linkage existed carry a null value, which callers must
-handle rather than assume (RES-06 raises a diagnostic on unlinked `tool`-role rows).
+handle rather than assume (`reconstruct-wire-message` signals the
+`legacy-history-row` condition on unlinked `tool`-role rows —
+`runner.lisp:64-77`, `conditions.lisp:221-252`).
 
 ```sql
 CREATE TABLE IF NOT EXISTS session_history (
