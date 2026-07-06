@@ -246,9 +246,67 @@ read_file/write_file."
                  (error 'simple-error :format-control "Failed to write edited file ~A: ~A"
                                       :format-arguments (list path c)))))))))))
 
+(defparameter *bash-output-cap-bytes* (* 1024 1024)
+  "Maximum size, in characters, of combined bash output returned to the caller.
+Output beyond this size is truncated with an explicit marker rather than
+returned unboundedly.")
+
+(defun cap-bash-output (text)
+  "Truncate TEXT to *bash-output-cap-bytes* characters, appending an explicit
+marker naming how many bytes were omitted. Returns TEXT unchanged if it is
+within the cap."
+  (let ((len (length text)))
+    (if (<= len *bash-output-cap-bytes*)
+        text
+        (format nil "~A~%... [output truncated, ~D bytes omitted]"
+                (subseq text 0 *bash-output-cap-bytes*)
+                (- len *bash-output-cap-bytes*)))))
+
+(defun read-bash-output-with-deadline (process-info timeout-seconds)
+  "Read PROCESS-INFO's merged output stream to EOF and wait for its exit code
+on a background thread, bounded by TIMEOUT-SECONDS wall-clock time. Signals
+librecode-runner.conditions:tool-timeout if the deadline elapses first.
+Termination of PROCESS-INFO on timeout is the caller's responsibility --
+handle-bash's existing leak-prevention cleanup already does this, which also
+closes the pipe and lets the background reader thread unblock and exit on
+its own (never a raw thread kill)."
+  (let ((lock (bt:make-lock "bash-output-deadline-lock"))
+        (cv (bt:make-condition-variable :name "bash-output-deadline-cv"))
+        (finished-p nil)
+        (output nil)
+        (exit-code nil))
+    (bt:make-thread
+     (lambda ()
+       (let ((out (uiop:slurp-stream-string (uiop:process-info-output process-info)))
+             (code (uiop:wait-process process-info)))
+         (bt:with-lock-held (lock)
+           (setf output out exit-code code finished-p t)
+           (bt:condition-notify cv))))
+     :name "bash-output-reader")
+    (bt:with-lock-held (lock)
+      (let ((start-time (get-internal-real-time))
+            (timeout-units (* timeout-seconds internal-time-units-per-second)))
+        (loop until finished-p
+              do (let* ((elapsed (- (get-internal-real-time) start-time))
+                        (remaining-units (- timeout-units elapsed)))
+                   (when (<= remaining-units 0)
+                     (error 'librecode-runner.conditions:tool-timeout
+                            :tool-id "bash"
+                            :duration timeout-seconds
+                            :message (format nil "Bash command exceeded timeout of ~A seconds."
+                                              timeout-seconds)))
+                   (bt:condition-wait cv lock
+                                      :timeout (float (/ remaining-units internal-time-units-per-second) 1.0))))))
+    (values output exit-code)))
+
 (defun handle-bash (args)
-  "Execute a shell command inside the workspace-root and return combined stdout/stderr."
+  "Execute a shell command inside the workspace-root and return combined stdout/stderr.
+An optional :timeout (seconds) bounds execution; on expiry the subprocess is
+terminated via the existing cooperative-cancellation cleanup below and the
+call settles as a tool-timeout condition. Combined output is capped at
+*bash-output-cap-bytes*."
   (let* ((command (getf args :command))
+         (timeout (getf args :timeout))
          (workspace-root (or librecode-runner.event-store:*workspace-root*
                              (uiop:getcwd)))
          (process-info nil)
@@ -262,24 +320,32 @@ read_file/write_file."
              (progn
                (setf process-info (uiop:launch-program (list "bash" "-c" command)
                                                        :output :stream
-                                                       :error-output :stream
+                                                       ;; Merge stderr into the stdout stream at launch
+                                                       ;; time: two separate unmerged pipes deadlock when
+                                                       ;; a child fills the stderr pipe buffer before
+                                                       ;; stdout reaches EOF, since the stdout slurp below
+                                                       ;; blocks waiting for an EOF that never arrives.
+                                                       :error-output :output
                                                        :directory (namestring workspace-root)))
                (librecode-runner.tool:register-active-subprocess process-info)
-               (let ((stdout (uiop:slurp-stream-string (uiop:process-info-output process-info)))
-                     (stderr (uiop:slurp-stream-string (uiop:process-info-error-output process-info))))
-                 (setf exit-code (uiop:wait-process process-info))
-                 (setf combined (concatenate 'string stdout stderr))))
+               (if timeout
+                   (multiple-value-bind (out code) (read-bash-output-with-deadline process-info timeout)
+                     (setf combined out exit-code code))
+                   (progn
+                     (setf combined (uiop:slurp-stream-string (uiop:process-info-output process-info)))
+                     (setf exit-code (uiop:wait-process process-info)))))
            (error (c)
              (error 'simple-error :format-control "Bash invocation failed: ~A" :format-arguments (list c))))
-      ;; Subprocess leak prevention
+      ;; Subprocess leak prevention -- also the timeout's cooperative
+      ;; termination path: a signaled tool-timeout unwinds through here.
       (when (and process-info (uiop:process-alive-p process-info))
         (uiop:terminate-process process-info :urgent t))
       (when process-info
         (librecode-runner.tool:unregister-active-subprocess process-info)))
     (if (= exit-code 0)
-        combined
+        (cap-bash-output combined)
         (error 'simple-error :format-control "Command ~S failed with exit code ~D. Output:~%~A"
-                             :format-arguments (list command exit-code combined)))))
+                             :format-arguments (list command exit-code (cap-bash-output combined))))))
 
 (defparameter read-file-tool
   (make-instance 'librecode-runner.tool:tool
@@ -307,7 +373,8 @@ read_file/write_file."
                  :name "bash"
                  :description "Execute a command in a bash shell inside the workspace root."
                  :parameters '(:type "object"
-                               :properties (:command (:type "string" :description "Command to execute."))
+                               :properties (:command (:type "string" :description "Command to execute.")
+                                            :timeout (:type "number" :description "Optional wall-clock timeout in seconds. If exceeded, the command is terminated and the call fails with a timeout error."))
                                :required #(:command))
                  :capabilities nil
                  :handler #'handle-bash))

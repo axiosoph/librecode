@@ -269,6 +269,77 @@ termination kills it, so `kill -0 pid` must report the process gone."
               (declare (ignore out err))
               (is (not (= 0 exit-code))))))))))
 
+(test test-builtin-bash-no-stderr-deadlock
+  "Regression for the two-pipe deadlock: a child that writes well past a pipe
+buffer's worth of bytes to stderr before writing to stdout must not hang the
+combined-output slurp. Bounded by join-thread-with-timeout so a real
+regression fails this test instead of hanging the whole suite."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (let* ((*workspace-root* dir)
+           (bash-tool (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
+                        (gethash "bash" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*))))
+           (result nil)
+           (test-error nil)
+           ;; Over 3x a typical 64KB pipe buffer, written to stderr before stdout.
+           (cmd "(yes x | head -c 200000) >&2; echo done-stdout")
+           (thread (bt:make-thread
+                    (lambda ()
+                      (handler-case
+                          (setf result (execute-tool bash-tool (list :command cmd)))
+                        (error (c) (setf test-error c))))
+                    :name "bash-deadlock-regression")))
+      (let ((join-result (librecode-runner.protocol:join-thread-with-timeout thread 10.0)))
+        (is (not (eq join-result :timeout))
+            "handle-bash deadlocked: a large stderr write blocked while stdout stayed open.")
+        (is (null test-error) (format nil "unexpected error: ~A" test-error))
+        (when result
+          (is (not (null (search "done-stdout" result)))))))))
+
+(test test-builtin-bash-own-timeout
+  "handle-bash's own :timeout argument, on expiry, terminates the subprocess via
+the existing cooperative-cancellation cleanup and settles as a tool-timeout
+condition (never a raw thread kill). Run on a bounded thread so a red-phase
+run (timeout not yet honored) fails fast instead of riding out the child's
+full sleep."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (let* ((*workspace-root* dir)
+           (bash-tool (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
+                        (gethash "bash" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*))))
+           (pid-file (merge-pathnames "pid_own_timeout.txt" (uiop:ensure-directory-pathname dir)))
+           (cmd (format nil "echo $$ > ~A; sleep 5" (namestring pid-file)))
+           (signaled-condition nil)
+           (thread (bt:make-thread
+                    (lambda ()
+                      (handler-case
+                          (execute-tool bash-tool (list :command cmd :timeout 0.3))
+                        (condition (c) (setf signaled-condition c))))
+                    :name "bash-own-timeout-test")))
+      (let ((join-result (librecode-runner.protocol:join-thread-with-timeout thread 8.0)))
+        (is (not (eq join-result :timeout))
+            "handle-bash's :timeout did not settle within the bounded wait."))
+      (is (typep signaled-condition 'tool-timeout)
+          (format nil "expected a tool-timeout condition, got: ~A" signaled-condition))
+      (sleep 0.5)
+      (is-true (probe-file pid-file))
+      (let ((pid-str (string-trim '(#\Space #\Newline #\Return)
+                                  (uiop:read-file-string pid-file))))
+        (multiple-value-bind (out err exit-code)
+            (uiop:run-program (list "kill" "-0" pid-str) :ignore-error-status t)
+          (declare (ignore out err))
+          (is (not (= 0 exit-code))))))))
+
+(test test-builtin-bash-output-cap
+  "Combined output beyond the named cap constant is truncated with an explicit marker."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (let* ((*workspace-root* dir)
+           (bash-tool (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
+                        (gethash "bash" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*))))
+           (cap librecode-runner.builtin-tools::*bash-output-cap-bytes*)
+           (cmd (format nil "yes x | head -c ~D" (+ cap 1000))))
+      (let ((res (execute-tool bash-tool (list :command cmd))))
+        (is (<= (length res) (+ cap 200)))
+        (is (not (null (search "truncated" res))))))))
+
 (defun edit-tool% ()
   (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
     (gethash "edit" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*))))
