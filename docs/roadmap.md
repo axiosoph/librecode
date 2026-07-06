@@ -149,9 +149,10 @@ ratification). The human quality scalar at campaign close is the ground-truth an
   is per-contract (phase design + the monotonic-phase invariant), not systemic.
 
 ### E · Heterogeneity / decorrelation-first *(the manifesto's core value)*
-- **Wire `harness-opencode` for real** — pulled forward from a later slot: it derisks H
-  (a mature harness to exercise the metaharness against beyond a toy runner) and is the
-  heterogeneity play in one move; see "Immediate next." The drive surface is proven
+- **Wire `harness-opencode` for real** — **no longer pulled forward ahead of H**
+  (2026-07-05 explicit operator call: the native runner is the golden path; other
+  harnesses are pragmatic support for realistic heterogeneous conditions, sequenced
+  after H per "The MVP path" below). The drive surface is proven
   (2026-07-05 survey, `.scratch/opencode-seam-survey-2026-07-05.md`): `opencode serve`
   HTTP+SSE — dispatch via `POST /session` + `prompt_async`, observe via SSE `/event`,
   complete/fail via `session.idle`/`session.error`, cancel via `/abort`, permission
@@ -375,22 +376,34 @@ Nickel gates checking deposits, journal + ledger recording everything, the human
 surfaced only where judgment is needed, a merged auditable branch out. Graduation test
 (unfakeable): **librecode runs its own next campaign.**
 
-The sequence — four campaigns, two design passes:
-1. **Campaign 6 — K, the kernel.** Journal fold routed through `transition-event`,
-   vocabulary reconciliation (the plan-amendment event class is the one open design
-   decision), the five invariants as boot gates on replay, the dead-table cut, and the
-   supervision-contract artifact with the minimal restart ladder. ~2 layers, ~6 nodes.
-2. **Campaign 7 — the capable harness.** `harness-opencode` on the proven HTTP+SSE
-   surface (acceptance criteria in E) plus provider auth (B). Daily use does **not**
-   wait on H: opencode is the workhorse walker while the reference runner matures at
-   its own pace (its F3 identity).
-3. **Campaign 8 — J, the contract substrate** on the unified spine (§7's settled
-   shaping design). The largest — may split in two — and cannot be thinned: it is the
-   homework premise made real.
-4. **Campaign 9 — the seam + the bootstrap.** Minimal message-first human seam
+**Sequencing decided (2026-07-05, explicit operator call): the native runner is the
+golden path, not `harness-opencode`.** Other harnesses (opencode included) are
+support for exercising the metaharness under realistic heterogeneous conditions —
+pragmatic, not the primary workhorse. Invest in driving `src/runner/` forward first;
+`harness-opencode`/E moves later, no longer pulled forward ahead of H.
+
+The sequence — five campaigns, two design passes:
+1. **Campaign 6 — K, the kernel.** ✅ Closed 2026-07-05. Journal fold routed through
+   `transition-event`, vocabulary reconciliation, the five (now six, after P1) invariants
+   as boot gates on replay, the dead-table cut, and the supervision-contract wiring.
+   Surfaced that the runtime has no real gate wired anywhere (permanent degraded mode)
+   and produced a ratified gate-harness contract protocol seeding workstream J.
+2. **Campaign 7 — H, the runner capability floor.** The golden-path investment:
+   `src/runner/` stabilized to a testable standard (robust multi-turn tool use, real
+   file/code editing, dependable error handling) — enough to exercise supervision and
+   coherence, not full opencode parity. This is what actually drives your first real
+   campaigns.
+3. **Campaign 8 — the capable second harness.** `harness-opencode` on the proven
+   HTTP+SSE surface (acceptance criteria in E) plus provider auth (B) — now explicitly
+   pragmatic support for realistic heterogeneous conditions, not the initial workhorse.
+4. **Campaign 9 — J, the contract substrate** on the unified spine (§7's settled
+   shaping design, now concretely seeded by campaign 6's gate-harness-protocol ruling).
+   The largest — may split in two — and cannot be thinned: it is the homework premise
+   made real.
+5. **Campaign 10 — the seam + the bootstrap.** Minimal message-first human seam
    (CLI/REPL, not the TUI), the attention instrument (element 5), then the graduation
-   run: campaign 10 chartered *through* librecode. Forgebot arm-B data accrues from
-   here at no extra cost.
+   run: the next campaign chartered *through* librecode. Forgebot arm-B data accrues
+   from here at no extra cost.
 
 **Design passes, not campaigns:** the C memory dialectic runs **before heavy
 dogfooding** (C's own warning: cross-session state must not accumulate undesigned);
