@@ -52,7 +52,12 @@
            #:denied-error-message
            #:denied-error-action
            #:denied-error-resource
-           
+
+           #:legacy-history-row
+           #:legacy-history-row-message
+           #:legacy-history-row-session-id
+           #:legacy-history-row-row-id
+
            ;; Restarts
            #:retry-with-backup-provider
            #:compact-and-retry

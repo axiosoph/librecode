@@ -6,12 +6,14 @@
 (defpackage #:librecode-test.session
   (:use #:cl
         #:fiveam
+        #:check-it
         #:librecode-runner.protocol
         #:librecode-runner.session
         #:librecode-runner.runner
         #:librecode-runner.compaction
         #:librecode-runner.event-store
         #:librecode-runner.conditions)
+  (:shadowing-import-from #:check-it #:*num-trials*)
   (:export #:session-suite))
 
 (in-package #:librecode-test.session)
@@ -593,4 +595,134 @@
                                session-id)))
               (is-true event-row)
               (is (equal "EVENT-PERMISSION-ASKED" (caar event-row))))))))))
+
+;;; --- Wire fidelity: tool_calls/tool_call_id round-trip ---
+
+(defun %seed-session-state (db session-id)
+  "Insert a minimal session_state row so session_history's FK is satisfied."
+  (sqlite:execute-non-query db
+    "INSERT INTO session_state (session_id, agent_id, version, status, last_updated)
+     VALUES (?, ?, 1, 'active', ?)"
+    session-id "agent-1" (librecode-runner.event-store::current-timestamp-ms)))
+
+(defun %wire-tool-calls-match-p (expected wire-assistant-msg)
+  "Check that WIRE-ASSISTANT-MSG's :tool_calls array matches EXPECTED
+(a list of (:id :name :arguments :result) plists) in order, id/name/arguments intact."
+  (let ((wire-tcs (getf wire-assistant-msg :tool_calls)))
+    (and (equal "assistant" (getf wire-assistant-msg :role))
+         wire-tcs
+         (= (length wire-tcs) (length expected))
+         (every (lambda (exp wtc)
+                  (and (equal (getf exp :id) (getf wtc :id))
+                       (equal "function" (getf wtc :type))
+                       (equal (getf exp :name) (getf (getf wtc :function) :name))
+                       (equal (getf exp :arguments) (getf (getf wtc :function) :arguments))))
+                expected (coerce wire-tcs 'list)))))
+
+(defun %wire-tool-messages-match-p (expected wire-tool-msgs)
+  "Check that WIRE-TOOL-MSGS (the N role:\"tool\" messages following the
+assistant message) each carry the matching tool_call_id and result content,
+in the same order EXPECTED's tool calls were emitted."
+  (and (= (length wire-tool-msgs) (length expected))
+       (every (lambda (exp msg)
+                (and (equal "tool" (getf msg :role))
+                     (equal (getf exp :id) (getf msg :tool_call_id))
+                     (equal (getf exp :result) (getf msg :content))))
+              expected wire-tool-msgs)))
+
+(test test-tool-call-wire-roundtrip-property
+  "Property [c2-roundtrip]: for any turn emitting N tool calls, reconstructing
+the outbound wire messages from persisted history produces an assistant
+message carrying a spec-form tool_calls array (ids, names, argument strings
+intact) followed by exactly one role:\"tool\" message per call, each carrying
+the matching tool_call_id."
+  (let ((*num-trials* 25))
+    (is-true
+     (check-it
+      (generator (list (tuple (string :min-length 1 :max-length 10)
+                              (string :min-length 1 :max-length 10)
+                              (string :min-length 1 :max-length 10))
+                       :min-length 1 :max-length 4))
+      (lambda (calls)
+        (librecode-test.event-store::with-tmp-sandbox (dir)
+          (librecode-test.event-store::with-test-db (db dir)
+            (let ((session-id "wire-roundtrip-session"))
+              (%seed-session-state db session-id)
+              (let ((expected (loop for (name arguments result) in calls
+                                    for i from 0
+                                    collect (list :id (format nil "call-~D" i)
+                                                  :name name
+                                                  :arguments arguments
+                                                  :result result))))
+                (librecode-runner.runner::save-assistant-message
+                 session-id ""
+                 (mapcar (lambda (tc) (list :id (getf tc :id)
+                                           :name (getf tc :name)
+                                           :arguments (getf tc :arguments)))
+                         expected))
+                (dolist (tc expected)
+                  (librecode-runner.runner::save-tool-message
+                   session-id (getf tc :id) (getf tc :name) (getf tc :result)))
+                (let ((wire (librecode-runner.runner::get-wire-history-messages session-id)))
+                  (and (= (length wire) (1+ (length expected)))
+                       (%wire-tool-calls-match-p expected (first wire))
+                       (%wire-tool-messages-match-p expected (rest wire)))))))))))))
+
+(test test-tool-call-wire-roundtrip-survives-restart
+  "Constraint [c2-persisted-across-restart]: wire reconstruction must succeed
+from a fresh database connection (simulating a process restart) rather than
+relying on any in-memory state carried across the turn."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (let* ((db-path (uiop:merge-pathnames* "test.db" dir))
+           (session-id "wire-restart-session")
+           (expected (list (list :id "call-0" :name "read_file" :arguments "{\"path\":\"a.txt\"}" :result "contents-a")
+                           (list :id "call-1" :name "write_file" :arguments "{\"path\":\"b.txt\"}" :result "ok"))))
+      ;; Turn 1: persist an assistant message with 2 tool calls and their results.
+      (let ((librecode-runner.event-store:*workspace-root* dir))
+        (let ((librecode-runner.event-store:*db* (librecode-runner.event-store:connect-db "test.db")))
+          (unwind-protect
+               (progn
+                 (librecode-runner.event-store:init-db librecode-runner.event-store:*db*)
+                 (%seed-session-state librecode-runner.event-store:*db* session-id)
+                 (librecode-runner.runner::save-assistant-message
+                  session-id ""
+                  (mapcar (lambda (tc) (list :id (getf tc :id) :name (getf tc :name) :arguments (getf tc :arguments)))
+                          expected))
+                 (dolist (tc expected)
+                   (librecode-runner.runner::save-tool-message
+                    session-id (getf tc :id) (getf tc :name) (getf tc :result))))
+            (sqlite:disconnect librecode-runner.event-store:*db*))))
+      ;; Simulate a process restart: fresh connection, no carried-over in-memory state.
+      (let ((librecode-runner.event-store:*workspace-root* dir))
+        (let ((librecode-runner.event-store:*db* (librecode-runner.event-store:connect-db "test.db")))
+          (unwind-protect
+               (let ((wire (librecode-runner.runner::get-wire-history-messages session-id)))
+                 (is (= (length wire) 3))
+                 (is-true (%wire-tool-calls-match-p expected (first wire)))
+                 (is-true (%wire-tool-messages-match-p expected (rest wire))))
+            (sqlite:disconnect librecode-runner.event-store:*db*)))))))
+
+(test test-legacy-tool-row-rejected-not-corrupted
+  "Constraint [c2-legacy-rejected-not-corrupted]: a pre-existing tool-role
+history row with no tool_call_id (the old, pre-linkage schema shape) must be
+rejected with a clear, typed condition during wire reconstruction -- never
+silently corrupted into an unlinked tool message, never an obscure crash."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (librecode-test.event-store::with-test-db (db dir)
+      (let ((session-id "wire-legacy-session"))
+        (%seed-session-state db session-id)
+        ;; A legacy-shape tool row: written before tool_call_id tracking existed,
+        ;; so the column is left NULL (as any old row necessarily would be).
+        (sqlite:execute-non-query db
+          "INSERT INTO session_history (id, session_id, role, content, created_at)
+           VALUES (?, ?, 'tool', ?, ?)"
+          "legacy-tool-1" session-id "some old tool result" 1000)
+        (signals librecode-runner.conditions:legacy-history-row
+          (librecode-runner.runner::get-wire-history-messages session-id))
+        ;; The condition names the offending row so the failure is diagnosable, not obscure.
+        (handler-case
+            (librecode-runner.runner::get-wire-history-messages session-id)
+          (librecode-runner.conditions:legacy-history-row (c)
+            (is (equal "legacy-tool-1" (librecode-runner.conditions:legacy-history-row-row-id c)))
+            (is (equal session-id (librecode-runner.conditions:legacy-history-row-session-id c)))))))))
 
