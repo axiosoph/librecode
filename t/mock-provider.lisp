@@ -14,9 +14,19 @@
 (defpackage #:librecode-test.mock-provider
   (:use #:cl)
   (:export #:with-mock-provider
-           #:get-free-port))
+           #:get-free-port
+           #:tool-role-messages))
 
 (in-package #:librecode-test.mock-provider)
+
+(defun tool-role-messages (body)
+  "Return, in wire order, the tool-role message hash-tables from a parsed
+request BODY's \"messages\" array (a JSON array, which com.inuoe.jzon parses
+to a vector; COERCE keeps this responder agnostic to that representation
+detail). Shared by t/scenario-tests.lisp and t/e2e-tests.lisp, which both
+script mock-provider responders that branch on prior tool results."
+  (remove-if-not (lambda (m) (equal "tool" (gethash "role" m)))
+                  (coerce (gethash "messages" body) 'list)))
 
 (defun get-free-port ()
   "Find a free port on localhost by binding then immediately releasing a socket."

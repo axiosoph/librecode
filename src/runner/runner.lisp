@@ -45,20 +45,16 @@ for every row except tool-role rows recorded under the tool-linkage schema."
 
 (defun parse-assistant-payload (content)
   "Parse an assistant session_history row's CONTENT column.
-Returns (values text tool-calls), where TOOL-CALLS is a list of
-(:id :name :arguments) plists reconstructed from the persisted
-{text, tool_calls: [...]} JSON payload, or NIL for a plain-text
-assistant response with no tool calls."
+Returns (values text tool-calls), where TOOL-CALLS is the raw parsed
+{id, type, function: {name, arguments}} tool_calls vector from the
+persisted {text, tool_calls: [...]} JSON payload (each element a
+com.inuoe.jzon hash-table), or NIL for a plain-text assistant response
+with no tool calls. RECONSTRUCT-WIRE-MESSAGE re-keys these hash-tables
+directly into the outbound wire shape -- this function does not flatten
+them to an intermediate representation first."
   (let ((parsed (handler-case (com.inuoe.jzon:parse content) (error () nil))))
     (if (and (hash-table-p parsed) (gethash "tool_calls" parsed))
-        (values (gethash "text" parsed)
-                (map 'list
-                     (lambda (tc)
-                       (let ((fn (gethash "function" tc)))
-                         (list :id (gethash "id" tc)
-                               :name (and fn (gethash "name" fn))
-                               :arguments (and fn (gethash "arguments" fn)))))
-                     (gethash "tool_calls" parsed)))
+        (values (gethash "text" parsed) (gethash "tool_calls" parsed))
         (values content nil))))
 
 (defun reconstruct-wire-message (session-id row)
@@ -83,10 +79,11 @@ tool message a real provider endpoint would reject or mis-thread."
                    :content (or text "")
                    :tool_calls (map 'vector
                                     (lambda (tc)
-                                      (list :id (getf tc :id)
-                                            :type "function"
-                                            :function (list :name (getf tc :name)
-                                                             :arguments (getf tc :arguments))))
+                                      (let ((fn (gethash "function" tc)))
+                                        (list :id (gethash "id" tc)
+                                              :type "function"
+                                              :function (list :name (and fn (gethash "name" fn))
+                                                               :arguments (and fn (gethash "arguments" fn))))))
                                     tool-calls))
              (list :role "assistant" :content content))))
       (t (list :role role :content content)))))
