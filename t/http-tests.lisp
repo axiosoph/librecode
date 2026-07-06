@@ -14,9 +14,6 @@
 
 (in-suite http-suite)
 
-(defun get-free-port ()
-  (+ 20000 (random 5000)))
-
 (defun query-test-db (dir sql &rest args)
   (let* ((db-path (merge-pathnames "librecode.db" dir))
          (db (librecode-runner.event-store:connect-db db-path)))
@@ -35,7 +32,7 @@
            (librecode-runner.event-store:init-db init-db)
         (sqlite:disconnect init-db)))
 
-    (let* ((port (get-free-port))
+    (let* ((port (librecode-test.mock-provider:get-free-port))
            (url-base (format nil "http://127.0.0.1:~A" port))
            (session-id nil))
       ;; Start the HTTP bridge
@@ -185,7 +182,7 @@
            (librecode-runner.event-store:init-db init-db)
         (sqlite:disconnect init-db)))
 
-    (let* ((port (get-free-port))
+    (let* ((port (librecode-test.mock-provider:get-free-port))
            (url-base (format nil "http://127.0.0.1:~A" port))
            (session-id nil))
       ;; Start the HTTP bridge
@@ -280,7 +277,7 @@
            (librecode-runner.event-store:init-db init-db)
         (sqlite:disconnect init-db)))
 
-    (let* ((port (get-free-port))
+    (let* ((port (librecode-test.mock-provider:get-free-port))
            (url-base (format nil "http://127.0.0.1:~A" port))
            (session-id nil)
            (provider-calls-count 0)
