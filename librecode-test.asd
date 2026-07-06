@@ -22,6 +22,7 @@
   ((:module "t"
     :components
     ((:file "event-store-tests")
+     (:file "mock-provider")
      (:file "agent-tests")
      (:file "audit-tests")
      (:file "tool-tests")

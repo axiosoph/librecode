@@ -23,10 +23,6 @@
 
 (in-suite session-suite)
 
-(defun get-free-port ()
-  "Generate a random port in user range."
-  (+ 15000 (random 5000)))
-
 ;;; --- Tests ---
 
 (test test-wake-coalescing
@@ -93,41 +89,25 @@
   "Verify correct chunk-by-chunk extraction from a mocked SSE HTTP streaming server."
   (librecode-test.event-store::with-tmp-sandbox (dir)
     (librecode-test.event-store::with-test-db (db dir)
-      (let* ((session-id "session-sse")
-             (port (get-free-port))
-             (acceptor (make-instance 'hunchentoot:easy-acceptor :port port)))
+      (let ((session-id "session-sse"))
         ;; Create projected session state
         (sqlite:execute-non-query db
           "INSERT INTO session_state (session_id, agent_id, version, status, last_updated)
            VALUES (?, ?, 1, 'active', ?)"
           session-id "agent-1" (librecode-runner.event-store::current-timestamp-ms))
 
-        ;; Set up custom local route dispatcher for SSE stream
-        (let ((dispatcher (lambda (request)
-                            (when (equal (hunchentoot:script-name request) "/stream")
-                              (lambda ()
-                                (setf (hunchentoot:content-type*) "text/event-stream")
-                                (let ((stream (hunchentoot:send-headers)))
-                                  (write-sequence (flexi-streams:string-to-octets (format nil "data: {\"choices\": [{\"delta\": {\"content\": \"Hello \"}}]}~%") :external-format :utf-8) stream)
-                                  (force-output stream)
-                                  (write-sequence (flexi-streams:string-to-octets (format nil "data: {\"choices\": [{\"delta\": {\"content\": \"world!\"}}]}~%") :external-format :utf-8) stream)
-                                  (force-output stream)
-                                  (write-sequence (flexi-streams:string-to-octets (format nil "data: [DONE]~%") :external-format :utf-8) stream)
-                                  (force-output stream)
-                                  ""))))))
-          (push dispatcher hunchentoot:*dispatch-table*)
-          (unwind-protect
-               (progn
-                 (hunchentoot:start acceptor)
-                 (let ((librecode-runner.runner::*provider-url* (format nil "http://127.0.0.1:~A/stream" port))
-                       (librecode-runner.protocol::*session-mailbox* (librecode-runner.protocol:make-mailbox)))
-                   (execute-provider-turn session-id "mock-provider" "mock-model")
-                   ;; Verify the assistant message was correctly compiled and saved in history
-                   (let ((content (sqlite:execute-single db "SELECT content FROM session_history WHERE role = 'assistant'")))
-                     (is (equal "Hello world!" content)))))
-            (progn
-              (hunchentoot:stop acceptor)
-              (setf hunchentoot:*dispatch-table* (delete dispatcher hunchentoot:*dispatch-table*)))))))))
+        (librecode-test.mock-provider:with-mock-provider
+            (port :path "/stream"
+                  :responder (lambda (request call-index)
+                               (declare (ignore request call-index))
+                               (list (list :content "Hello ")
+                                     (list :content "world!"))))
+          (let ((librecode-runner.runner::*provider-url* (format nil "http://127.0.0.1:~A/stream" port))
+                (librecode-runner.protocol::*session-mailbox* (librecode-runner.protocol:make-mailbox)))
+            (execute-provider-turn session-id "mock-provider" "mock-model")
+            ;; Verify the assistant message was correctly compiled and saved in history
+            (let ((content (sqlite:execute-single db "SELECT content FROM session_history WHERE role = 'assistant'")))
+              (is (equal "Hello world!" content)))))))))
 
 (test test-transaction-atomicity-rollback
   "Verify that if a projection fails inside commit-event, the entire event is rolled back."
@@ -350,65 +330,43 @@
   "Run two sequential execution turns where the first turn simulates an SSE stream error, verifying that the second turn executes cleanly without mailbox contamination."
   (librecode-test.event-store::with-tmp-sandbox (dir)
     (librecode-test.event-store::with-test-db (db dir)
-      (let* ((session-id "session-sequential")
-             (port (get-free-port))
-             (acceptor (make-instance 'hunchentoot:easy-acceptor :port port))
-             (request-count 0))
+      (let ((session-id "session-sequential"))
         ;; Create projected session state
         (sqlite:execute-non-query db
           "INSERT INTO session_state (session_id, agent_id, version, status, last_updated)
            VALUES (?, ?, 1, 'active', ?)"
           session-id "agent-1" (librecode-runner.event-store::current-timestamp-ms))
 
-        ;; Set up custom local route dispatcher
-        (let ((dispatcher (lambda (request)
-                            (when (equal (hunchentoot:script-name request) "/stream")
-                              (lambda ()
-                                (incf request-count)
-                                (setf (hunchentoot:content-type*) "text/event-stream")
-                                (let ((stream (hunchentoot:send-headers)))
-                                  (cond
-                                    ((= request-count 1)
-                                     ;; First turn: send some data, then send error JSON, followed by more data to guarantee mailbox contamination
-                                     (write-sequence (flexi-streams:string-to-octets (format nil "data: {\"choices\": [{\"delta\": {\"content\": \"Stale data\"}}]}~%") :external-format :utf-8) stream)
-                                     (force-output stream)
-                                     (write-sequence (flexi-streams:string-to-octets (format nil "data: {\"error\": \"Simulated stream error\"}~%") :external-format :utf-8) stream)
-                                     (force-output stream)
-                                     (write-sequence (flexi-streams:string-to-octets (format nil "data: {\"choices\": [{\"delta\": {\"content\": \"More stale data\"}}]}~%") :external-format :utf-8) stream)
-                                     (force-output stream)
-                                     "")
-                                    (t
-                                     ;; Second turn: send clean data
-                                     (write-sequence (flexi-streams:string-to-octets (format nil "data: {\"choices\": [{\"delta\": {\"content\": \"Hello \"}}]}~%") :external-format :utf-8) stream)
-                                     (force-output stream)
-                                     (write-sequence (flexi-streams:string-to-octets (format nil "data: {\"choices\": [{\"delta\": {\"content\": \"world!\"}}]}~%") :external-format :utf-8) stream)
-                                     (force-output stream)
-                                     (write-sequence (flexi-streams:string-to-octets (format nil "data: [DONE]~%") :external-format :utf-8) stream)
-                                     (force-output stream)
-                                     ""))))))))
-          (push dispatcher hunchentoot:*dispatch-table*)
-          (hunchentoot:start acceptor)
-          (unwind-protect
-               (let ((librecode-runner.runner::*provider-url* (format nil "http://127.0.0.1:~A/stream" port)))
-                 ;; Bind session mailbox dynamically
-                 (let ((mbox (librecode-runner.protocol:make-mailbox :name "test-seq-mbox")))
-                   (let ((librecode-runner.protocol:*session-mailbox* mbox))
-                     ;; First turn: should fail with provider-error
-                     (signals provider-error
-                       (execute-provider-turn session-id "mock-provider" "mock-model"))
-                     
-                     ;; Manually push a stale message to simulate mailbox contamination
-                     (librecode-runner.protocol:send-message mbox '(:sse-line :stale-rid "data: {\"choices\": [{\"delta\": {\"content\": \"Stale data\"}}]}"))
-                     
-                     ;; Second turn: should succeed because it flushes the mailbox first
-                     (execute-provider-turn session-id "mock-provider" "mock-model")
-                     
-                     ;; Verify assistant message has correct content from second turn only (stale content is discarded)
-                     (let ((content (sqlite:execute-single db "SELECT content FROM session_history WHERE role = 'assistant'")))
-                       (is (equal "Hello world!" content))))))
-            (progn
-              (hunchentoot:stop acceptor)
-              (setf hunchentoot:*dispatch-table* (delete dispatcher hunchentoot:*dispatch-table*)))))))))
+        ;; First turn: send some data, then an error JSON, then more data to
+        ;; guarantee mailbox contamination. Second turn: send clean data.
+        (librecode-test.mock-provider:with-mock-provider
+            (port :path "/stream"
+                  :responder (lambda (request call-index)
+                               (declare (ignore request))
+                               (if (= call-index 1)
+                                   (list (list :content "Stale data")
+                                         (list :raw "{\"error\": \"Simulated stream error\"}")
+                                         (list :content "More stale data")
+                                         :no-done)
+                                   (list (list :content "Hello ")
+                                         (list :content "world!")))))
+          (let ((librecode-runner.runner::*provider-url* (format nil "http://127.0.0.1:~A/stream" port)))
+            ;; Bind session mailbox dynamically
+            (let ((mbox (librecode-runner.protocol:make-mailbox :name "test-seq-mbox")))
+              (let ((librecode-runner.protocol:*session-mailbox* mbox))
+                ;; First turn: should fail with provider-error
+                (signals provider-error
+                  (execute-provider-turn session-id "mock-provider" "mock-model"))
+
+                ;; Manually push a stale message to simulate mailbox contamination
+                (librecode-runner.protocol:send-message mbox '(:sse-line :stale-rid "data: {\"choices\": [{\"delta\": {\"content\": \"Stale data\"}}]}"))
+
+                ;; Second turn: should succeed because it flushes the mailbox first
+                (execute-provider-turn session-id "mock-provider" "mock-model")
+
+                ;; Verify assistant message has correct content from second turn only (stale content is discarded)
+                (let ((content (sqlite:execute-single db "SELECT content FROM session_history WHERE role = 'assistant'")))
+                  (is (equal "Hello world!" content)))))))))))
 
 (test test-session-permission-asked-event-logging
   "Assert that interactive permission check triggers :event-permission-asked and logs to event_log."
