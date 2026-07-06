@@ -726,3 +726,148 @@ silently corrupted into an unlinked tool message, never an obscure crash."
             (is (equal "legacy-tool-1" (librecode-runner.conditions:legacy-history-row-row-id c)))
             (is (equal session-id (librecode-runner.conditions:legacy-history-row-session-id c)))))))))
 
+;;; --- Compaction pairing: never orphan a tool-call/result group across the split ---
+
+(defun %pad-content (label)
+  "A content string long enough that a handful of rows reliably exceed a
+small MAX-TOKENS budget in COMPACT-CONTEXT's floor(length/4) estimator."
+  (format nil "~A ~A" label (make-string 36 :initial-element #\x)))
+
+(defun %insert-plain-row (db session-id id role created-at)
+  (sqlite:execute-non-query db
+    "INSERT INTO session_history (id, session_id, role, content, created_at)
+     VALUES (?, ?, ?, ?, ?)"
+    id session-id role (%pad-content id) created-at))
+
+(defun %tool-calls-payload (call-ids)
+  "Build the {text, tool_calls: [...]} JSON payload SAVE-ASSISTANT-MESSAGE
+would have written for an assistant turn emitting CALL-IDS."
+  (com.inuoe.jzon:stringify
+   (librecode-runner.event-store::coerce-to-hash-table
+    `((:text . "")
+      (:tool_calls . ,(map 'vector
+                           (lambda (id)
+                             `((:id . ,id)
+                               (:type . "function")
+                               (:function . ((:name . "tool") (:arguments . "{}")))))
+                           call-ids))))))
+
+(defun %insert-tool-call-row (db session-id id created-at call-ids)
+  (sqlite:execute-non-query db
+    "INSERT INTO session_history (id, session_id, role, content, created_at)
+     VALUES (?, ?, 'assistant', ?, ?)"
+    id session-id (%tool-calls-payload call-ids) created-at))
+
+(defun %insert-tool-result-row (db session-id id created-at call-id)
+  (sqlite:execute-non-query db
+    "INSERT INTO session_history (id, session_id, role, content, created_at, tool_call_id)
+     VALUES (?, ?, 'tool', ?, ?, ?)"
+    id session-id (%pad-content call-id) created-at call-id))
+
+(defun %build-pairing-history (db session-id segments)
+  "Insert SEGMENTS (each the symbol :PLAIN or a list (:GROUP N)) into
+SESSION-ID's history in order, one CREATED-AT tick per row. Returns an
+ordered list of (:id ID :group-key KEY) plists, independently derived from
+the segment spec (not from re-parsing what got written), where every row
+belonging to the same assistant-tool-call/tool-result group shares KEY."
+  (let ((clock 0)
+        (rows nil))
+    (dolist (seg segments)
+      (if (eq seg :plain)
+          (let ((id (format nil "row-~D" (incf clock))))
+            (%insert-plain-row db session-id id "user" clock)
+            (push (list :id id :group-key id) rows))
+          (destructuring-bind (tag n) seg
+            (declare (ignore tag))
+            (let* ((base-id (format nil "row-~D" (incf clock)))
+                   (call-ids (loop for i from 1 to n
+                                    collect (format nil "~A-call-~D" base-id i))))
+              (%insert-tool-call-row db session-id base-id clock call-ids)
+              (push (list :id base-id :group-key base-id) rows)
+              (dolist (call-id call-ids)
+                (incf clock)
+                (let ((tool-id (format nil "~A-result-~A" base-id call-id)))
+                  (%insert-tool-result-row db session-id tool-id clock call-id)
+                  (push (list :id tool-id :group-key base-id) rows)))))))
+    (nreverse rows)))
+
+(defun %groups-never-split-p (db session-id rows)
+  "Verify [c5-no-orphans]/[c5-group-never-split]: for every group of ROWS
+sharing a :group-key (an assistant tool-call row and its linked tool-result
+rows), the rows still present in SESSION-ID's history are either all of the
+group or none of it -- never a strict subset."
+  (let ((remaining (mapcar #'car
+                            (sqlite:execute-to-list db
+                             "SELECT id FROM session_history WHERE session_id = ?"
+                             session-id)))
+        (groups (make-hash-table :test 'equal)))
+    (dolist (row rows)
+      (push row (gethash (getf row :group-key) groups)))
+    (loop for group-rows being the hash-values of groups
+          always (let ((present (mapcar (lambda (r) (and (member (getf r :id) remaining :test #'equal) t))
+                                        group-rows)))
+                   (or (every #'identity present) (notany #'identity present))))))
+
+(test test-compaction-preserves-tool-pairs
+  "Property [c5-no-orphans]: a naive position-only split that would fall
+strictly between an assistant tool-call message and its tool-result row must
+instead move to keep the whole group on one side. Red-first: with a
+6-message history (u1 a1 u2 [assistant-call a2 -> tool-result t1] u3), the
+naive floor(6/3)=2 keep-count puts split-idx at 4, landing between a2 (index
+3, would be summarized) and t1 (index 4, would be kept) -- an orphan."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (librecode-test.event-store::with-test-db (db dir)
+      (let ((session-id "session-pairing"))
+        (%seed-session-state db session-id)
+        (let ((rows (%build-pairing-history
+                     db session-id
+                     (list :plain :plain :plain (list :group 1) :plain))))
+          (is-true (compact-context session-id :max-tokens 10))
+          (is-true (%groups-never-split-p db session-id rows)))))))
+
+(test test-compaction-keeps-oversized-group-whole
+  "Constraint [a2]: a group that alone exceeds MAX-TOKENS is kept whole
+rather than split, even though this means compaction cannot hit the token
+target exactly."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (librecode-test.event-store::with-test-db (db dir)
+      (let ((session-id "session-oversized-group"))
+        (%seed-session-state db session-id)
+        (let ((rows (%build-pairing-history
+                     db session-id
+                     (list :plain (list :group 3)))))
+          (is-true (compact-context session-id :max-tokens 10))
+          (is-true (%groups-never-split-p db session-id rows))
+          ;; The group (4 rows: 1 assistant tool-call + 3 tool-results) is the
+          ;; tail of history and alone exceeds max-tokens; it must still be
+          ;; kept whole rather than split, per the group-never-split rule.
+          (let* ((group-ids (mapcar (lambda (r) (getf r :id))
+                                    (remove-if-not (lambda (r) (equal (getf r :group-key) "row-2"))
+                                                    rows)))
+                 (remaining (mapcar #'car
+                                    (sqlite:execute-to-list db
+                                     "SELECT id FROM session_history WHERE session_id = ?"
+                                     session-id))))
+            (is-true group-ids)
+            (dolist (id group-ids)
+              (is-true (member id remaining :test #'equal)))))))))
+
+(test test-compaction-pairing-property
+  "Property [c5-no-orphans]/[c5-group-never-split]: over varied generated
+histories mixing plain messages and tool-call/result groups of varying
+size, after compaction no group is ever split across the keep/summarize
+boundary."
+  (let ((*num-trials* 30))
+    (is-true
+     (check-it
+      (generator (list (or (quote :plain) (tuple (quote :group) (integer 1 3)))
+                       :min-length 4 :max-length 8))
+      (lambda (segments)
+        (librecode-test.event-store::with-tmp-sandbox (dir)
+          (librecode-test.event-store::with-test-db (db dir)
+            (let ((session-id "session-pairing-property"))
+              (%seed-session-state db session-id)
+              (let ((rows (%build-pairing-history db session-id segments)))
+                (compact-context session-id :max-tokens 10)
+                (%groups-never-split-p db session-id rows))))))))))
+
