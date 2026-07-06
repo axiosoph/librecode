@@ -286,6 +286,9 @@ lexically and returns a lambda that rebinds them and executes BODY."
                  ((subtypep type 'librecode-runner.conditions:protocol-invariant-violation)
                   (list :message (librecode-runner.conditions:protocol-invariant-violation-message condition)
                         :invariant (librecode-runner.conditions:protocol-invariant-violation-invariant condition)))
+                 ((subtypep type 'librecode-runner.conditions:journal-invariant-violation)
+                  (list :message (librecode-runner.conditions:journal-invariant-violation-message condition)
+                        :invariant (librecode-runner.conditions:journal-invariant-violation-invariant condition)))
                  ((subtypep type 'librecode-runner.conditions:gate-failure)
                   (list :message (librecode-runner.conditions:gate-failure-message condition)
                         :command (librecode-runner.conditions:gate-failure-command condition)
@@ -308,6 +311,7 @@ lexically and returns a lambda that rebinds them and executes BODY."
                  librecode-runner.conditions:tool-timeout
                  librecode-runner.conditions:process-hang
                  librecode-runner.conditions:protocol-invariant-violation
+                 librecode-runner.conditions:journal-invariant-violation
                  librecode-runner.conditions:gate-failure
                  librecode-runner.conditions:denied-error)))
 

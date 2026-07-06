@@ -127,6 +127,20 @@ can place it wherever their own wire-message shape expects it."
            (librecode-runner.protocol:send-message reply-mbox '(:abort)))
       (ignore-errors (bt:destroy-thread worker-thread)))))
 
+(test test-journal-invariant-violation-roundtrips-to-own-type
+  "descriptor-to-condition must reconstruct a JOURNAL-INVARIANT-VIOLATION as its
+own type rather than falling back to SIMPLE-ERROR -- closing the gap where
+known-custom-condition-p's list omitted it."
+  (let* ((orig (make-condition 'librecode-runner.conditions:journal-invariant-violation
+                               :message "Replayed trajectory folded to a forbidden state."
+                               :invariant "I3"))
+         (desc (librecode-runner.protocol:condition-to-descriptor orig))
+         (round-tripped (librecode-runner.protocol:descriptor-to-condition desc)))
+    (is (typep round-tripped 'librecode-runner.conditions:journal-invariant-violation))
+    (is (equal "I3" (librecode-runner.conditions:journal-invariant-violation-invariant round-tripped)))
+    (is (equal "Replayed trajectory folded to a forbidden state."
+               (librecode-runner.conditions:journal-invariant-violation-message round-tripped)))))
+
 (test test-failure-descriptor-robust-fallback
   "Verify that descriptor-to-condition falls back to simple-error for unknown condition types."
   (let* ((orig (make-condition 'storage-condition))
