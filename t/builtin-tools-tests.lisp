@@ -27,14 +27,18 @@
         (write-tool (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
                       (gethash "write_file" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*))))
         (bash-tool-resolved (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
-                              (gethash "bash" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*)))))
+                              (gethash "bash" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*))))
+        (edit-tool-resolved (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
+                              (gethash "edit" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*)))))
     (is (not (null read-tool)))
     (is (not (null write-tool)))
     (is (not (null bash-tool-resolved)))
-    (when (and read-tool write-tool bash-tool-resolved)
+    (is (not (null edit-tool-resolved)))
+    (when (and read-tool write-tool bash-tool-resolved edit-tool-resolved)
       (is (string= "read_file" (tool-name read-tool)))
       (is (string= "write_file" (tool-name write-tool)))
-      (is (string= "bash" (tool-name bash-tool-resolved))))))
+      (is (string= "bash" (tool-name bash-tool-resolved)))
+      (is (string= "edit" (tool-name edit-tool-resolved))))))
 
 (test test-builtin-tool-argument-validation
   "Verify that the JSON schema for built-in tools validates arguments correctly."
@@ -264,3 +268,167 @@ termination kills it, so `kill -0 pid` must report the process gone."
                 (uiop:run-program (list "kill" "-0" pid-str) :ignore-error-status t)
               (declare (ignore out err))
               (is (not (= 0 exit-code))))))))))
+
+(defun edit-tool% ()
+  (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
+    (gethash "edit" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*))))
+
+(test test-builtin-edit-schema-field-names
+  "Verify the edit tool's schema uses opencode's exact field names: filePath,
+oldString, newString, and an optional replaceAll -- matching the shipped
+opencode edit tool schema (workstream G seam compatibility)."
+  (let* ((edit-tool (edit-tool%)))
+    (is (not (null edit-tool)))
+    (when edit-tool
+      (let* ((schema (tool-parameters edit-tool))
+             (properties (getf schema :properties))
+             (required (coerce (getf schema :required) 'list)))
+        (is (not (null (getf properties :filePath))))
+        (is (not (null (getf properties :oldString))))
+        (is (not (null (getf properties :newString))))
+        (is (not (null (getf properties :replaceAll))))
+        (is (not (null (member :filePath required))))
+        (is (not (null (member :oldString required))))
+        (is (not (null (member :newString required))))
+        (is (null (member :replaceAll required)))))))
+
+(test test-builtin-edit-basic-replacement
+  "Verify a single exact-string match is replaced correctly."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (let ((*workspace-root* dir)
+          (edit-tool (edit-tool%))
+          (write-tool (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
+                        (gethash "write_file" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*))))
+          (read-tool (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
+                       (gethash "read_file" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*)))))
+      (is (not (null edit-tool)))
+      (when (and edit-tool write-tool read-tool)
+        (execute-tool write-tool (list :path "greeting.txt" :content "Hello, World!"))
+        (let ((res (execute-tool edit-tool (list :filePath "greeting.txt" :oldString "World" :newString "Lisp"))))
+          (is (stringp res)))
+        (is (string= "Hello, Lisp!" (execute-tool read-tool (list :path "greeting.txt"))))))))
+
+(test test-builtin-edit-zero-match-error
+  "Verify that an oldString with no match in the file signals a distinguishable error."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (let ((*workspace-root* dir)
+          (edit-tool (edit-tool%))
+          (write-tool (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
+                        (gethash "write_file" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*)))))
+      (when (and edit-tool write-tool)
+        (execute-tool write-tool (list :path "f.txt" :content "abc def"))
+        (signals error
+          (execute-tool edit-tool (list :filePath "f.txt" :oldString "zzz" :newString "yyy")))))))
+
+(test test-builtin-edit-multiple-match-without-replaceall-error
+  "Verify that more than one match without replaceAll signals a distinguishable error."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (let ((*workspace-root* dir)
+          (edit-tool (edit-tool%))
+          (write-tool (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
+                        (gethash "write_file" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*))))
+          (read-tool (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
+                       (gethash "read_file" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*)))))
+      (when (and edit-tool write-tool read-tool)
+        (execute-tool write-tool (list :path "f.txt" :content "foo bar foo"))
+        (signals error
+          (execute-tool edit-tool (list :filePath "f.txt" :oldString "foo" :newString "baz")))
+        ;; File must be untouched by the rejected edit.
+        (is (string= "foo bar foo" (execute-tool read-tool (list :path "f.txt"))))))))
+
+(test test-builtin-edit-replaceall
+  "Verify replaceAll replaces every occurrence of oldString."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (let ((*workspace-root* dir)
+          (edit-tool (edit-tool%))
+          (write-tool (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
+                        (gethash "write_file" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*))))
+          (read-tool (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
+                       (gethash "read_file" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*)))))
+      (when (and edit-tool write-tool read-tool)
+        (execute-tool write-tool (list :path "f.txt" :content "foo bar foo"))
+        (finishes
+          (execute-tool edit-tool (list :filePath "f.txt" :oldString "foo" :newString "baz" :replaceAll t)))
+        (is (string= "baz bar baz" (execute-tool read-tool (list :path "f.txt"))))))))
+
+(test test-builtin-edit-oldstring-equals-newstring-error
+  "Verify oldString == newString is rejected before any file I/O."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (let ((*workspace-root* dir)
+          (edit-tool (edit-tool%))
+          (write-tool (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
+                        (gethash "write_file" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*))))
+          (read-tool (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
+                       (gethash "read_file" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*)))))
+      (when (and edit-tool write-tool read-tool)
+        (execute-tool write-tool (list :path "f.txt" :content "unchanged content"))
+        (signals error
+          (execute-tool edit-tool (list :filePath "f.txt" :oldString "same" :newString "same")))
+        (is (string= "unchanged content" (execute-tool read-tool (list :path "f.txt"))))))))
+
+(test test-builtin-edit-nonexistent-file-error
+  "Verify editing a nonexistent file signals a structured, distinguishable error
+rather than a raw file-error condition."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (let ((*workspace-root* dir)
+          (edit-tool (edit-tool%)))
+      (when edit-tool
+        (handler-case
+            (progn
+              (execute-tool edit-tool (list :filePath "does-not-exist.txt" :oldString "a" :newString "b"))
+              (is nil "Expected an error to be signalled."))
+          (error (c)
+            (is (typep c 'simple-error))
+            (is (not (null (search "not found" (princ-to-string c) :test #'char-equal))))))))))
+
+(test test-builtin-edit-non-utf8-error
+  "Verify editing a file with invalid UTF-8 content signals a structured error
+rather than a raw stream-decoding condition escaping to the model."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (let ((*workspace-root* dir)
+          (edit-tool (edit-tool%))
+          (target (merge-pathnames "bad-utf8.txt" (uiop:ensure-directory-pathname dir))))
+      (when edit-tool
+        (with-open-file (stream target :direction :output :element-type '(unsigned-byte 8)
+                                        :if-exists :supersede :if-does-not-exist :create)
+          (write-byte #xFF stream)
+          (write-byte #xFE stream)
+          (write-byte #x00 stream))
+        (handler-case
+            (progn
+              (execute-tool edit-tool (list :filePath "bad-utf8.txt" :oldString "a" :newString "b"))
+              (is nil "Expected an error to be signalled."))
+          (error (c)
+            (is (typep c 'simple-error))))))))
+
+(test test-builtin-edit-sandbox-denial
+  "Verify directory traversal attempts (including symlinks) are blocked for edit,
+identically to read_file/write_file, via the same resolve-safe-path."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (let ((*workspace-root* dir)
+          (edit-tool (edit-tool%)))
+      (when edit-tool
+        (signals denied-error
+          (execute-tool edit-tool (list :filePath "../outside-file.txt" :oldString "a" :newString "b")))
+        (signals denied-error
+          (execute-tool edit-tool (list :filePath "/etc/hosts" :oldString "a" :newString "b")))
+        (let ((symlink-path (merge-pathnames "symlink_to_etc" dir)))
+          (uiop:run-program (list "ln" "-s" "/etc" (namestring symlink-path)))
+          (signals denied-error
+            (execute-tool edit-tool (list :filePath "symlink_to_etc/hosts" :oldString "a" :newString "b"))))))))
+
+(test test-builtin-edit-size-cap
+  "Verify the 10MB size cap (matching read_file/write_file) applies to edit's
+target file."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (let ((*workspace-root* dir)
+          (edit-tool (edit-tool%))
+          (target (merge-pathnames "huge.txt" (uiop:ensure-directory-pathname dir))))
+      (when edit-tool
+        (with-open-file (stream target :direction :output :element-type 'character
+                                        :if-exists :supersede :if-does-not-exist :create
+                                        :external-format :utf-8)
+          (let ((chunk (make-string (* 1024 1024) :initial-element #\a)))
+            (dotimes (i 11) (write-sequence chunk stream))))
+        (signals error
+          (execute-tool edit-tool (list :filePath "huge.txt" :oldString "a" :newString "b")))))))
