@@ -29,9 +29,9 @@ defined in `conditions.lisp` / `execute-provider-turn`: `retry-with-backup-provi
 1. **`compact-and-retry`** — **BUILT & autonomously driven**
    * *Applicable to*: `context-overflow`
    * *Behavior*: Triggers the compaction engine to fold older context history, snapshots a new epoch baseline, and retries the turn. Auto-invoked by a `handler-bind` in the HTTP drive loop up to `*max-compact-attempts*` (`http.lisp`).
-2. **`retry-with-backup-provider`** — **BUILT (restart), not yet auto-driven**
+2. **`retry-with-backup-provider`** — **BUILT & autonomously driven**
    * *Applicable to*: `provider-error`
-   * *Behavior*: Switches the active provider connection to a backup endpoint (`*backup-provider-url*`) and re-executes the turn. The restart exists in `restart-case` but is currently invoked only by tests — no `src/` `handler-bind` autonomously selects it.
+   * *Behavior*: Switches the active provider connection to a backup endpoint (`*backup-provider-url*`) and re-executes the turn. Auto-invoked by a `handler-bind` in the HTTP drive loop up to `*max-backup-provider-attempts*` (`http.lisp`), mirroring `compact-and-retry`'s pattern.
 3. **`skip-and-continue`** — **BUILT**
    * *Applicable to*: non-fatal tool or subagent failures
    * *Behavior*: Discards the failed operation, records a warning event, and continues the session execution block.
