@@ -1,14 +1,17 @@
 # librecode Testing Specification
 
 > **Status (as-built).** The native FiveAM + check-it suite is **BUILT** and green.
-> The 15 suites declared in `librecode-test.asd` are: `event-store`, `agent`, `audit`,
+> The 21 suites declared in `librecode-test.asd` are: `event-store`, `agent`, `audit`,
 > `tool`, `session`, `http`, `resilience`, `campaign`, `journal`, `harness`, `gate`,
-> `supervision`, `recovery`, `failure-relay`, `cross-process`. The OpenCode-parity
-> pieces below — the §3 TypeScript "Test Porting Matrix" and the §4 Playwright
-> black-box E2E run against OpenCode's app package — are **DEFERRED/aspirational**;
-> they describe a parity goal, not tests that currently run. (Note: §4 invokes
-> `librecode-runner:start-server`; the actual HTTP entry point is
-> `librecode-runner.http:start-http-bridge`.)
+> `supervision`, `recovery`, `failure-relay`, `cross-process`, `provider`,
+> `builtin-tools`, `child`, `e2e`, `scenario`, `model`. (`t/mock-provider.lisp` is a
+> shared fixture, not a suite — see §2.2.) The OpenCode-parity pieces below — the §3
+> TypeScript "Test Porting Matrix" and the §4 Playwright black-box E2E run against
+> OpenCode's app package — remain **DEFERRED/aspirational**; they describe a parity
+> goal, not tests that currently run. §4's body still names
+> `librecode-runner:start-server` as the entry point; the actual function is
+> `librecode-runner.http:start-http-bridge` (fixed inline below, not just in this
+> banner).
 
 This document defines the testing strategy, frameworks, fixtures, and execution models required to guarantee absolute behavioral parity between `librecode` and OpenCode.
 
@@ -45,25 +48,33 @@ Replaces OpenCode's `tmpdir` fixture. It creates a temporary directory, optional
          (serious-condition () nil)))))
 ```
 
-### 2.2 Mock LLM Server (`with-mock-llm-server`)
-Replaces OpenCode's `provideTmpdirServer`. It boots an ephemeral, thread-local HTTP mock server (using Clack) that streams predefined JSON chunk SSE streams on-demand, allowing deterministic testing of LLM client timeouts, retry logic, and tool call interrupts. Returning a flat body list in Clack consolidates the output, so we must use Clack's dynamic callback API to stream chunks progressively:
+### 2.2 Mock Provider Fixture (`with-mock-provider`)
+Replaces OpenCode's `provideTmpdirServer`. Defined in `t/mock-provider.lisp`, it boots
+an ephemeral **Hunchentoot** acceptor (not Clack) on a free local port and installs a
+single dispatcher matching a given path (default `/stream`) and that acceptor's own
+port — never a different one sharing the process-global `hunchentoot:*dispatch-table*`.
+It consolidates the dispatch/acceptor boilerplate that `http-tests`, `session-tests`,
+`child-tests`, `harness-tests`, and `provider-tests` used to each hand-roll
+independently; it does not replace the real HTTP/SSE transport, so every test using it
+still exercises a genuine round-trip.
+
+A `responder` callback is invoked once per matching request as
+`(funcall responder request call-index)` (`call-index` starts at 1 and increments per
+match) and must return a list of scripted actions to stream back over SSE — `(:content
+text)`, `(:tool-calls calls)`, `(:raw json-string)`, or `(:call thunk)` — terminated
+automatically with a `data: [DONE]` marker unless `:no-done` is present. Optional
+`:method` restricts the dispatcher to one HTTP method, and `:connection-close` sends a
+`Connection: close` header for callers whose client relies on connection closure to
+signal end-of-stream:
 
 ```lisp
-(defmacro with-mock-llm-server ((port-var &key response-chunks) &body body)
-  "Boots a local Clack server streaming RESPONSE-CHUNKS, binding PORT-VAR for the body."
-  `(let* ((,port-var (find-free-port))
-          (handler (clack:clackup
-                    (lambda (env)
-                      (declare (ignore env))
-                      (lambda (responder)
-                        (let ((writer (funcall responder '(200 (:content-type "text/event-stream")))))
-                          (dolist (chunk ,response-chunks)
-                            (funcall writer chunk)
-                            (sleep 0.05))))) ; Simulate network latency between chunks
-                    :port ,port-var :silent t)))
-     (unwind-protect
-          (progn ,@body)
-        (clack:stop handler))))
+(defmacro with-mock-provider ((port-var &key (path "/stream") (host "127.0.0.1")
+                                method connection-close responder)
+                               &body body)
+  "Bind PORT-VAR to a fresh local port, start an ephemeral Hunchentoot acceptor
+there, install a single dispatcher matching PATH/METHOD/PORT-VAR's own port, run
+BODY with the mock provider live, then always tear the acceptor and dispatcher
+back down on exit.")
 ```
 
 ---
@@ -93,7 +104,7 @@ OpenCode's Playwright-based E2E smoke tests (located in `packages/app/e2e/`) run
    ```bash
    # Run from librecode-runner directory
    sbcl --eval '(asdf:load-system :librecode-runner)' \
-        --eval '(librecode-runner:start-server :port 3000)'
+        --eval '(librecode-runner.http:start-http-bridge :port 3000)'
    ```
 2. **Execute E2E Suite**:
    ```bash
