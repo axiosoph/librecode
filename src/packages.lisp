@@ -189,7 +189,9 @@
            #:*active-subprocesses*
            #:register-active-subprocess
            #:unregister-active-subprocess
-           #:tool-cancelled-p))
+           #:tool-cancelled-p
+           #:get-path-lock
+           #:with-path-lock))
 
 (defpackage #:librecode-runner.http
   (:use #:cl)
