@@ -33,13 +33,70 @@ output; inspect via the internal symbol from tests only.")
         session-id))))
 
 (defun get-session-history-messages (session-id)
-  "Retrieve session history messages from session_history read projection."
+  "Retrieve session history rows (id role content tool_call_id) from the
+session_history read projection, ordered by CREATED-AT. TOOL-CALL-ID is NIL
+for every row except tool-role rows recorded under the tool-linkage schema."
   (when (and (boundp 'librecode-runner.event-store:*db*)
              librecode-runner.event-store:*db*)
     (let ((db librecode-runner.event-store:*db*))
       (sqlite:execute-to-list db
-        "SELECT role, content FROM session_history WHERE session_id = ? ORDER BY created_at ASC"
+        "SELECT id, role, content, tool_call_id FROM session_history WHERE session_id = ? ORDER BY created_at ASC"
         session-id))))
+
+(defun parse-assistant-payload (content)
+  "Parse an assistant session_history row's CONTENT column.
+Returns (values text tool-calls), where TOOL-CALLS is a list of
+(:id :name :arguments) plists reconstructed from the persisted
+{text, tool_calls: [...]} JSON payload, or NIL for a plain-text
+assistant response with no tool calls."
+  (let ((parsed (handler-case (com.inuoe.jzon:parse content) (error () nil))))
+    (if (and (hash-table-p parsed) (gethash "tool_calls" parsed))
+        (values (gethash "text" parsed)
+                (map 'list
+                     (lambda (tc)
+                       (let ((fn (gethash "function" tc)))
+                         (list :id (gethash "id" tc)
+                               :name (and fn (gethash "name" fn))
+                               :arguments (and fn (gethash "arguments" fn)))))
+                     (gethash "tool_calls" parsed)))
+        (values content nil))))
+
+(defun reconstruct-wire-message (session-id row)
+  "Reconstruct a single spec-form OpenAI chat-completions message plist from a
+SESSION_HISTORY row (id role content tool-call-id). Signals
+LIBRECODE-RUNNER.CONDITIONS:LEGACY-HISTORY-ROW for a tool-role row that
+predates tool_call_id tracking, rather than silently emitting an unlinked
+tool message a real provider endpoint would reject or mis-thread."
+  (destructuring-bind (id role content tool-call-id) row
+    (cond
+      ((string= role "tool")
+       (unless (and tool-call-id (plusp (length tool-call-id)))
+         (error 'librecode-runner.conditions:legacy-history-row
+                :session-id session-id
+                :row-id id
+                :message (format nil "Tool-role row ~A carries no tool_call_id -- it predates tool-call linkage tracking." id)))
+       (list :role "tool" :tool_call_id tool-call-id :content content))
+      ((string= role "assistant")
+       (multiple-value-bind (text tool-calls) (parse-assistant-payload content)
+         (if tool-calls
+             (list :role "assistant"
+                   :content (or text "")
+                   :tool_calls (map 'vector
+                                    (lambda (tc)
+                                      (list :id (getf tc :id)
+                                            :type "function"
+                                            :function (list :name (getf tc :name)
+                                                             :arguments (getf tc :arguments))))
+                                    tool-calls))
+             (list :role "assistant" :content content))))
+      (t (list :role role :content content)))))
+
+(defun get-wire-history-messages (session-id)
+  "Retrieve and reconstruct SESSION-ID's history as an ordered list of
+spec-form OpenAI chat-completions message plists, ready for outbound request
+assembly. See RECONSTRUCT-WIRE-MESSAGE and GET-SESSION-HISTORY-MESSAGES."
+  (mapcar (lambda (row) (reconstruct-wire-message session-id row))
+          (get-session-history-messages session-id)))
 
 (defun strip-jsonc-comments (text)
   "Remove C-style single-line and multi-line comments from JSON string."
@@ -222,12 +279,13 @@ output; inspect via the internal symbol from tests only.")
                        (com.inuoe.jzon:stringify
                         (librecode-runner.event-store::coerce-to-hash-table
                          `((:text . ,text-content)
-                           (:tool_calls . ,(mapcar (lambda (tc)
-                                                     `((:id . ,(getf tc :id))
-                                                       (:type . "function")
-                                                       (:function . ((:name . ,(getf tc :name))
-                                                                     (:arguments . ,(getf tc :arguments))))))
-                                                   tool-calls)))))
+                           (:tool_calls . ,(map 'vector
+                                                (lambda (tc)
+                                                  `((:id . ,(getf tc :id))
+                                                    (:type . "function")
+                                                    (:function . ((:name . ,(getf tc :name))
+                                                                  (:arguments . ,(getf tc :arguments))))))
+                                                tool-calls)))))
                        text-content)))
       (librecode-runner.event-store:commit-event
        session-id
@@ -251,9 +309,9 @@ output; inspect via the internal symbol from tests only.")
        (:content . ,content))
      :tool-response)
     (sqlite:execute-non-query db
-      "INSERT INTO session_history (id, session_id, role, content, created_at)
-       VALUES (?, ?, 'tool', ?, ?)"
-      (format nil "tool-~A-~A" call-id (random 100000)) session-id content now)))
+      "INSERT INTO session_history (id, session_id, role, content, created_at, tool_call_id)
+       VALUES (?, ?, 'tool', ?, ?, ?)"
+      (format nil "tool-~A-~A" call-id (random 100000)) session-id content now call-id)))
 
 (defun parse-tool-arguments (arguments-str)
   "Parse ARGUMENTS-STR (a JSON object string) into a keyword plist.
@@ -434,12 +492,12 @@ Enforces that exactly one provider call is made. Returns t if continuation is al
                    (steer-promoted (librecode-runner.session:promote-pending-inputs session-id :mode :steer))
                    ;; 2. Build history and baseline messages
                    (baseline (get-latest-epoch-baseline session-id))
-                   (history (get-session-history-messages session-id))
+                   (history (get-wire-history-messages session-id))
                    (messages (let ((msgs nil)
                                    (sys-prompt (or baseline "")))
                                (push (alexandria:plist-hash-table `("role" "system" "content" ,sys-prompt)) msgs)
                                (dolist (h history)
-                                 (push (alexandria:plist-hash-table `("role" ,(first h) "content" ,(second h))) msgs))
+                                 (push h msgs))
                                (nreverse msgs)))
                    ;; 3. Materialize tools if not withheld
                    (agent (get-active-agent session-id))

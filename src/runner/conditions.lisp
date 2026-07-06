@@ -218,6 +218,38 @@
                      (or (gate-failure-exit-code condition) "unknown"))))
   (:documentation "Signal that a project-specific validation gate, shell command hook, or Nickel contract verification failed."))
 
+(define-condition legacy-history-row (serious-condition)
+  ((message
+    :initarg :message
+    :reader legacy-history-row-message
+    :initform "Session history row predates tool-call linkage tracking."
+    :type string
+    :documentation "Details on which row could not be reconstructed and why.")
+   (session-id
+    :initarg :session-id
+    :reader legacy-history-row-session-id
+    :initform "unknown"
+    :type string
+    :documentation "The session whose history contains the unreconstructable row.")
+   (row-id
+    :initarg :row-id
+    :reader legacy-history-row-row-id
+    :initform "unknown"
+    :type string
+    :documentation "The session_history.id of the offending row."))
+  (:report (lambda (condition stream)
+             (format stream "Legacy History Row [session: ~A, row: ~A]: Cannot reconstruct wire request.~%~
+                             What failed: Session history readback for outbound provider request assembly.~%~
+                             Why: ~A~%~
+                             Where: Wire-message reconstruction in the runner turn-execution layer."
+                     (legacy-history-row-session-id condition)
+                     (legacy-history-row-row-id condition)
+                     (legacy-history-row-message condition))))
+  (:documentation "Signal that a session_history row (typically a pre-existing tool-role row
+recorded before tool_call_id tracking existed) cannot be faithfully reconstructed into a
+spec-form OpenAI chat-completions message -- rejected rather than silently corrupting or
+obscurely crashing the outbound request."))
+
 (define-condition denied-error (serious-condition)
   ((message
     :initarg :message
