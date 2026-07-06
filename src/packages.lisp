@@ -190,6 +190,8 @@
            #:register-active-subprocess
            #:unregister-active-subprocess
            #:tool-cancelled-p
+           #:make-subprocess-cancellation-registry
+           #:cancel-and-terminate-registered-subprocesses
            #:get-path-lock
            #:with-path-lock))
 

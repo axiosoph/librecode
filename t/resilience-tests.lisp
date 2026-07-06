@@ -436,15 +436,188 @@ supplied its own :timeout, was ever bounded before this fix."
             (hunchentoot:stop acceptor)
             (setf hunchentoot:*dispatch-table* (delete dispatcher hunchentoot:*dispatch-table*))))))))
 
-;; NOTE: no supervised-mode equivalent of
-;; test-tool-timeout-unsupervised-continues-session exists here yet. Wiring
-;; EXECUTE-TOOL-ASYNC into the supervised branch of RUN-TOOL-WORKER was
-;; attempted and reverted -- it breaks WITH-FAILURE-RELAY's no-stack-unwind
-;; guarantee (TEST-NO-UNWIND-HANDSHAKE above), because EXECUTE-TOOL-ASYNC
-;; relays its outcome by re-signaling in the caller's thread rather than
-;; resolving the condition on the tool handler's own original stack. See the
-;; P9 handoff report for the full conflict and reconsideration options; this
-;; is a reported gap, not a silent omission.
+(test test-supervised-hung-lisp-handler-preserves-stack
+  "The supervised branch bounds a hung tool call via SB-EXT:WITH-TIMEOUT rather
+than EXECUTE-TOOL-ASYNC (which was tried and reverted for this branch -- see
+TEST-NO-UNWIND-HANDSHAKE's original justification). This proves the
+replacement mechanism holds the SAME guarantee: a genuinely-hung (infinite
+loop, no exit condition) pure-Lisp handler is (a) caught by the timeout, (b)
+relayed through the failure-relay handshake so a live supervisor can
+skip-and-continue, and (c) *WORKER-MARKER*, bound inside the hung handler, is
+still visible at the restart's invocation site -- proving the stack was not
+unwound before the handshake ran, the same standard TEST-NO-UNWIND-HANDSHAKE
+holds itself to. A bounded SLEEP would not prove this: only an actual (LOOP)
+with no exit forces the interrupt-in-place mechanism to do real work."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (librecode-test.event-store::with-test-db (db dir)
+      (let* ((session-id "sess-supervised-hang-lisp")
+             (port (get-free-port))
+             (acceptor (make-instance 'hunchentoot:easy-acceptor :port port))
+             (test-registry (make-instance 'tool-registry))
+             (mock-tool (make-instance 'tool
+                                       :name "mock_hanging_tool"
+                                       :description "Tool that hangs forever in pure Lisp, never returns"
+                                       :parameters nil
+                                       :capabilities nil
+                                       :handler (lambda (args)
+                                                  (declare (ignore args))
+                                                  (let ((*worker-marker* :active))
+                                                    (loop)))))
+             (dispatcher (lambda (request)
+                           (when (equal (hunchentoot:script-name request) "/stream")
+                             (lambda ()
+                               (setf (hunchentoot:content-type*) "text/event-stream")
+                               (let ((stream (hunchentoot:send-headers))
+                                     (tool-call-payload "{\"id\": \"call-hang-1\", \"type\": \"function\", \"function\": {\"name\": \"mock_hanging_tool\", \"arguments\": \"{}\"}}"))
+                                 (write-sequence (flexi-streams:string-to-octets
+                                                  (format nil "data: {\"choices\": [{\"delta\": {\"tool_calls\": [~A]}}]}~%" tool-call-payload)
+                                                  :external-format :utf-8)
+                                                 stream)
+                                 (write-sequence (flexi-streams:string-to-octets
+                                                  (format nil "data: [DONE]~%")
+                                                  :external-format :utf-8)
+                                                 stream)
+                                 (force-output stream)
+                                 ""))))))
+        (register-tool test-registry mock-tool)
+        (sqlite:execute-non-query db
+          "INSERT INTO session_state (session_id, agent_id, version, status, last_updated)
+           VALUES (?, ?, 1, 'active', ?)"
+          session-id "agent-1" (librecode-runner.event-store::current-timestamp-ms))
+        (sqlite:execute-non-query db
+          "INSERT INTO permission_saved (project_id, action, resource, effect, timestamp)
+           VALUES ('default', 'execute_tool', 'mock_hanging_tool', 'allow', 123456)")
+        (push dispatcher hunchentoot:*dispatch-table*)
+        (unwind-protect
+             (progn
+               (hunchentoot:start acceptor)
+               (let ((librecode-runner.runner::*provider-url* (format nil "http://127.0.0.1:~A/stream" port))
+                     (librecode-runner.runner::*tool-registry* test-registry)
+                     (librecode-runner.protocol::*session-mailbox* (librecode-runner.protocol:make-mailbox))
+                     (librecode-runner.protocol:*session-supervised-p* t)
+                     ;; Mutate the global default (not a dynamic LET) -- RUN-TOOL-WORKER
+                     ;; executes in a spawned thread that does not inherit this test
+                     ;; thread's dynamic bindings, only the special var's global value.
+                     (saved-default librecode-runner.tool:*default-tool-timeout*)
+                     (worker-error-caught nil))
+                 (setf librecode-runner.runner::*last-skip-preserved-stack-p* nil)
+                 (unwind-protect
+                      (progn
+                        (setf librecode-runner.tool:*default-tool-timeout* 0.3)
+                        (handler-bind
+                            ((tool-timeout
+                               (lambda (c)
+                                 (declare (ignore c))
+                                 (setf worker-error-caught t)
+                                 (invoke-restart 'skip-and-continue))))
+                          (execute-provider-turn session-id "mock-provider" "mock-model")))
+                   (setf librecode-runner.tool:*default-tool-timeout* saved-default))
+                 (is-true worker-error-caught)
+                 (let ((content (sqlite:execute-single db "SELECT content FROM session_history WHERE role = 'tool'")))
+                   (is (equal "Warning: Tool execution skipped." content)))
+                 ;; ...and *worker-marker*'s value at the restart's invocation site still
+                 ;; proves the hung handler's stack was not unwound before skip-and-continue ran.
+                 (is-true librecode-runner.runner::*last-skip-preserved-stack-p*)))
+          (progn
+            (hunchentoot:stop acceptor)
+            (setf hunchentoot:*dispatch-table* (delete dispatcher hunchentoot:*dispatch-table*))))))))
+
+(test test-supervised-subprocess-hang-cooperatively-terminated
+  "A hung SUBPROCESS-based tool call (bash, given no :timeout of its own, so it
+relies entirely on the supervised branch's outer bound) in supervised mode
+must be cooperatively terminated via *ACTIVE-SUBPROCESSES* when the timeout
+fires -- never a raw thread kill (I4). Drives the real 'bash' tool registered
+by REGISTER-BUILTIN-TOOLS, through the full execute-provider-turn ->
+execute-parallel-tools -> run-tool-worker pipeline, and proves actual OS-level
+termination via a pid file + `kill -0`, not just a Lisp-level condition."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (librecode-test.event-store::with-test-db (db dir)
+      (let* ((session-id "sess-supervised-hang-subprocess")
+             (port (get-free-port))
+             (acceptor (make-instance 'hunchentoot:easy-acceptor :port port))
+             (pid-file (merge-pathnames "pid_supervised_hang.txt" (uiop:ensure-directory-pathname dir)))
+             (cmd (format nil "echo $$ > ~A; sleep 100" (namestring pid-file)))
+             (dispatcher (lambda (request)
+                           (when (equal (hunchentoot:script-name request) "/stream")
+                             (lambda ()
+                               (setf (hunchentoot:content-type*) "text/event-stream")
+                               (let* ((stream (hunchentoot:send-headers))
+                                      ;; Deliberately no "timeout" key -- handle-bash's OWN
+                                      ;; internal deadline path must not engage; only the
+                                      ;; supervised branch's outer bound + registry may.
+                                      ;; Built via jzon (not hand-escaped strings) so the
+                                      ;; double JSON-nesting (arguments is itself a
+                                      ;; JSON-encoded string) is correct by construction.
+                                      (arguments-json (com.inuoe.jzon:stringify
+                                                        (alexandria:plist-hash-table
+                                                         (list "command" cmd) :test 'equal)))
+                                      (tool-call-payload
+                                        (com.inuoe.jzon:stringify
+                                         (alexandria:plist-hash-table
+                                          (list "id" "call-bash-hang-1"
+                                                "type" "function"
+                                                "function" (alexandria:plist-hash-table
+                                                            (list "name" "bash"
+                                                                  "arguments" arguments-json)
+                                                            :test 'equal))
+                                          :test 'equal))))
+                                 (write-sequence (flexi-streams:string-to-octets
+                                                  (format nil "data: {\"choices\": [{\"delta\": {\"tool_calls\": [~A]}}]}~%" tool-call-payload)
+                                                  :external-format :utf-8)
+                                                 stream)
+                                 (write-sequence (flexi-streams:string-to-octets
+                                                  (format nil "data: [DONE]~%")
+                                                  :external-format :utf-8)
+                                                 stream)
+                                 (force-output stream)
+                                 ""))))))
+        (sqlite:execute-non-query db
+          "INSERT INTO session_state (session_id, agent_id, version, status, last_updated)
+           VALUES (?, ?, 1, 'active', ?)"
+          session-id "agent-1" (librecode-runner.event-store::current-timestamp-ms))
+        (sqlite:execute-non-query db
+          "INSERT INTO permission_saved (project_id, action, resource, effect, timestamp)
+           VALUES ('default', 'execute_tool', 'bash', 'allow', 123456)")
+        (push dispatcher hunchentoot:*dispatch-table*)
+        (unwind-protect
+             (progn
+               (hunchentoot:start acceptor)
+               (let ((librecode-runner.runner::*provider-url* (format nil "http://127.0.0.1:~A/stream" port))
+                     (librecode-runner.protocol::*session-mailbox* (librecode-runner.protocol:make-mailbox))
+                     (librecode-runner.protocol:*session-supervised-p* t)
+                     ;; Mutate the global default (not a dynamic LET) -- RUN-TOOL-WORKER
+                     ;; executes in a spawned thread that does not inherit this test
+                     ;; thread's dynamic bindings, only the special var's global value.
+                     (saved-default librecode-runner.tool:*default-tool-timeout*)
+                     (worker-error-caught nil))
+                 (unwind-protect
+                      (progn
+                        (setf librecode-runner.tool:*default-tool-timeout* 0.3)
+                        (handler-bind
+                            ((tool-timeout
+                               (lambda (c)
+                                 (declare (ignore c))
+                                 (setf worker-error-caught t)
+                                 (invoke-restart 'skip-and-continue))))
+                          (execute-provider-turn session-id "mock-provider" "mock-model")))
+                   (setf librecode-runner.tool:*default-tool-timeout* saved-default))
+                 (is-true worker-error-caught)
+                 (let ((content (sqlite:execute-single db "SELECT content FROM session_history WHERE role = 'tool'")))
+                   (is (equal "Warning: Tool execution skipped." content)))
+                 ;; Give the cooperative-cancellation cleanup a moment to run, then prove
+                 ;; the subprocess is actually dead at the OS level -- no orphan, no raw kill.
+                 (sleep 0.5)
+                 (is-true (probe-file pid-file))
+                 (let ((pid-str (string-trim '(#\Space #\Newline #\Return)
+                                             (uiop:read-file-string pid-file))))
+                   (multiple-value-bind (out err exit-code)
+                       (uiop:run-program (list "kill" "-0" pid-str) :ignore-error-status t)
+                     (declare (ignore out err))
+                     (is (not (= 0 exit-code))
+                         "subprocess launched by the hung bash call is still alive -- cooperative termination did not run.")))))
+          (progn
+            (hunchentoot:stop acceptor)
+            (setf hunchentoot:*dispatch-table* (delete dispatcher hunchentoot:*dispatch-table*))))))))
 
 (test test-tool-malformed-json-args-validation-error
   "Malformed tool-argument JSON must yield a validation-error tool result -- the

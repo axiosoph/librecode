@@ -327,20 +327,59 @@ value yields NIL args (an empty plist), not a parse error."
           (nreverse plist))
         nil)))
 
+(defun execute-tool-with-supervised-timeout (tool args-plist name)
+  "Execute TOOL synchronously in the CURRENT thread, bounded by a real,
+stack-preserving timeout -- the mechanism the SUPERVISED branch of
+RUN-TOOL-WORKER uses instead of EXECUTE-TOOL-ASYNC. EXECUTE-TOOL-ASYNC runs
+the handler on a separate worker thread and relays the outcome by
+re-signaling in the caller's thread, which loses the original
+stack/dynamic-binding context a live supervisor's skip-and-continue restart
+depends on (see TEST-NO-UNWIND-HANDSHAKE). SB-EXT:WITH-TIMEOUT instead
+delivers its expiry as an SB-EXT:TIMEOUT condition IN PLACE -- same thread,
+same stack -- so an enclosing handler (WITH-FAILURE-RELAY's) can resolve it
+without unwinding past the original call.
+The effective timeout is the tool call's own :timeout argument when supplied,
+otherwise *DEFAULT-TOOL-TIMEOUT* -- the same composition EXECUTE-TOOL-ASYNC
+uses on the unsupervised path. SB-EXT:TIMEOUT is translated, in place, into
+LIBRECODE-RUNNER.CONDITIONS:TOOL-TIMEOUT for consistency with the rest of the
+codebase's timeout vocabulary (see CONDITION-TO-DESCRIPTOR).
+A cooperative-cancellation registry (*ACTIVE-SUBPROCESSES*) is bound around
+the call so a subprocess-launching tool (e.g. bash) can register its child
+process and have it forcibly terminated on timeout: SB-EXT:WITH-TIMEOUT's
+asynchronous interrupt is not reliably delivered while a thread is blocked in
+a subprocess/FFI wait, so the registry is the mechanism that actually
+unblocks that case (a pure-Lisp hang, by contrast, IS reliably interrupted by
+SB-EXT:WITH-TIMEOUT alone)."
+  (let* ((effective-timeout (or (getf args-plist :timeout)
+                                 librecode-runner.tool:*default-tool-timeout*))
+         (active-subprocs-binding (librecode-runner.tool:make-subprocess-cancellation-registry)))
+    (unwind-protect
+         (handler-bind
+             ((sb-ext:timeout
+                (lambda (c)
+                  (declare (ignore c))
+                  (error 'librecode-runner.conditions:tool-timeout
+                         :tool-id name
+                         :duration effective-timeout
+                         :message (format nil "Tool ~A execution exceeded timeout of ~A seconds."
+                                           name effective-timeout)))))
+           (let ((librecode-runner.tool:*active-subprocesses* active-subprocs-binding))
+             (sb-ext:with-timeout effective-timeout
+               (librecode-runner.tool:execute-tool tool args-plist))))
+      (librecode-runner.tool:cancel-and-terminate-registered-subprocesses active-subprocs-binding))))
+
 (defun run-tool-worker (session-id call-id name tool args-plist agent worker-mbox)
   "Execute TOOL in the current (worker) thread and relay its outcome to the
 coordinator's session mailbox. In the DEFAULT (unsupervised) branch, execution
 is bounded by a real timeout via EXECUTE-TOOL-ASYNC's cooperative-cancellation
 machinery: the tool call's own :timeout argument (e.g. bash's) wins when
 supplied, otherwise *DEFAULT-TOOL-TIMEOUT* applies as the floor for every
-tool. The SUPERVISED branch below still calls the bare, unbounded
-EXECUTE-TOOL -- wiring EXECUTE-TOOL-ASYNC in here was found to break
-WITH-FAILURE-RELAY's no-stack-unwind guarantee (see TEST-NO-UNWIND-HANDSHAKE):
-EXECUTE-TOOL-ASYNC runs the handler on a separate worker thread and relays the
-outcome by re-signaling in the caller's thread, which necessarily loses the
-original stack/dynamic-binding context a live supervisor's skip-and-continue
-restart depends on. This is a known, reported gap -- see the P9 handoff
-report -- not a silent omission.
+tool. The SUPERVISED branch below bounds execution via
+EXECUTE-TOOL-WITH-SUPERVISED-TIMEOUT instead -- a stack-preserving, in-thread
+timeout (SB-EXT:WITH-TIMEOUT) rather than EXECUTE-TOOL-ASYNC's cross-thread
+relay, since the latter was found to break WITH-FAILURE-RELAY's
+no-stack-unwind guarantee (see TEST-NO-UNWIND-HANDSHAKE and the P9 handoff
+report for that reconsideration).
 In a supervised session (*session-supervised-p*), an ordinary handler error is
 relayed through the failure-relay handshake so a live supervisor may choose to
 skip or retry it. Otherwise -- the default -- the error settles locally as a
@@ -364,7 +403,7 @@ skip or retry it. Otherwise -- the default -- the error settles locally as a
                                        (error "Restart ~A not found on worker stack" choice)))))
               ;; Evaluate permission request at execution site
               (librecode-runner.agent:check-permission agent "execute_tool" name)
-              (let ((res (librecode-runner.tool:execute-tool tool args-plist)))
+              (let ((res (execute-tool-with-supervised-timeout tool args-plist name)))
                 (librecode-runner.protocol:send-message
                  librecode-runner.protocol:*session-mailbox*
                  `(:tool-success ,call-id ,res)))
