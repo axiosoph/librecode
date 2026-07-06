@@ -385,3 +385,168 @@
           (stop-http-bridge)
           (bt:with-lock-held ((librecode-runner.tool::registry-lock librecode-runner.runner::*tool-registry*))
             (remhash "mock-tool" (librecode-runner.tool::registry-tools librecode-runner.runner::*tool-registry*))))))))
+
+(test test-http-provider-error-backup-failover-recovers
+  "A scripted provider-error on the primary provider, hit through the real
+/wake drive loop, must autonomously retry against the backup provider URL and
+let the session continue -- proving c12-provider-error-autonomously-retried
+and c12-end-to-end-test."
+  (setf hunchentoot:*dispatch-table* nil)
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (let* ((db-path (merge-pathnames "librecode.db" dir))
+           (init-db (librecode-runner.event-store:connect-db db-path)))
+      (unwind-protect
+           (librecode-runner.event-store:init-db init-db)
+        (sqlite:disconnect init-db)))
+
+    (let* ((port (librecode-test.mock-provider:get-free-port))
+           (url-base (format nil "http://127.0.0.1:~A" port))
+           (session-id nil))
+      (start-http-bridge :port port :address "127.0.0.1" :db-path "librecode.db" :workspace-root dir)
+      (sleep 0.2)
+      (unwind-protect
+           (progn
+             (let* ((payload (com.inuoe.jzon:stringify
+                              (alexandria:plist-hash-table `("agent_id" "test-agent"))))
+                    (res (dexador:post (format nil "~A/session" url-base)
+                                       :headers '(("Content-Type" . "application/json"))
+                                       :content payload
+                                       :keep-alive nil))
+                    (parsed (com.inuoe.jzon:parse res)))
+               (setf session-id (gethash "session_id" parsed)))
+
+             (let* ((prompt-payload (com.inuoe.jzon:stringify
+                                     (alexandria:plist-hash-table
+                                      `("prompt_id" "prompt-provider-failover"
+                                        "prompt_text" "Trigger a provider failover"
+                                        "delivery_mode" "STEER")))))
+               (dexador:post (format nil "~A/session/~A/admit" url-base session-id)
+                             :headers '(("Content-Type" . "application/json"))
+                             :content prompt-payload
+                             :keep-alive nil))
+
+             (librecode-test.mock-provider:with-mock-provider
+                 (primary-port :path "/provider-primary"
+                               :connection-close t
+                               :responder (lambda (request call-index)
+                                            (declare (ignore request call-index))
+                                            (list (list :raw "{\"error\": \"Internal server error\"}")
+                                                  :no-done)))
+               (librecode-test.mock-provider:with-mock-provider
+                   (backup-port :path "/provider-backup"
+                                :connection-close t
+                                :responder (lambda (request call-index)
+                                             (declare (ignore request call-index))
+                                             (list (list :content "Backup Success!"))))
+                 (let ((old-provider-url librecode-runner.runner::*provider-url*)
+                       (old-backup-url librecode-runner.runner::*backup-provider-url*))
+                   (unwind-protect
+                        (progn
+                          (setf librecode-runner.runner::*provider-url*
+                                (format nil "http://127.0.0.1:~A/provider-primary" primary-port))
+                          (setf librecode-runner.runner::*backup-provider-url*
+                                (format nil "http://127.0.0.1:~A/provider-backup" backup-port))
+                          (let ((wake-payload (com.inuoe.jzon:stringify
+                                               (alexandria:plist-hash-table
+                                                `("provider" "mock-provider"
+                                                  "model" "mock-model"
+                                                  "max_steps" 2)))))
+                            (dexador:post (format nil "~A/session/~A/wake" url-base session-id)
+                                          :headers '(("Content-Type" . "application/json"))
+                                          :content wake-payload
+                                          :keep-alive nil))
+                          (let ((success nil))
+                            (loop for i from 1 to 50
+                                  do (let ((content (query-test-db dir
+                                             "SELECT content FROM session_history WHERE role = 'assistant'")))
+                                       (when (equal content "Backup Success!")
+                                         (setf success t)
+                                         (return)))
+                                     (sleep 0.1))
+                            (is-true success)))
+                     (setf librecode-runner.runner::*provider-url* old-provider-url)
+                     (setf librecode-runner.runner::*backup-provider-url* old-backup-url))))))
+        (stop-http-bridge)))))
+
+(test test-http-provider-error-backup-attempts-bounded
+  "Once the backup-provider retry bound is exhausted, the session must end
+cleanly via the existing blanket error handler rather than retrying forever --
+proving c12-bounded-not-infinite."
+  (setf hunchentoot:*dispatch-table* nil)
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (let* ((db-path (merge-pathnames "librecode.db" dir))
+           (init-db (librecode-runner.event-store:connect-db db-path)))
+      (unwind-protect
+           (librecode-runner.event-store:init-db init-db)
+        (sqlite:disconnect init-db)))
+
+    (let* ((port (librecode-test.mock-provider:get-free-port))
+           (url-base (format nil "http://127.0.0.1:~A" port))
+           (session-id nil)
+           (req-count 0))
+      (start-http-bridge :port port :address "127.0.0.1" :db-path "librecode.db" :workspace-root dir)
+      (sleep 0.2)
+      (unwind-protect
+           (progn
+             (let* ((payload (com.inuoe.jzon:stringify
+                              (alexandria:plist-hash-table `("agent_id" "test-agent"))))
+                    (res (dexador:post (format nil "~A/session" url-base)
+                                       :headers '(("Content-Type" . "application/json"))
+                                       :content payload
+                                       :keep-alive nil))
+                    (parsed (com.inuoe.jzon:parse res)))
+               (setf session-id (gethash "session_id" parsed)))
+
+             (let* ((prompt-payload (com.inuoe.jzon:stringify
+                                     (alexandria:plist-hash-table
+                                      `("prompt_id" "prompt-provider-bound"
+                                        "prompt_text" "Trigger persistent provider failure"
+                                        "delivery_mode" "STEER")))))
+               (dexador:post (format nil "~A/session/~A/admit" url-base session-id)
+                             :headers '(("Content-Type" . "application/json"))
+                             :content prompt-payload
+                             :keep-alive nil))
+
+             ;; Both primary and backup point at the same always-failing endpoint,
+             ;; so every attempt -- initial plus every retry -- increments req-count.
+             (librecode-test.mock-provider:with-mock-provider
+                 (failing-port :path "/provider-failing"
+                               :connection-close t
+                               :responder (lambda (request call-index)
+                                            (declare (ignore request call-index))
+                                            (incf req-count)
+                                            (list (list :raw "{\"error\": \"Internal server error\"}")
+                                                  :no-done)))
+               (let ((old-provider-url librecode-runner.runner::*provider-url*)
+                     (old-backup-url librecode-runner.runner::*backup-provider-url*)
+                     (old-attempts librecode-runner.http:*max-backup-provider-attempts*)
+                     (failing-url (format nil "http://127.0.0.1:~A/provider-failing" failing-port)))
+                 (unwind-protect
+                      (progn
+                        (setf librecode-runner.runner::*provider-url* failing-url)
+                        (setf librecode-runner.runner::*backup-provider-url* failing-url)
+                        (setf librecode-runner.http:*max-backup-provider-attempts* 2)
+                        (let ((wake-payload (com.inuoe.jzon:stringify
+                                             (alexandria:plist-hash-table
+                                              `("provider" "mock-provider"
+                                                "model" "mock-model"
+                                                "max_steps" 2)))))
+                          (dexador:post (format nil "~A/session/~A/wake" url-base session-id)
+                                        :headers '(("Content-Type" . "application/json"))
+                                        :content wake-payload
+                                        :keep-alive nil))
+                        ;; wake dispatches the drive loop on a "session-drain-<id>"
+                        ;; background thread; wait for it to finish rather than loop forever.
+                        (loop for i from 1 to 50
+                              for thread = (find-if (lambda (th)
+                                                      (equal (bt:thread-name th)
+                                                             (format nil "session-drain-~A" session-id)))
+                                                    (bt:all-threads))
+                              while thread
+                              do (sleep 0.1))
+                        ;; 1 initial attempt + 2 bounded retries against the (same) backup URL.
+                        (is (= 3 req-count)))
+                   (setf librecode-runner.runner::*provider-url* old-provider-url)
+                   (setf librecode-runner.runner::*backup-provider-url* old-backup-url)
+                   (setf librecode-runner.http:*max-backup-provider-attempts* old-attempts)))))
+        (stop-http-bridge)))))

@@ -195,7 +195,8 @@
   (:documentation "HTTP server bridge for remote control and SSE coordination.")
   (:export #:start-http-bridge
            #:stop-http-bridge
-           #:*max-compact-attempts*))
+           #:*max-compact-attempts*
+           #:*max-backup-provider-attempts*))
 
 (defpackage #:librecode-runner.provider
   (:use #:cl)
