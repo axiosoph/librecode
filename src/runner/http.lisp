@@ -20,6 +20,11 @@
 (defvar *max-compact-attempts* 3
   "The maximum number of context compaction and retry attempts allowed per turn.")
 
+(defvar *max-backup-provider-attempts* 2
+  "The maximum number of backup-provider retry attempts allowed per turn after
+a provider-error, mirroring *max-compact-attempts*'s bound on context-overflow
+retries -- so a persistently-broken backup provider cannot retry forever.")
+
 ;; --- SSE Broadcast Registry ---
 
 (defvar *sse-listeners-lock* (bt:make-lock "sse-listeners-lock"))
@@ -200,7 +205,8 @@
   "Helper function executing the session drive loop lifecycle:
 1. Connects to the database and binds workspace variables.
 2. Broadcasts :session-start.
-3. Steps through the loop up to max-steps, handling context-overflow restarts.
+3. Steps through the loop up to max-steps, handling context-overflow and
+   provider-error restarts.
 4. Broadcasts :session-complete on finish or :error on failure.
 5. Safely disconnects the database."
   (let* ((librecode-runner.event-store:*workspace-root*
@@ -218,14 +224,21 @@
                                        (not (librecode-runner.protocol:session-stopping-p session-id)))
                             do (let ((withhold-tools (= (1+ steps-taken) max-steps)))
                                  (setf continue
-                                       (let ((compact-attempts 0))
+                                       (let ((compact-attempts 0)
+                                             (backup-attempts 0))
                                          (handler-bind
                                              ((librecode-runner.conditions:context-overflow
                                                 (lambda (c)
                                                   (declare (ignore c))
                                                   (when (< compact-attempts *max-compact-attempts*)
                                                     (incf compact-attempts)
-                                                    (invoke-restart 'librecode-runner.conditions:compact-and-retry)))))
+                                                    (invoke-restart 'librecode-runner.conditions:compact-and-retry))))
+                                              (librecode-runner.conditions:provider-error
+                                                (lambda (c)
+                                                  (declare (ignore c))
+                                                  (when (< backup-attempts *max-backup-provider-attempts*)
+                                                    (incf backup-attempts)
+                                                    (invoke-restart 'librecode-runner.conditions:retry-with-backup-provider)))))
                                            (funcall turn-thunk withhold-tools))))
                                  (incf steps-taken))))
                   (serious-condition (c)
