@@ -15,8 +15,13 @@
 > * **`bash`** — executes a command in a shell inside the workspace root, with an
 >   optional wall-clock timeout.
 >
-> Every call is resolved to a workspace-confined path and checked against the active
-> agent's permission ruleset (`check-resource-permission`, §3) before it runs.
+> Every call is checked against the active agent's permission ruleset
+> (`check-resource-permission`, §3) before it runs. Only the three file tools --
+> `read_file`, `write_file`, `edit` -- resolve their path argument to a
+> workspace-confined path (`resolve-safe-path`) first; `bash` has no such
+> resolution step; it only sets the spawned subprocess's initial working
+> directory, which a command can trivially escape (absolute paths, `cd`). See
+> F22 for the accepted-risk status of bash's lack of containment.
 
 `librecode` replaces ad-hoc flags and structural checks with a unified agent class and polymorphic generic dispatch over tool permissions and dynamic behaviors.
 
