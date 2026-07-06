@@ -388,11 +388,12 @@ The sequence — five campaigns, two design passes:
    as boot gates on replay, the dead-table cut, and the supervision-contract wiring.
    Surfaced that the runtime has no real gate wired anywhere (permanent degraded mode)
    and produced a ratified gate-harness contract protocol seeding workstream J.
-2. **Campaign 7 — H, the runner capability floor.** The golden-path investment:
-   `src/runner/` stabilized to a testable standard (robust multi-turn tool use, real
-   file/code editing, dependable error handling) — enough to exercise supervision and
-   coherence, not full opencode parity. This is what actually drives your first real
-   campaigns.
+2. **Campaign 7 — H, the runner capability floor.** Landed (2026-07-05, not yet
+   formally closed): `src/runner/` now registers four real, sandboxed tools
+   (`read_file`, `write_file`, `edit`, `bash`) with a dependable tool-error contract,
+   a shared `with-mock-provider` test fixture, and the scenario suite as the
+   testable standard — enough to exercise supervision and coherence, not full
+   opencode parity. This is what actually drives your first real campaigns.
 3. **Campaign 8 — the capable second harness.** `harness-opencode` on the proven
    HTTP+SSE surface (acceptance criteria in E) plus provider auth (B) — now explicitly
    pragmatic support for realistic heterogeneous conditions, not the initial workhorse.
