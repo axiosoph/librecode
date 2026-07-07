@@ -130,7 +130,8 @@
     (when (librecode-runner.tool:tool-cancelled-p)
       (error "Tool execution was cancelled."))
     (handler-case
-        (read-file-with-limit resolved path)
+        (librecode-runner.tool:with-path-lock ((namestring resolved))
+          (read-file-with-limit resolved path))
       (error (c)
         (error 'simple-error :format-control "Failed to read file ~A: ~A"
                              :format-arguments (list path c))))))
@@ -147,7 +148,7 @@
       (error 'simple-error :format-control "Content size ~D characters exceeds 10MB limit."
                            :format-arguments (list (length content))))
     (handler-case
-        (progn
+        (librecode-runner.tool:with-path-lock ((namestring resolved))
           (ensure-directories-exist resolved)
           (with-open-file (stream resolved
                                   :direction :output
@@ -161,9 +162,159 @@
         (error 'simple-error :format-control "Failed to write file ~A: ~A"
                              :format-arguments (list path c))))))
 
+(defun count-string-occurrences (content target)
+  "Count non-overlapping occurrences of the exact substring target within content.
+An empty target counts as zero -- treated as a non-match, since exact-string
+replacement against an existing file requires a concrete, non-empty search string."
+  (if (zerop (length target))
+      0
+      (loop with count = 0
+            with start = 0
+            for pos = (search target content :start2 start)
+            while pos
+            do (incf count)
+               (setf start (+ pos (length target)))
+            finally (return count))))
+
+(defun replace-string-occurrences (content old new replace-all)
+  "Replace occurrences of old with new in content.
+When replace-all is true, replaces every non-overlapping occurrence; otherwise
+replaces the single occurrence (the caller guarantees exactly one match exists)."
+  (if (not replace-all)
+      (let ((pos (search old content)))
+        (concatenate 'string (subseq content 0 pos) new (subseq content (+ pos (length old)))))
+      (with-output-to-string (out)
+        (loop with start = 0
+              for pos = (search old content :start2 start)
+              while pos
+              do (write-string content out :start start :end pos)
+                 (write-string new out)
+                 (setf start (+ pos (length old)))
+              finally (write-string content out :start start)))))
+
+(defun handle-edit (args)
+  "Perform an exact-string replacement of oldString with newString within an
+existing file inside the workspace-root, sandboxed identically to
+read_file/write_file."
+  (let* ((path (getf args :filePath))
+         (old-string (getf args :oldString))
+         (new-string (getf args :newString))
+         (replace-all (getf args :replaceAll))
+         (resolved (resolve-safe-path path)))
+    (check-resource-permission "edit" (namestring resolved))
+    (when (librecode-runner.tool:tool-cancelled-p)
+      (error "Tool execution was cancelled."))
+    (when (string= old-string new-string)
+      (error 'simple-error
+             :format-control "No changes to apply: oldString and newString are identical for ~A."
+             :format-arguments (list path)))
+    ;; The whole read -> count -> compute -> write sequence is a single
+    ;; critical section: it must run atomically with respect to any other
+    ;; concurrent read_file/write_file/edit call against this same resolved
+    ;; path, or two concurrent edits (or an edit racing a write_file) could
+    ;; both read the same stale content and one's write would silently
+    ;; clobber the other's (finding F20).
+    (librecode-runner.tool:with-path-lock ((namestring resolved))
+      (unless (probe-file resolved)
+        (error 'simple-error
+               :format-control "File not found: ~A"
+               :format-arguments (list path)))
+      (let ((content (handler-case
+                          (read-file-with-limit resolved path)
+                        (error (c)
+                          (error 'simple-error :format-control "Failed to read file ~A for editing: ~A"
+                                               :format-arguments (list path c))))))
+        (let ((count (count-string-occurrences content old-string)))
+          (cond
+            ((zerop count)
+             (error 'simple-error
+                    :format-control "Could not find oldString in ~A; it must match the file content exactly, including whitespace and line endings."
+                    :format-arguments (list path)))
+            ((and (> count 1) (not replace-all))
+             (error 'simple-error
+                    :format-control "Found ~D matches for oldString in ~A; provide more surrounding context to make the match unique, or pass replaceAll: true."
+                    :format-arguments (list count path)))
+            (t
+             (let ((new-content (replace-string-occurrences content old-string new-string replace-all)))
+               (when (> (length new-content) (* 10 1024 1024))
+                 (error 'simple-error
+                        :format-control "Resulting content size ~D characters exceeds 10MB limit for ~A."
+                        :format-arguments (list (length new-content) path)))
+               (handler-case
+                   (progn
+                     (with-open-file (stream resolved
+                                             :direction :output
+                                             :if-exists :supersede
+                                             :if-does-not-exist :error
+                                             :element-type 'character
+                                             :external-format :utf-8)
+                       (write-sequence new-content stream))
+                     (format nil "Edit applied successfully to ~A (~D replacement~:P)." path count))
+                 (error (c)
+                   (error 'simple-error :format-control "Failed to write edited file ~A: ~A"
+                                        :format-arguments (list path c))))))))))))
+
+(defparameter *bash-output-cap-bytes* (* 1024 1024)
+  "Maximum size, in characters, of combined bash output returned to the caller.
+Output beyond this size is truncated with an explicit marker rather than
+returned unboundedly.")
+
+(defun cap-bash-output (text)
+  "Truncate TEXT to *bash-output-cap-bytes* characters, appending an explicit
+marker naming how many bytes were omitted. Returns TEXT unchanged if it is
+within the cap."
+  (let ((len (length text)))
+    (if (<= len *bash-output-cap-bytes*)
+        text
+        (format nil "~A~%... [output truncated, ~D bytes omitted]"
+                (subseq text 0 *bash-output-cap-bytes*)
+                (- len *bash-output-cap-bytes*)))))
+
+(defun read-bash-output-with-deadline (process-info timeout-seconds)
+  "Read PROCESS-INFO's merged output stream to EOF and wait for its exit code
+on a background thread, bounded by TIMEOUT-SECONDS wall-clock time. Signals
+librecode-runner.conditions:tool-timeout if the deadline elapses first.
+Termination of PROCESS-INFO on timeout is the caller's responsibility --
+handle-bash's existing leak-prevention cleanup already does this, which also
+closes the pipe and lets the background reader thread unblock and exit on
+its own (never a raw thread kill)."
+  (let ((lock (bt:make-lock "bash-output-deadline-lock"))
+        (cv (bt:make-condition-variable :name "bash-output-deadline-cv"))
+        (finished-p nil)
+        (output nil)
+        (exit-code nil))
+    (bt:make-thread
+     (lambda ()
+       (let ((out (uiop:slurp-stream-string (uiop:process-info-output process-info)))
+             (code (uiop:wait-process process-info)))
+         (bt:with-lock-held (lock)
+           (setf output out exit-code code finished-p t)
+           (bt:condition-notify cv))))
+     :name "bash-output-reader")
+    (bt:with-lock-held (lock)
+      (let ((start-time (get-internal-real-time))
+            (timeout-units (* timeout-seconds internal-time-units-per-second)))
+        (loop until finished-p
+              do (let* ((elapsed (- (get-internal-real-time) start-time))
+                        (remaining-units (- timeout-units elapsed)))
+                   (when (<= remaining-units 0)
+                     (error 'librecode-runner.conditions:tool-timeout
+                            :tool-id "bash"
+                            :duration timeout-seconds
+                            :message (format nil "Bash command exceeded timeout of ~A seconds."
+                                              timeout-seconds)))
+                   (bt:condition-wait cv lock
+                                      :timeout (float (/ remaining-units internal-time-units-per-second) 1.0))))))
+    (values output exit-code)))
+
 (defun handle-bash (args)
-  "Execute a shell command inside the workspace-root and return combined stdout/stderr."
+  "Execute a shell command inside the workspace-root and return combined stdout/stderr.
+An optional :timeout (seconds) bounds execution; on expiry the subprocess is
+terminated via the existing cooperative-cancellation cleanup below and the
+call settles as a tool-timeout condition. Combined output is capped at
+*bash-output-cap-bytes*."
   (let* ((command (getf args :command))
+         (timeout (getf args :timeout))
          (workspace-root (or librecode-runner.event-store:*workspace-root*
                              (uiop:getcwd)))
          (process-info nil)
@@ -177,24 +328,32 @@
              (progn
                (setf process-info (uiop:launch-program (list "bash" "-c" command)
                                                        :output :stream
-                                                       :error-output :stream
+                                                       ;; Merge stderr into the stdout stream at launch
+                                                       ;; time: two separate unmerged pipes deadlock when
+                                                       ;; a child fills the stderr pipe buffer before
+                                                       ;; stdout reaches EOF, since the stdout slurp below
+                                                       ;; blocks waiting for an EOF that never arrives.
+                                                       :error-output :output
                                                        :directory (namestring workspace-root)))
                (librecode-runner.tool:register-active-subprocess process-info)
-               (let ((stdout (uiop:slurp-stream-string (uiop:process-info-output process-info)))
-                     (stderr (uiop:slurp-stream-string (uiop:process-info-error-output process-info))))
-                 (setf exit-code (uiop:wait-process process-info))
-                 (setf combined (concatenate 'string stdout stderr))))
+               (if timeout
+                   (multiple-value-bind (out code) (read-bash-output-with-deadline process-info timeout)
+                     (setf combined out exit-code code))
+                   (progn
+                     (setf combined (uiop:slurp-stream-string (uiop:process-info-output process-info)))
+                     (setf exit-code (uiop:wait-process process-info)))))
            (error (c)
              (error 'simple-error :format-control "Bash invocation failed: ~A" :format-arguments (list c))))
-      ;; Subprocess leak prevention
+      ;; Subprocess leak prevention -- also the timeout's cooperative
+      ;; termination path: a signaled tool-timeout unwinds through here.
       (when (and process-info (uiop:process-alive-p process-info))
         (uiop:terminate-process process-info :urgent t))
       (when process-info
         (librecode-runner.tool:unregister-active-subprocess process-info)))
     (if (= exit-code 0)
-        combined
+        (cap-bash-output combined)
         (error 'simple-error :format-control "Command ~S failed with exit code ~D. Output:~%~A"
-                             :format-arguments (list command exit-code combined)))))
+                             :format-arguments (list command exit-code (cap-bash-output combined))))))
 
 (defparameter read-file-tool
   (make-instance 'librecode-runner.tool:tool
@@ -222,16 +381,31 @@
                  :name "bash"
                  :description "Execute a command in a bash shell inside the workspace root."
                  :parameters '(:type "object"
-                               :properties (:command (:type "string" :description "Command to execute."))
+                               :properties (:command (:type "string" :description "Command to execute.")
+                                            :timeout (:type "number" :description "Optional wall-clock timeout in seconds. If exceeded, the command is terminated and the call fails with a timeout error."))
                                :required #(:command))
                  :capabilities nil
                  :handler #'handle-bash))
 
+(defparameter edit-tool
+  (make-instance 'librecode-runner.tool:tool
+                 :name "edit"
+                 :description "Perform an exact-string replacement within an existing file in the workspace."
+                 :parameters '(:type "object"
+                               :properties (:filePath (:type "string" :description "Relative path of the file to edit.")
+                                            :oldString (:type "string" :description "The exact text to replace.")
+                                            :newString (:type "string" :description "The text to replace it with; must differ from oldString.")
+                                            :replaceAll (:type "boolean" :description "Replace all occurrences of oldString (default false)."))
+                               :required #(:filePath :oldString :newString))
+                 :capabilities nil
+                 :handler #'handle-edit))
+
 (defun register-builtin-tools (registry)
-  "Register the built-in tools (read_file, write_file, and bash) in the given registry."
+  "Register the built-in tools (read_file, write_file, bash, and edit) in the given registry."
   (librecode-runner.tool:register-tool registry read-file-tool)
   (librecode-runner.tool:register-tool registry write-file-tool)
   (librecode-runner.tool:register-tool registry bash-tool)
+  (librecode-runner.tool:register-tool registry edit-tool)
   registry)
 
 ;; Automatically register into default tool registry

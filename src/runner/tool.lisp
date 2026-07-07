@@ -34,6 +34,66 @@ If the context has been cancelled, terminates the process immediately."
       (bt:with-lock-held (lock)
         (cdr registry)))))
 
+(defun make-subprocess-cancellation-registry ()
+  "Construct a fresh (registry . lock) pair suitable for binding
+*ACTIVE-SUBPROCESSES* around a single tool call's execution, whether that
+call runs on a dedicated worker thread (EXECUTE-TOOL-ASYNC) or in-thread
+under a stack-preserving timeout (RUN-TOOL-WORKER's supervised branch)."
+  (cons (cons nil nil) (bt:make-lock "tool-active-procs-lock")))
+
+(defun cancel-and-terminate-registered-subprocesses (active-subprocs-binding)
+  "Mark ACTIVE-SUBPROCS-BINDING's registry cancelled (so any late
+REGISTER-ACTIVE-SUBPROCESS call terminates its process immediately, per
+REGISTER-ACTIVE-SUBPROCESS above) and forcibly terminate any subprocess
+already registered under it, so a tool handler blocked waiting on that
+subprocess's output can unblock and exit naturally instead of hanging past
+its call's timeout."
+  (destructuring-bind (registry . procs-lock) active-subprocs-binding
+    (let ((procs-to-kill nil))
+      (bt:with-lock-held (procs-lock)
+        (setf (cdr registry) t)
+        (setf procs-to-kill (car registry))
+        (setf (car registry) nil))
+      (dolist (proc procs-to-kill)
+        (when (and proc (uiop:process-alive-p proc))
+          (handler-case
+              (uiop:terminate-process proc :urgent t)
+            (error () nil)))))))
+
+(defvar *path-locks-registry* (cons (make-hash-table :test 'equal) (bt:make-lock "path-locks-registry-lock"))
+  "Registry of per-resolved-path locks serializing file-touching tool calls
+(read_file/write_file/edit) against the SAME path within a turn's
+concurrently-dispatched tool_calls. Bound to (cons hash-table meta-lock),
+mirroring *active-subprocesses*'s (registry . lock) shape: the hash table
+maps a resolved path's namestring to the bt:lock guarding that single file's
+critical section. Locks are created lazily on first use and never removed --
+the table only ever holds one entry per distinct path a tool call has
+touched, and retaining a small lock object for the life of the process is
+cheap. Different paths get different locks, so concurrent calls to distinct
+files never block each other.")
+
+(defun get-path-lock (path-key)
+  "Return the bt:lock serializing tool access to PATH-KEY (a resolved path's
+namestring), creating it under the registry's meta-lock on first use."
+  (destructuring-bind (table . meta-lock) *path-locks-registry*
+    (bt:with-lock-held (meta-lock)
+      (or (gethash path-key table)
+          (setf (gethash path-key table)
+                (bt:make-lock (format nil "path-lock-~A" path-key)))))))
+
+(defmacro with-path-lock ((path-key) &body body)
+  "Execute BODY while holding the single mutual-exclusion lock for PATH-KEY (a
+resolved path's namestring). Concurrent tool_calls -- read_file, write_file,
+edit -- that resolve to the SAME path serialize on this lock, so edit's
+read -> compute -> write critical section can never interleave with another
+concurrent call against the same file (the race that silently drops one
+side's write); calls against DIFFERENT paths acquire different locks and
+are not serialized against each other."
+  (let ((lock-var (gensym "PATH-LOCK")))
+    `(let ((,lock-var (get-path-lock ,path-key)))
+       (bt:with-lock-held (,lock-var)
+         ,@body))))
+
 (defclass tool ()
   ((name :initarg :name :reader tool-name :type string)
    (description :initarg :description :reader tool-description :type string)
@@ -240,6 +300,15 @@ Eliminates redundant JSON serialization."
                     result)))))
       result)))
 
+(defparameter *default-tool-timeout* 60
+  "Default wall-clock timeout, in seconds, applied to a tool call on the live
+execution path (RUN-TOOL-WORKER) when the call's own arguments don't specify
+one. 60s balances a genuinely slow bash command (build, install, long-running
+script) against a test suite exercising the no-explicit-timeout path not
+taking forever; individual tool calls that need longer should pass their own
+:timeout argument (e.g. bash's), which always takes precedence over this
+default.")
+
 (defun execute-tool (tool arguments)
   "Synchronously execute the tool with given arguments."
   (validate-arguments tool arguments)
@@ -255,9 +324,7 @@ Eliminates redundant JSON serialization."
          (result-err nil)
          (worker-thread nil)
          ;; Cooperative cancellation tracking
-         (registry (cons nil nil))
-         (procs-lock (bt:make-lock "tool-active-procs-lock"))
-         (active-subprocs-binding (cons registry procs-lock)))
+         (active-subprocs-binding (make-subprocess-cancellation-registry)))
     (setf worker-thread
           (bt:make-thread
            (librecode-runner.protocol:with-session-context-captured
@@ -265,7 +332,7 @@ Eliminates redundant JSON serialization."
                (multiple-value-bind (val err)
                    (handler-case
                        (funcall (tool-handler tool) arguments)
-                     (error (c)
+                     (serious-condition (c)
                        (values nil c)))
                  (bt:with-lock-held (lock)
                    (if err
@@ -304,13 +371,4 @@ Eliminates redundant JSON serialization."
                result-val))
       ;; Cleanup: terminate active subprocesses to unblock the worker thread
       ;; and let it exit naturally.
-      (let ((procs-to-kill nil))
-        (bt:with-lock-held (procs-lock)
-          (setf (cdr registry) t)
-          (setf procs-to-kill (car registry))
-          (setf (car registry) nil))
-        (dolist (proc procs-to-kill)
-          (when (and proc (uiop:process-alive-p proc))
-            (handler-case
-                (uiop:terminate-process proc :urgent t)
-              (error () nil))))))))
+      (cancel-and-terminate-registered-subprocesses active-subprocs-binding))))

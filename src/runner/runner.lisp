@@ -17,6 +17,12 @@
 (defvar *worker-marker* nil
   "Dynamic marker to verify stack preservation during worker restart invocation.")
 
+(defvar *last-skip-preserved-stack-p* nil
+  "Internal, test-only proof that a supervised skip-and-continue restart ran
+without unwinding the failing worker's stack -- set from *worker-marker*'s
+value as observed at the restart's invocation site. Never surfaced as tool
+output; inspect via the internal symbol from tests only.")
+
 (defun get-latest-epoch-baseline (session-id)
   "Retrieve the latest baseline text from context_epoch read projection."
   (when (and (boundp 'librecode-runner.event-store:*db*)
@@ -27,13 +33,67 @@
         session-id))))
 
 (defun get-session-history-messages (session-id)
-  "Retrieve session history messages from session_history read projection."
+  "Retrieve session history rows (id role content tool_call_id) from the
+session_history read projection, ordered by CREATED-AT. TOOL-CALL-ID is NIL
+for every row except tool-role rows recorded under the tool-linkage schema."
   (when (and (boundp 'librecode-runner.event-store:*db*)
              librecode-runner.event-store:*db*)
     (let ((db librecode-runner.event-store:*db*))
       (sqlite:execute-to-list db
-        "SELECT role, content FROM session_history WHERE session_id = ? ORDER BY created_at ASC"
+        "SELECT id, role, content, tool_call_id FROM session_history WHERE session_id = ? ORDER BY created_at ASC"
         session-id))))
+
+(defun parse-assistant-payload (content)
+  "Parse an assistant session_history row's CONTENT column.
+Returns (values text tool-calls), where TOOL-CALLS is the raw parsed
+{id, type, function: {name, arguments}} tool_calls vector from the
+persisted {text, tool_calls: [...]} JSON payload (each element a
+com.inuoe.jzon hash-table), or NIL for a plain-text assistant response
+with no tool calls. RECONSTRUCT-WIRE-MESSAGE re-keys these hash-tables
+directly into the outbound wire shape -- this function does not flatten
+them to an intermediate representation first."
+  (let ((parsed (handler-case (com.inuoe.jzon:parse content) (error () nil))))
+    (if (and (hash-table-p parsed) (gethash "tool_calls" parsed))
+        (values (gethash "text" parsed) (gethash "tool_calls" parsed))
+        (values content nil))))
+
+(defun reconstruct-wire-message (session-id row)
+  "Reconstruct a single spec-form OpenAI chat-completions message plist from a
+SESSION_HISTORY row (id role content tool-call-id). Signals
+LIBRECODE-RUNNER.CONDITIONS:LEGACY-HISTORY-ROW for a tool-role row that
+predates tool_call_id tracking, rather than silently emitting an unlinked
+tool message a real provider endpoint would reject or mis-thread."
+  (destructuring-bind (id role content tool-call-id) row
+    (cond
+      ((string= role "tool")
+       (unless (and tool-call-id (plusp (length tool-call-id)))
+         (error 'librecode-runner.conditions:legacy-history-row
+                :session-id session-id
+                :row-id id
+                :message (format nil "Tool-role row ~A carries no tool_call_id -- it predates tool-call linkage tracking." id)))
+       (list :role "tool" :tool_call_id tool-call-id :content content))
+      ((string= role "assistant")
+       (multiple-value-bind (text tool-calls) (parse-assistant-payload content)
+         (if tool-calls
+             (list :role "assistant"
+                   :content (or text "")
+                   :tool_calls (map 'vector
+                                    (lambda (tc)
+                                      (let ((fn (gethash "function" tc)))
+                                        (list :id (gethash "id" tc)
+                                              :type "function"
+                                              :function (list :name (and fn (gethash "name" fn))
+                                                               :arguments (and fn (gethash "arguments" fn))))))
+                                    tool-calls))
+             (list :role "assistant" :content content))))
+      (t (list :role role :content content)))))
+
+(defun get-wire-history-messages (session-id)
+  "Retrieve and reconstruct SESSION-ID's history as an ordered list of
+spec-form OpenAI chat-completions message plists, ready for outbound request
+assembly. See RECONSTRUCT-WIRE-MESSAGE and GET-SESSION-HISTORY-MESSAGES."
+  (mapcar (lambda (row) (reconstruct-wire-message session-id row))
+          (get-session-history-messages session-id)))
 
 (defun strip-jsonc-comments (text)
   "Remove C-style single-line and multi-line comments from JSON string."
@@ -216,12 +276,13 @@
                        (com.inuoe.jzon:stringify
                         (librecode-runner.event-store::coerce-to-hash-table
                          `((:text . ,text-content)
-                           (:tool_calls . ,(mapcar (lambda (tc)
-                                                     `((:id . ,(getf tc :id))
-                                                       (:type . "function")
-                                                       (:function . ((:name . ,(getf tc :name))
-                                                                     (:arguments . ,(getf tc :arguments))))))
-                                                   tool-calls)))))
+                           (:tool_calls . ,(map 'vector
+                                                (lambda (tc)
+                                                  `((:id . ,(getf tc :id))
+                                                    (:type . "function")
+                                                    (:function . ((:name . ,(getf tc :name))
+                                                                  (:arguments . ,(getf tc :arguments))))))
+                                                tool-calls)))))
                        text-content)))
       (librecode-runner.event-store:commit-event
        session-id
@@ -245,9 +306,131 @@
        (:content . ,content))
      :tool-response)
     (sqlite:execute-non-query db
-      "INSERT INTO session_history (id, session_id, role, content, created_at)
-       VALUES (?, ?, 'tool', ?, ?)"
-      (format nil "tool-~A-~A" call-id (random 100000)) session-id content now)))
+      "INSERT INTO session_history (id, session_id, role, content, created_at, tool_call_id)
+       VALUES (?, ?, 'tool', ?, ?, ?)"
+      (format nil "tool-~A-~A" call-id (random 100000)) session-id content now call-id)))
+
+(defun parse-tool-arguments (arguments-str)
+  "Parse ARGUMENTS-STR (a JSON object string) into a keyword plist.
+Signals an error if the JSON is malformed; a well-formed non-object JSON
+value yields NIL args (an empty plist), not a parse error."
+  (let ((parsed (com.inuoe.jzon:parse (strip-jsonc-comments arguments-str))))
+    (if (hash-table-p parsed)
+        (let ((plist nil))
+          (maphash (lambda (k v)
+                     (push (intern (string-upcase k) :keyword) plist)
+                     (push v plist))
+                   parsed)
+          (nreverse plist))
+        nil)))
+
+(defun execute-tool-with-supervised-timeout (tool args-plist name)
+  "Execute TOOL synchronously in the CURRENT thread, bounded by a real,
+stack-preserving timeout -- the mechanism the SUPERVISED branch of
+RUN-TOOL-WORKER uses instead of EXECUTE-TOOL-ASYNC. EXECUTE-TOOL-ASYNC runs
+the handler on a separate worker thread and relays the outcome by
+re-signaling in the caller's thread, which loses the original
+stack/dynamic-binding context a live supervisor's skip-and-continue restart
+depends on (see TEST-NO-UNWIND-HANDSHAKE). SB-EXT:WITH-TIMEOUT instead
+delivers its expiry as an SB-EXT:TIMEOUT condition IN PLACE -- same thread,
+same stack -- so an enclosing handler (WITH-FAILURE-RELAY's) can resolve it
+without unwinding past the original call.
+The effective timeout is the tool call's own :timeout argument when supplied,
+otherwise *DEFAULT-TOOL-TIMEOUT* -- the same composition EXECUTE-TOOL-ASYNC
+uses on the unsupervised path. SB-EXT:TIMEOUT is translated, in place, into
+LIBRECODE-RUNNER.CONDITIONS:TOOL-TIMEOUT for consistency with the rest of the
+codebase's timeout vocabulary (see CONDITION-TO-DESCRIPTOR).
+A cooperative-cancellation registry (*ACTIVE-SUBPROCESSES*) is bound around
+the call so a subprocess-launching tool (e.g. bash) can register its child
+process and have it forcibly terminated on timeout: SB-EXT:WITH-TIMEOUT's
+asynchronous interrupt is not reliably delivered while a thread is blocked in
+a subprocess/FFI wait, so the registry is the mechanism that actually
+unblocks that case (a pure-Lisp hang, by contrast, IS reliably interrupted by
+SB-EXT:WITH-TIMEOUT alone)."
+  (let* ((effective-timeout (or (getf args-plist :timeout)
+                                 librecode-runner.tool:*default-tool-timeout*))
+         (active-subprocs-binding (librecode-runner.tool:make-subprocess-cancellation-registry)))
+    (unwind-protect
+         (handler-bind
+             ((sb-ext:timeout
+                (lambda (c)
+                  (declare (ignore c))
+                  (error 'librecode-runner.conditions:tool-timeout
+                         :tool-id name
+                         :duration effective-timeout
+                         :message (format nil "Tool ~A execution exceeded timeout of ~A seconds."
+                                           name effective-timeout)))))
+           (let ((librecode-runner.tool:*active-subprocesses* active-subprocs-binding))
+             (sb-ext:with-timeout effective-timeout
+               (librecode-runner.tool:execute-tool tool args-plist))))
+      (librecode-runner.tool:cancel-and-terminate-registered-subprocesses active-subprocs-binding))))
+
+(defun run-tool-worker (session-id call-id name tool args-plist agent worker-mbox)
+  "Execute TOOL in the current (worker) thread and relay its outcome to the
+coordinator's session mailbox. In the DEFAULT (unsupervised) branch, execution
+is bounded by a real timeout via EXECUTE-TOOL-ASYNC's cooperative-cancellation
+machinery: the tool call's own :timeout argument (e.g. bash's) wins when
+supplied, otherwise *DEFAULT-TOOL-TIMEOUT* applies as the floor for every
+tool. The SUPERVISED branch below bounds execution via
+EXECUTE-TOOL-WITH-SUPERVISED-TIMEOUT instead -- a stack-preserving, in-thread
+timeout (SB-EXT:WITH-TIMEOUT) rather than EXECUTE-TOOL-ASYNC's cross-thread
+relay, since the latter was found to break WITH-FAILURE-RELAY's
+no-stack-unwind guarantee (see TEST-NO-UNWIND-HANDSHAKE and the P9 handoff
+report for that reconsideration).
+In a supervised session (*session-supervised-p*), an ordinary handler error is
+relayed through the failure-relay handshake so a live supervisor may choose to
+skip or retry it. Otherwise -- the default -- the error settles locally as a
+:tool-error result and the turn continues."
+  (if librecode-runner.protocol:*session-supervised-p*
+      (loop
+        (restart-case
+            (librecode-runner.protocol:with-failure-relay
+                (librecode-runner.protocol:*session-mailbox*
+                 worker-mbox
+                 :recovery-menu '((skip-and-continue) (retry-tool))
+                 :message-factory (lambda (desc reply-mbox recovery-menu)
+                                    `(:worker-error ,call-id ,desc ,reply-mbox ,recovery-menu))
+                 :apply-choice (lambda (choice args)
+                                 (let ((restart (find-restart choice)))
+                                   (if restart
+                                       (if (eq choice 'skip-and-continue)
+                                           (let ((marker-val (and (boundp '*worker-marker*) *worker-marker*)))
+                                             (apply #'invoke-restart restart marker-val args))
+                                           (apply #'invoke-restart restart args))
+                                       (error "Restart ~A not found on worker stack" choice)))))
+              ;; Evaluate permission request at execution site
+              (librecode-runner.agent:check-permission agent "execute_tool" name)
+              (let ((res (execute-tool-with-supervised-timeout tool args-plist name)))
+                (librecode-runner.protocol:send-message
+                 librecode-runner.protocol:*session-mailbox*
+                 `(:tool-success ,call-id ,res)))
+              (return))
+          (skip-and-continue (&optional marker-val)
+            :report "Skip this tool execution and continue session."
+            (setf *last-skip-preserved-stack-p* (eq marker-val :active))
+            (librecode-runner.protocol:broadcast-event session-id :tool-skipped (list :id call-id :name name))
+            (librecode-runner.protocol:send-message
+             librecode-runner.protocol:*session-mailbox*
+             `(:tool-success ,call-id "Warning: Tool execution skipped."))
+            (return))
+          (retry-tool ()
+            :report "Retry executing the tool."
+            ;; Loop back and retry
+            )))
+      (handler-case
+          (progn
+            (librecode-runner.agent:check-permission agent "execute_tool" name)
+            (let ((res (librecode-runner.tool:execute-tool-async
+                        tool args-plist
+                        :timeout (or (getf args-plist :timeout)
+                                     librecode-runner.tool:*default-tool-timeout*))))
+              (librecode-runner.protocol:send-message
+               librecode-runner.protocol:*session-mailbox*
+               `(:tool-success ,call-id ,res))))
+        (serious-condition (c)
+          (librecode-runner.protocol:send-message
+           librecode-runner.protocol:*session-mailbox*
+           `(:tool-error ,call-id ,(format nil "Error: ~A" c)))))))
 
 (defun execute-parallel-tools (session-id tool-calls registry)
   "Execute multiple tool-calls concurrently. Relays results or errors back to coordinator mailbox."
@@ -262,71 +445,34 @@
              (let* ((call-id (getf tc :id))
                     (name (getf tc :name))
                     (arguments-str (getf tc :arguments))
-                    (args-plist (handler-case
-                                    (let ((parsed (com.inuoe.jzon:parse (strip-jsonc-comments arguments-str))))
-                                      (if (hash-table-p parsed)
-                                          (let ((plist nil))
-                                            (maphash (lambda (k v)
-                                                       (push (intern (string-upcase k) :keyword) plist)
-                                                       (push v plist))
-                                                     parsed)
-                                            (nreverse plist))
-                                          nil))
-                                  (error () nil)))
                     (tool (bt:with-lock-held ((librecode-runner.tool::registry-lock registry))
                             (gethash name (librecode-runner.tool::registry-tools registry)))))
-               (if (not tool)
-                   (setf (gethash call-id results) (format nil "Error: Tool ~A not found" name))
-                   (let ((worker-mbox (librecode-runner.protocol:make-mailbox :name (format nil "worker-mbox-~A" call-id))))
-                     (push worker-mbox spawned-mailboxes)
-                     (librecode-runner.protocol:register-worker-mailbox session-id worker-mbox)
-                     (librecode-runner.protocol:broadcast-event session-id :tool-start (list :id call-id :name name :arguments arguments-str))
-                     (let ((thread
-                            (bt:make-thread
-                             (librecode-runner.protocol:with-session-context-captured
-                               (let ((self (bt:current-thread)))
-                                 (librecode-runner.protocol:register-worker-thread session-id self)
-                                 (unwind-protect
-                                      (loop
-                                        (restart-case
-                                            (librecode-runner.protocol:with-failure-relay
-                                                (librecode-runner.protocol:*session-mailbox*
-                                                 worker-mbox
-                                                 :recovery-menu '((skip-and-continue) (retry-tool))
-                                                 :message-factory (lambda (desc reply-mbox recovery-menu)
-                                                                    `(:worker-error ,call-id ,desc ,reply-mbox ,recovery-menu))
-                                                 :apply-choice (lambda (choice args)
-                                                                 (let ((restart (find-restart choice)))
-                                                                   (if restart
-                                                                       (if (eq choice 'skip-and-continue)
-                                                                           (let ((marker-val (and (boundp '*worker-marker*) *worker-marker*)))
-                                                                             (apply #'invoke-restart restart marker-val args))
-                                                                           (apply #'invoke-restart restart args))
-                                                                       (error "Restart ~A not found on worker stack" choice)))))
-                                              ;; Evaluate permission request at execution site
-                                              (librecode-runner.agent:check-permission agent "execute_tool" name)
-                                              (let ((res (funcall (librecode-runner.tool:tool-handler tool) args-plist)))
-                                                (librecode-runner.protocol:send-message
-                                                 librecode-runner.protocol:*session-mailbox*
-                                                 `(:tool-success ,call-id ,res)))
-                                              (return))
-                                          (skip-and-continue (&optional marker-val)
-                                            :report "Skip this tool execution and continue session."
-                                            (librecode-runner.protocol:broadcast-event session-id :tool-skipped (list :id call-id :name name))
-                                            (librecode-runner.protocol:send-message
-                                             librecode-runner.protocol:*session-mailbox*
-                                             `(:tool-success ,call-id ,(if (eq marker-val :active)
-                                                                           "Marker active! No unwind!"
-                                                                           "Warning: Tool execution skipped.")))
-                                            (return))
-                                          (retry-tool ()
-                                            :report "Retry executing the tool."
-                                            ;; Loop back and retry
-                                            )))
-                                   (librecode-runner.protocol:unregister-worker-thread session-id self)
-                                   (librecode-runner.protocol:unregister-worker-mailbox session-id worker-mbox))))
-                             :name (format nil "tool-worker-~A" name))))
-                       (push thread spawned-threads))))))
+               (multiple-value-bind (args-plist parse-condition)
+                   (handler-case
+                       (values (parse-tool-arguments arguments-str) nil)
+                     (error (c) (values nil c)))
+                 (cond
+                   ((not tool)
+                    (setf (gethash call-id results) (format nil "Error: Tool ~A not found" name)))
+                   (parse-condition
+                    (setf (gethash call-id results)
+                          (format nil "Error: malformed tool arguments JSON: ~A" parse-condition)))
+                   (t
+                    (let ((worker-mbox (librecode-runner.protocol:make-mailbox :name (format nil "worker-mbox-~A" call-id))))
+                      (push worker-mbox spawned-mailboxes)
+                      (librecode-runner.protocol:register-worker-mailbox session-id worker-mbox)
+                      (librecode-runner.protocol:broadcast-event session-id :tool-start (list :id call-id :name name :arguments arguments-str))
+                      (let ((thread
+                             (bt:make-thread
+                              (librecode-runner.protocol:with-session-context-captured
+                                (let ((self (bt:current-thread)))
+                                  (librecode-runner.protocol:register-worker-thread session-id self)
+                                  (unwind-protect
+                                       (run-tool-worker session-id call-id name tool args-plist agent worker-mbox)
+                                    (librecode-runner.protocol:unregister-worker-thread session-id self)
+                                    (librecode-runner.protocol:unregister-worker-mailbox session-id worker-mbox))))
+                              :name (format nil "tool-worker-~A" name))))
+                        (push thread spawned-threads))))))))
 
            ;; Read from unified session mailbox for all tools to settle
            (loop while (> pending-calls (hash-table-count results))
@@ -397,12 +543,12 @@ Enforces that exactly one provider call is made. Returns t if continuation is al
                    (steer-promoted (librecode-runner.session:promote-pending-inputs session-id :mode :steer))
                    ;; 2. Build history and baseline messages
                    (baseline (get-latest-epoch-baseline session-id))
-                   (history (get-session-history-messages session-id))
+                   (history (get-wire-history-messages session-id))
                    (messages (let ((msgs nil)
                                    (sys-prompt (or baseline "")))
                                (push (alexandria:plist-hash-table `("role" "system" "content" ,sys-prompt)) msgs)
                                (dolist (h history)
-                                 (push (alexandria:plist-hash-table `("role" ,(first h) "content" ,(second h))) msgs))
+                                 (push h msgs))
                                (nreverse msgs)))
                    ;; 3. Materialize tools if not withheld
                    (agent (get-active-agent session-id))

@@ -22,6 +22,7 @@
   ((:module "t"
     :components
     ((:file "event-store-tests")
+     (:file "mock-provider")
      (:file "agent-tests")
      (:file "audit-tests")
      (:file "tool-tests")
@@ -40,6 +41,7 @@
      (:file "builtin-tools-tests")
      (:file "child-tests")
      (:file "e2e-tests")
+     (:file "scenario-tests")
      (:file "model-tests"))))
   :perform (asdf:test-op (op c)
                          (let ((results (append
@@ -81,6 +83,8 @@
                                                            (uiop:find-symbol* :child-suite :librecode-test.child))
                                          (uiop:symbol-call :fiveam :run
                                                            (uiop:find-symbol* :e2e-suite :librecode-test.e2e))
+                                         (uiop:symbol-call :fiveam :run
+                                                           (uiop:find-symbol* :scenario-suite :librecode-test.scenario))
                                          (uiop:symbol-call :fiveam :run
                                                            (uiop:find-symbol* :model-suite :librecode-test.model)))))
                            (uiop:symbol-call :fiveam :explain! results)

@@ -6,12 +6,14 @@
 (defpackage #:librecode-test.session
   (:use #:cl
         #:fiveam
+        #:check-it
         #:librecode-runner.protocol
         #:librecode-runner.session
         #:librecode-runner.runner
         #:librecode-runner.compaction
         #:librecode-runner.event-store
         #:librecode-runner.conditions)
+  (:shadowing-import-from #:check-it #:*num-trials*)
   (:export #:session-suite))
 
 (in-package #:librecode-test.session)
@@ -20,10 +22,6 @@
   :description "Suite for session, run coordinator, input admission, SSE, and compaction tests.")
 
 (in-suite session-suite)
-
-(defun get-free-port ()
-  "Generate a random port in user range."
-  (+ 15000 (random 5000)))
 
 ;;; --- Tests ---
 
@@ -91,41 +89,25 @@
   "Verify correct chunk-by-chunk extraction from a mocked SSE HTTP streaming server."
   (librecode-test.event-store::with-tmp-sandbox (dir)
     (librecode-test.event-store::with-test-db (db dir)
-      (let* ((session-id "session-sse")
-             (port (get-free-port))
-             (acceptor (make-instance 'hunchentoot:easy-acceptor :port port)))
+      (let ((session-id "session-sse"))
         ;; Create projected session state
         (sqlite:execute-non-query db
           "INSERT INTO session_state (session_id, agent_id, version, status, last_updated)
            VALUES (?, ?, 1, 'active', ?)"
           session-id "agent-1" (librecode-runner.event-store::current-timestamp-ms))
 
-        ;; Set up custom local route dispatcher for SSE stream
-        (let ((dispatcher (lambda (request)
-                            (when (equal (hunchentoot:script-name request) "/stream")
-                              (lambda ()
-                                (setf (hunchentoot:content-type*) "text/event-stream")
-                                (let ((stream (hunchentoot:send-headers)))
-                                  (write-sequence (flexi-streams:string-to-octets (format nil "data: {\"choices\": [{\"delta\": {\"content\": \"Hello \"}}]}~%") :external-format :utf-8) stream)
-                                  (force-output stream)
-                                  (write-sequence (flexi-streams:string-to-octets (format nil "data: {\"choices\": [{\"delta\": {\"content\": \"world!\"}}]}~%") :external-format :utf-8) stream)
-                                  (force-output stream)
-                                  (write-sequence (flexi-streams:string-to-octets (format nil "data: [DONE]~%") :external-format :utf-8) stream)
-                                  (force-output stream)
-                                  ""))))))
-          (push dispatcher hunchentoot:*dispatch-table*)
-          (unwind-protect
-               (progn
-                 (hunchentoot:start acceptor)
-                 (let ((librecode-runner.runner::*provider-url* (format nil "http://127.0.0.1:~A/stream" port))
-                       (librecode-runner.protocol::*session-mailbox* (librecode-runner.protocol:make-mailbox)))
-                   (execute-provider-turn session-id "mock-provider" "mock-model")
-                   ;; Verify the assistant message was correctly compiled and saved in history
-                   (let ((content (sqlite:execute-single db "SELECT content FROM session_history WHERE role = 'assistant'")))
-                     (is (equal "Hello world!" content)))))
-            (progn
-              (hunchentoot:stop acceptor)
-              (setf hunchentoot:*dispatch-table* (delete dispatcher hunchentoot:*dispatch-table*)))))))))
+        (librecode-test.mock-provider:with-mock-provider
+            (port :path "/stream"
+                  :responder (lambda (request call-index)
+                               (declare (ignore request call-index))
+                               (list (list :content "Hello ")
+                                     (list :content "world!"))))
+          (let ((librecode-runner.runner::*provider-url* (format nil "http://127.0.0.1:~A/stream" port))
+                (librecode-runner.protocol::*session-mailbox* (librecode-runner.protocol:make-mailbox)))
+            (execute-provider-turn session-id "mock-provider" "mock-model")
+            ;; Verify the assistant message was correctly compiled and saved in history
+            (let ((content (sqlite:execute-single db "SELECT content FROM session_history WHERE role = 'assistant'")))
+              (is (equal "Hello world!" content)))))))))
 
 (test test-transaction-atomicity-rollback
   "Verify that if a projection fails inside commit-event, the entire event is rolled back."
@@ -348,65 +330,43 @@
   "Run two sequential execution turns where the first turn simulates an SSE stream error, verifying that the second turn executes cleanly without mailbox contamination."
   (librecode-test.event-store::with-tmp-sandbox (dir)
     (librecode-test.event-store::with-test-db (db dir)
-      (let* ((session-id "session-sequential")
-             (port (get-free-port))
-             (acceptor (make-instance 'hunchentoot:easy-acceptor :port port))
-             (request-count 0))
+      (let ((session-id "session-sequential"))
         ;; Create projected session state
         (sqlite:execute-non-query db
           "INSERT INTO session_state (session_id, agent_id, version, status, last_updated)
            VALUES (?, ?, 1, 'active', ?)"
           session-id "agent-1" (librecode-runner.event-store::current-timestamp-ms))
 
-        ;; Set up custom local route dispatcher
-        (let ((dispatcher (lambda (request)
-                            (when (equal (hunchentoot:script-name request) "/stream")
-                              (lambda ()
-                                (incf request-count)
-                                (setf (hunchentoot:content-type*) "text/event-stream")
-                                (let ((stream (hunchentoot:send-headers)))
-                                  (cond
-                                    ((= request-count 1)
-                                     ;; First turn: send some data, then send error JSON, followed by more data to guarantee mailbox contamination
-                                     (write-sequence (flexi-streams:string-to-octets (format nil "data: {\"choices\": [{\"delta\": {\"content\": \"Stale data\"}}]}~%") :external-format :utf-8) stream)
-                                     (force-output stream)
-                                     (write-sequence (flexi-streams:string-to-octets (format nil "data: {\"error\": \"Simulated stream error\"}~%") :external-format :utf-8) stream)
-                                     (force-output stream)
-                                     (write-sequence (flexi-streams:string-to-octets (format nil "data: {\"choices\": [{\"delta\": {\"content\": \"More stale data\"}}]}~%") :external-format :utf-8) stream)
-                                     (force-output stream)
-                                     "")
-                                    (t
-                                     ;; Second turn: send clean data
-                                     (write-sequence (flexi-streams:string-to-octets (format nil "data: {\"choices\": [{\"delta\": {\"content\": \"Hello \"}}]}~%") :external-format :utf-8) stream)
-                                     (force-output stream)
-                                     (write-sequence (flexi-streams:string-to-octets (format nil "data: {\"choices\": [{\"delta\": {\"content\": \"world!\"}}]}~%") :external-format :utf-8) stream)
-                                     (force-output stream)
-                                     (write-sequence (flexi-streams:string-to-octets (format nil "data: [DONE]~%") :external-format :utf-8) stream)
-                                     (force-output stream)
-                                     ""))))))))
-          (push dispatcher hunchentoot:*dispatch-table*)
-          (hunchentoot:start acceptor)
-          (unwind-protect
-               (let ((librecode-runner.runner::*provider-url* (format nil "http://127.0.0.1:~A/stream" port)))
-                 ;; Bind session mailbox dynamically
-                 (let ((mbox (librecode-runner.protocol:make-mailbox :name "test-seq-mbox")))
-                   (let ((librecode-runner.protocol:*session-mailbox* mbox))
-                     ;; First turn: should fail with provider-error
-                     (signals provider-error
-                       (execute-provider-turn session-id "mock-provider" "mock-model"))
-                     
-                     ;; Manually push a stale message to simulate mailbox contamination
-                     (librecode-runner.protocol:send-message mbox '(:sse-line :stale-rid "data: {\"choices\": [{\"delta\": {\"content\": \"Stale data\"}}]}"))
-                     
-                     ;; Second turn: should succeed because it flushes the mailbox first
-                     (execute-provider-turn session-id "mock-provider" "mock-model")
-                     
-                     ;; Verify assistant message has correct content from second turn only (stale content is discarded)
-                     (let ((content (sqlite:execute-single db "SELECT content FROM session_history WHERE role = 'assistant'")))
-                       (is (equal "Hello world!" content))))))
-            (progn
-              (hunchentoot:stop acceptor)
-              (setf hunchentoot:*dispatch-table* (delete dispatcher hunchentoot:*dispatch-table*)))))))))
+        ;; First turn: send some data, then an error JSON, then more data to
+        ;; guarantee mailbox contamination. Second turn: send clean data.
+        (librecode-test.mock-provider:with-mock-provider
+            (port :path "/stream"
+                  :responder (lambda (request call-index)
+                               (declare (ignore request))
+                               (if (= call-index 1)
+                                   (list (list :content "Stale data")
+                                         (list :raw "{\"error\": \"Simulated stream error\"}")
+                                         (list :content "More stale data")
+                                         :no-done)
+                                   (list (list :content "Hello ")
+                                         (list :content "world!")))))
+          (let ((librecode-runner.runner::*provider-url* (format nil "http://127.0.0.1:~A/stream" port)))
+            ;; Bind session mailbox dynamically
+            (let ((mbox (librecode-runner.protocol:make-mailbox :name "test-seq-mbox")))
+              (let ((librecode-runner.protocol:*session-mailbox* mbox))
+                ;; First turn: should fail with provider-error
+                (signals provider-error
+                  (execute-provider-turn session-id "mock-provider" "mock-model"))
+
+                ;; Manually push a stale message to simulate mailbox contamination
+                (librecode-runner.protocol:send-message mbox '(:sse-line :stale-rid "data: {\"choices\": [{\"delta\": {\"content\": \"Stale data\"}}]}"))
+
+                ;; Second turn: should succeed because it flushes the mailbox first
+                (execute-provider-turn session-id "mock-provider" "mock-model")
+
+                ;; Verify assistant message has correct content from second turn only (stale content is discarded)
+                (let ((content (sqlite:execute-single db "SELECT content FROM session_history WHERE role = 'assistant'")))
+                  (is (equal "Hello world!" content)))))))))))
 
 (test test-session-permission-asked-event-logging
   "Assert that interactive permission check triggers :event-permission-asked and logs to event_log."
@@ -593,4 +553,279 @@
                                session-id)))
               (is-true event-row)
               (is (equal "EVENT-PERMISSION-ASKED" (caar event-row))))))))))
+
+;;; --- Wire fidelity: tool_calls/tool_call_id round-trip ---
+
+(defun %seed-session-state (db session-id)
+  "Insert a minimal session_state row so session_history's FK is satisfied."
+  (sqlite:execute-non-query db
+    "INSERT INTO session_state (session_id, agent_id, version, status, last_updated)
+     VALUES (?, ?, 1, 'active', ?)"
+    session-id "agent-1" (librecode-runner.event-store::current-timestamp-ms)))
+
+(defun %wire-tool-calls-match-p (expected wire-assistant-msg)
+  "Check that WIRE-ASSISTANT-MSG's :tool_calls array matches EXPECTED
+(a list of (:id :name :arguments :result) plists) in order, id/name/arguments intact."
+  (let ((wire-tcs (getf wire-assistant-msg :tool_calls)))
+    (and (equal "assistant" (getf wire-assistant-msg :role))
+         wire-tcs
+         (= (length wire-tcs) (length expected))
+         (every (lambda (exp wtc)
+                  (and (equal (getf exp :id) (getf wtc :id))
+                       (equal "function" (getf wtc :type))
+                       (equal (getf exp :name) (getf (getf wtc :function) :name))
+                       (equal (getf exp :arguments) (getf (getf wtc :function) :arguments))))
+                expected (coerce wire-tcs 'list)))))
+
+(defun %wire-tool-messages-match-p (expected wire-tool-msgs)
+  "Check that WIRE-TOOL-MSGS (the N role:\"tool\" messages following the
+assistant message) each carry the matching tool_call_id and result content,
+in the same order EXPECTED's tool calls were emitted."
+  (and (= (length wire-tool-msgs) (length expected))
+       (every (lambda (exp msg)
+                (and (equal "tool" (getf msg :role))
+                     (equal (getf exp :id) (getf msg :tool_call_id))
+                     (equal (getf exp :result) (getf msg :content))))
+              expected wire-tool-msgs)))
+
+(test test-tool-call-wire-roundtrip-property
+  "Property [c2-roundtrip]: for any turn emitting N tool calls, reconstructing
+the outbound wire messages from persisted history produces an assistant
+message carrying a spec-form tool_calls array (ids, names, argument strings
+intact) followed by exactly one role:\"tool\" message per call, each carrying
+the matching tool_call_id."
+  (let ((*num-trials* 25))
+    (is-true
+     (check-it
+      (generator (list (tuple (string :min-length 1 :max-length 10)
+                              (string :min-length 1 :max-length 10)
+                              (string :min-length 1 :max-length 10))
+                       :min-length 1 :max-length 4))
+      (lambda (calls)
+        (librecode-test.event-store::with-tmp-sandbox (dir)
+          (librecode-test.event-store::with-test-db (db dir)
+            (let ((session-id "wire-roundtrip-session"))
+              (%seed-session-state db session-id)
+              (let ((expected (loop for (name arguments result) in calls
+                                    for i from 0
+                                    collect (list :id (format nil "call-~D" i)
+                                                  :name name
+                                                  :arguments arguments
+                                                  :result result))))
+                (librecode-runner.runner::save-assistant-message
+                 session-id ""
+                 (mapcar (lambda (tc) (list :id (getf tc :id)
+                                           :name (getf tc :name)
+                                           :arguments (getf tc :arguments)))
+                         expected))
+                (dolist (tc expected)
+                  (librecode-runner.runner::save-tool-message
+                   session-id (getf tc :id) (getf tc :name) (getf tc :result)))
+                (let ((wire (librecode-runner.runner::get-wire-history-messages session-id)))
+                  (and (= (length wire) (1+ (length expected)))
+                       (%wire-tool-calls-match-p expected (first wire))
+                       (%wire-tool-messages-match-p expected (rest wire)))))))))))))
+
+(test test-tool-call-wire-roundtrip-survives-restart
+  "Constraint [c2-persisted-across-restart]: wire reconstruction must succeed
+from a fresh database connection (simulating a process restart) rather than
+relying on any in-memory state carried across the turn."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (let* ((db-path (uiop:merge-pathnames* "test.db" dir))
+           (session-id "wire-restart-session")
+           (expected (list (list :id "call-0" :name "read_file" :arguments "{\"path\":\"a.txt\"}" :result "contents-a")
+                           (list :id "call-1" :name "write_file" :arguments "{\"path\":\"b.txt\"}" :result "ok"))))
+      ;; Turn 1: persist an assistant message with 2 tool calls and their results.
+      (let ((librecode-runner.event-store:*workspace-root* dir))
+        (let ((librecode-runner.event-store:*db* (librecode-runner.event-store:connect-db "test.db")))
+          (unwind-protect
+               (progn
+                 (librecode-runner.event-store:init-db librecode-runner.event-store:*db*)
+                 (%seed-session-state librecode-runner.event-store:*db* session-id)
+                 (librecode-runner.runner::save-assistant-message
+                  session-id ""
+                  (mapcar (lambda (tc) (list :id (getf tc :id) :name (getf tc :name) :arguments (getf tc :arguments)))
+                          expected))
+                 (dolist (tc expected)
+                   (librecode-runner.runner::save-tool-message
+                    session-id (getf tc :id) (getf tc :name) (getf tc :result))))
+            (sqlite:disconnect librecode-runner.event-store:*db*))))
+      ;; Simulate a process restart: fresh connection, no carried-over in-memory state.
+      (let ((librecode-runner.event-store:*workspace-root* dir))
+        (let ((librecode-runner.event-store:*db* (librecode-runner.event-store:connect-db "test.db")))
+          (unwind-protect
+               (let ((wire (librecode-runner.runner::get-wire-history-messages session-id)))
+                 (is (= (length wire) 3))
+                 (is-true (%wire-tool-calls-match-p expected (first wire)))
+                 (is-true (%wire-tool-messages-match-p expected (rest wire))))
+            (sqlite:disconnect librecode-runner.event-store:*db*)))))))
+
+(test test-legacy-tool-row-rejected-not-corrupted
+  "Constraint [c2-legacy-rejected-not-corrupted]: a pre-existing tool-role
+history row with no tool_call_id (the old, pre-linkage schema shape) must be
+rejected with a clear, typed condition during wire reconstruction -- never
+silently corrupted into an unlinked tool message, never an obscure crash."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (librecode-test.event-store::with-test-db (db dir)
+      (let ((session-id "wire-legacy-session"))
+        (%seed-session-state db session-id)
+        ;; A legacy-shape tool row: written before tool_call_id tracking existed,
+        ;; so the column is left NULL (as any old row necessarily would be).
+        (sqlite:execute-non-query db
+          "INSERT INTO session_history (id, session_id, role, content, created_at)
+           VALUES (?, ?, 'tool', ?, ?)"
+          "legacy-tool-1" session-id "some old tool result" 1000)
+        (signals librecode-runner.conditions:legacy-history-row
+          (librecode-runner.runner::get-wire-history-messages session-id))
+        ;; The condition names the offending row so the failure is diagnosable, not obscure.
+        (handler-case
+            (librecode-runner.runner::get-wire-history-messages session-id)
+          (librecode-runner.conditions:legacy-history-row (c)
+            (is (equal "legacy-tool-1" (librecode-runner.conditions:legacy-history-row-row-id c)))
+            (is (equal session-id (librecode-runner.conditions:legacy-history-row-session-id c)))))))))
+
+;;; --- Compaction pairing: never orphan a tool-call/result group across the split ---
+
+(defun %pad-content (label)
+  "A content string long enough that a handful of rows reliably exceed a
+small MAX-TOKENS budget in COMPACT-CONTEXT's floor(length/4) estimator."
+  (format nil "~A ~A" label (make-string 36 :initial-element #\x)))
+
+(defun %insert-plain-row (db session-id id role created-at)
+  (sqlite:execute-non-query db
+    "INSERT INTO session_history (id, session_id, role, content, created_at)
+     VALUES (?, ?, ?, ?, ?)"
+    id session-id role (%pad-content id) created-at))
+
+(defun %tool-calls-payload (call-ids)
+  "Build the {text, tool_calls: [...]} JSON payload SAVE-ASSISTANT-MESSAGE
+would have written for an assistant turn emitting CALL-IDS."
+  (com.inuoe.jzon:stringify
+   (librecode-runner.event-store::coerce-to-hash-table
+    `((:text . "")
+      (:tool_calls . ,(map 'vector
+                           (lambda (id)
+                             `((:id . ,id)
+                               (:type . "function")
+                               (:function . ((:name . "tool") (:arguments . "{}")))))
+                           call-ids))))))
+
+(defun %insert-tool-call-row (db session-id id created-at call-ids)
+  (sqlite:execute-non-query db
+    "INSERT INTO session_history (id, session_id, role, content, created_at)
+     VALUES (?, ?, 'assistant', ?, ?)"
+    id session-id (%tool-calls-payload call-ids) created-at))
+
+(defun %insert-tool-result-row (db session-id id created-at call-id)
+  (sqlite:execute-non-query db
+    "INSERT INTO session_history (id, session_id, role, content, created_at, tool_call_id)
+     VALUES (?, ?, 'tool', ?, ?, ?)"
+    id session-id (%pad-content call-id) created-at call-id))
+
+(defun %build-pairing-history (db session-id segments)
+  "Insert SEGMENTS (each the symbol :PLAIN or a list (:GROUP N)) into
+SESSION-ID's history in order, one CREATED-AT tick per row. Returns an
+ordered list of (:id ID :group-key KEY) plists, independently derived from
+the segment spec (not from re-parsing what got written), where every row
+belonging to the same assistant-tool-call/tool-result group shares KEY."
+  (let ((clock 0)
+        (rows nil))
+    (dolist (seg segments)
+      (if (eq seg :plain)
+          (let ((id (format nil "row-~D" (incf clock))))
+            (%insert-plain-row db session-id id "user" clock)
+            (push (list :id id :group-key id) rows))
+          (destructuring-bind (tag n) seg
+            (declare (ignore tag))
+            (let* ((base-id (format nil "row-~D" (incf clock)))
+                   (call-ids (loop for i from 1 to n
+                                    collect (format nil "~A-call-~D" base-id i))))
+              (%insert-tool-call-row db session-id base-id clock call-ids)
+              (push (list :id base-id :group-key base-id) rows)
+              (dolist (call-id call-ids)
+                (incf clock)
+                (let ((tool-id (format nil "~A-result-~A" base-id call-id)))
+                  (%insert-tool-result-row db session-id tool-id clock call-id)
+                  (push (list :id tool-id :group-key base-id) rows)))))))
+    (nreverse rows)))
+
+(defun %groups-never-split-p (db session-id rows)
+  "Verify [c5-no-orphans]/[c5-group-never-split]: for every group of ROWS
+sharing a :group-key (an assistant tool-call row and its linked tool-result
+rows), the rows still present in SESSION-ID's history are either all of the
+group or none of it -- never a strict subset."
+  (let ((remaining (mapcar #'car
+                            (sqlite:execute-to-list db
+                             "SELECT id FROM session_history WHERE session_id = ?"
+                             session-id)))
+        (groups (make-hash-table :test 'equal)))
+    (dolist (row rows)
+      (push row (gethash (getf row :group-key) groups)))
+    (loop for group-rows being the hash-values of groups
+          always (let ((present (mapcar (lambda (r) (and (member (getf r :id) remaining :test #'equal) t))
+                                        group-rows)))
+                   (or (every #'identity present) (notany #'identity present))))))
+
+(test test-compaction-preserves-tool-pairs
+  "Property [c5-no-orphans]: a naive position-only split that would fall
+strictly between an assistant tool-call message and its tool-result row must
+instead move to keep the whole group on one side. Red-first: with a
+6-message history (u1 a1 u2 [assistant-call a2 -> tool-result t1] u3), the
+naive floor(6/3)=2 keep-count puts split-idx at 4, landing between a2 (index
+3, would be summarized) and t1 (index 4, would be kept) -- an orphan."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (librecode-test.event-store::with-test-db (db dir)
+      (let ((session-id "session-pairing"))
+        (%seed-session-state db session-id)
+        (let ((rows (%build-pairing-history
+                     db session-id
+                     (list :plain :plain :plain (list :group 1) :plain))))
+          (is-true (compact-context session-id :max-tokens 10))
+          (is-true (%groups-never-split-p db session-id rows)))))))
+
+(test test-compaction-keeps-oversized-group-whole
+  "Constraint [a2]: a group that alone exceeds MAX-TOKENS is kept whole
+rather than split, even though this means compaction cannot hit the token
+target exactly."
+  (librecode-test.event-store::with-tmp-sandbox (dir)
+    (librecode-test.event-store::with-test-db (db dir)
+      (let ((session-id "session-oversized-group"))
+        (%seed-session-state db session-id)
+        (let ((rows (%build-pairing-history
+                     db session-id
+                     (list :plain (list :group 3)))))
+          (is-true (compact-context session-id :max-tokens 10))
+          (is-true (%groups-never-split-p db session-id rows))
+          ;; The group (4 rows: 1 assistant tool-call + 3 tool-results) is the
+          ;; tail of history and alone exceeds max-tokens; it must still be
+          ;; kept whole rather than split, per the group-never-split rule.
+          (let* ((group-ids (mapcar (lambda (r) (getf r :id))
+                                    (remove-if-not (lambda (r) (equal (getf r :group-key) "row-2"))
+                                                    rows)))
+                 (remaining (mapcar #'car
+                                    (sqlite:execute-to-list db
+                                     "SELECT id FROM session_history WHERE session_id = ?"
+                                     session-id))))
+            (is-true group-ids)
+            (dolist (id group-ids)
+              (is-true (member id remaining :test #'equal)))))))))
+
+(test test-compaction-pairing-property
+  "Property [c5-no-orphans]/[c5-group-never-split]: over varied generated
+histories mixing plain messages and tool-call/result groups of varying
+size, after compaction no group is ever split across the keep/summarize
+boundary."
+  (let ((*num-trials* 30))
+    (is-true
+     (check-it
+      (generator (list (or (quote :plain) (tuple (quote :group) (integer 1 3)))
+                       :min-length 4 :max-length 8))
+      (lambda (segments)
+        (librecode-test.event-store::with-tmp-sandbox (dir)
+          (librecode-test.event-store::with-test-db (db dir)
+            (let ((session-id "session-pairing-property"))
+              (%seed-session-state db session-id)
+              (let ((rows (%build-pairing-history db session-id segments)))
+                (compact-context session-id :max-tokens 10)
+                (%groups-never-split-p db session-id rows))))))))))
 

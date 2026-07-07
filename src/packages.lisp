@@ -52,7 +52,12 @@
            #:denied-error-message
            #:denied-error-action
            #:denied-error-resource
-           
+
+           #:legacy-history-row
+           #:legacy-history-row-message
+           #:legacy-history-row-session-id
+           #:legacy-history-row-row-id
+
            ;; Restarts
            #:retry-with-backup-provider
            #:compact-and-retry
@@ -80,6 +85,7 @@
            #:receive-message
            #:flush-mailbox
            #:*session-mailbox*
+           #:*session-supervised-p*
            #:*active-worker-mailboxes*
            #:register-worker-mailbox
            #:unregister-worker-mailbox
@@ -178,18 +184,24 @@
            #:materialize-tools
            #:execute-tool
            #:execute-tool-async
+           #:*default-tool-timeout*
            #:deep-merge-plists
            #:*active-subprocesses*
            #:register-active-subprocess
            #:unregister-active-subprocess
-           #:tool-cancelled-p))
+           #:tool-cancelled-p
+           #:make-subprocess-cancellation-registry
+           #:cancel-and-terminate-registered-subprocesses
+           #:get-path-lock
+           #:with-path-lock))
 
 (defpackage #:librecode-runner.http
   (:use #:cl)
   (:documentation "HTTP server bridge for remote control and SSE coordination.")
   (:export #:start-http-bridge
            #:stop-http-bridge
-           #:*max-compact-attempts*))
+           #:*max-compact-attempts*
+           #:*max-backup-provider-attempts*))
 
 (defpackage #:librecode-runner.provider
   (:use #:cl)

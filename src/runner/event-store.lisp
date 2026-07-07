@@ -189,6 +189,7 @@ Recursively coerces plists and alists into hash-tables so they serialize to JSON
         role TEXT NOT NULL,
         content TEXT NOT NULL,
         created_at INTEGER NOT NULL,
+        tool_call_id TEXT,
         FOREIGN KEY(session_id) REFERENCES session_state(session_id) ON DELETE CASCADE
     );")
   (sqlite:execute-non-query db
