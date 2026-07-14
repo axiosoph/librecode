@@ -8,3 +8,4 @@ librecode.db
 .envrc
 .direnv/
 *.fasl
+.grepai/
