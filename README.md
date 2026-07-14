@@ -4,27 +4,91 @@ A libre governance layer for AI-assisted work: every agent walk is bounded by a
 contract, checked by deterministic gates, and recorded in a durable,
 tamper-evident ledger.
 
-## The premise
+## What it is
 
-Hand anyone a non-trivial assignment — homework, a lab experiment, a consulting
-engagement — and the expectation is universal: do the work, *and keep a legible
-record of it*. Show your steps. Keep the lab notebook. File the report. No
-serious discipline, from grade school to professional practice, accepts "trust
-me, it's done" as a deliverable.
+librecode is a Common Lisp (SBCL) toolkit for running AI-agent work as governed
+**campaigns**, not open-ended chat sessions. A **walker** — the LLM-driven
+process actually doing the work — never operates on a bare instruction; it
+executes against a boundary refined out of a human's intent until it's
+precise enough for a machine to check.
 
-Should we expect less from our AI helpers?
+Three pieces work together:
 
-We can't introspect a model directly, so librecode enforces the same discipline
-externally that we'd expect from any capable colleague:
+| Piece | Where | What it is |
+|---|---|---|
+| Reference model | `src/model/` | The pure state machine of governed work — DAG, node phases, deposits, event log — with four crown-jewel invariants as executable predicates. |
+| Metaharness | `src/meta/` | Campaign orchestration: DAG scheduling, crash-safe journal, native [Nickel](https://nickel-lang.org) gates, multi-child supervision with condition/restart recovery. |
+| Runner | `src/runner/` | The reference supervisable walker — an event-sourced LLM agent harness proving out the supervision contract (freeze/handshake, cooperative shutdown, resume). |
 
-- **A contract** states the work requirements — machine-checkable, filled as the
-  work progresses, never graded by the one who did the work.
-- **Deterministic gates** check every deposit of work against its contract. An
-  agent supplies work; it never supplies the terms of its own checking.
-- **A durable ledger** keeps the pertinent record, zettelkasten-style — findings,
-  decisions, and their why — append-only and replayable, so progress is
-  tamper-evident and any reviewer can reconstruct what happened from the record
-  alone.
+Today it's driven from a Lisp REPL (`just repl`), not yet a polished CLI — see
+[Status](#status).
+
+## How a campaign runs
+
+1. A human states intent, often underspecified; an agent presses on the gaps
+   until it's a sufficient **IBC** (Initial Boundary Condition) — a plain
+   document naming the goal, what's already known, what's delegated to the
+   walker's own judgment, and what must halt and ask rather than be guessed
+   at. The human keeps final say over every detail and scope — the agent
+   sharpens, it doesn't decide.
+2. An architect maps that campaign-level IBC into a plan — a DAG of nodes,
+   each needing its own IBC drawn from that living plan, which acts as a
+   kind of meta-IBC for the nodes under it.
+3. The metaharness schedules the DAG and dispatches each node to an isolated
+   worktree.
+4. A walker executes its node and lands a **deposit** — its unit of finished
+   work.
+5. A **gate** — any deterministic check, whether a Nickel contract or a
+   script the harness runs as a hook — verifies the deposit before it's
+   accepted. A contract is one specific, load-bearing kind of gate, not a
+   synonym for the concept. The walker never supplies the terms of its own
+   checking.
+6. Every step — findings, decisions, and their why — is written to a durable,
+   append-only ledger, so any reviewer can reconstruct what happened without
+   trusting a summary.
+7. The human is surfaced only where a **delegation table** actually requires
+   it (see [The human seam](#the-human-seam)) — everything else resolves
+   without a human in the loop.
+
+## Why this discipline
+
+This isn't a complaint about current models, it's structural: an LLM is a
+stochastic walk, not a mind, and open-loop generation drifts by default —
+handed a vague task, it doesn't ask what you meant, it fills the gap with a
+plausible-sounding assumption instead of surfacing it, and it can't be
+trusted to grade its own work either. No amount of scale removes this; only
+external structure closes the loop. So librecode pushes precision to both
+ends: a contract states requirements before work starts, and a gate — never
+the agent that did the work — checks the result after.
+
+That's not just risk management. Working with an LLM changes what's
+*tractable*, not just what's fast: research and code both move quickly
+enough that problems previously out of reach on a realistic timeline become
+worth attempting. But that speedup only holds if direction stays coherent —
+the bottleneck isn't the model's capability, it's ours. A precisely scoped
+boundary is what turns "should this stop and ask a human" from a guess into
+a derivable decision, which is what lets the system move at LLM speed on
+everything it can, while still reliably stopping for the one thing no model
+has: the human's actual vision for what's being built. See
+[docs/design.md](docs/design.md) for the full formal treatment.
+
+## The human seam
+
+Escalation runs through a council of specialized **seats** — architect,
+**composer** (the conductor scheduling and dispatching the walk),
+lead-maintainer, auditor — each owning a slice of the decision space. A
+**delegation table** routes every decision-type to its owning seat and the
+assent it requires (a single seat, a subset, the full council, or the
+human), so only the decisions that genuinely need a human ever reach one.
+Three seam classes dominate that traffic:
+
+- **Novelty-bounding** — greenfield work, closed by writing a sufficient IBC.
+- **Divergence-alert** — real-time deviation from a mapped plan, surfaced
+  immediately rather than held until review.
+- **Coherence-judgment** — the human's quality call at close, which
+  overrides any agent's self-assessment.
+
+See [docs/design.md](docs/design.md) for the full delegation table.
 
 ## Why more than one model
 
@@ -37,26 +101,14 @@ structurally against their interests. Freedom here isn't ideology bolted on —
 it is the enabling condition of the math. See [MANIFESTO.md](MANIFESTO.md) and
 [docs/foundations.md](docs/foundations.md) for the full argument.
 
-## What's in the box
-
-| Piece | Where | What it is |
-|---|---|---|
-| Reference model | `src/model/` | The pure state machine of governed work — DAG, node phases, deposits, event log — with four crown-jewel invariants as executable predicates. |
-| Metaharness | `src/meta/` | Campaign orchestration: DAG scheduling, crash-safe journal, native [Nickel](https://nickel-lang.org) gates, multi-child supervision with condition/restart recovery. |
-| Runner | `src/runner/` | The reference supervisable walker — an event-sourced LLM agent harness proving out the supervision contract (freeze/handshake, cooperative shutdown, resume). |
-
-A campaign flows: a human-authored boundary contract goes in → the DAG
-dispatches walkers → walkers land deposits → gates check them → the ledger
-records everything → the human is surfaced exactly where judgment is needed →
-a merged, auditable branch comes out.
-
 ## Status
 
-Pre-1.0 and molten. The proof-of-concept is reached: a real supervised
-subprocess walker with working tools, a native gate producing a gated artifact,
-mid-run kill/resume, and a runnable end-to-end demo against a local model. The
-current push is a usable MVP — librecode governing real day-to-day campaigns,
-including its own development.
+Pre-1.0 and molten — still being reshaped freely, no API stability promised
+yet. The proof-of-concept is reached: a real supervised subprocess walker with
+working tools, a native gate producing a gated artifact, mid-run kill/resume,
+and a runnable end-to-end demo against a local model. The current push is a
+usable MVP — librecode governing real day-to-day campaigns, including its own
+development.
 
 ## Quickstart (developers)
 
