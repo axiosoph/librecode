@@ -394,9 +394,15 @@ The sequence — five campaigns, two design passes:
    a shared `with-mock-provider` test fixture, and the scenario suite as the
    testable standard — enough to exercise supervision and coherence, not full
    opencode parity. This is what actually drives your first real campaigns.
-3. **Campaign 8 — the capable second harness.** `harness-opencode` on the proven
-   HTTP+SSE surface (acceptance criteria in E) plus provider auth (B) — now explicitly
-   pragmatic support for realistic heterogeneous conditions, not the initial workhorse.
+3. **Campaign 8 — end-to-end reach** *(re-scoped 2026-07-14, head-ratified)*: real
+   provider dialect + auth (F13/B), the minimal native drive entry (REPL, not the
+   TUI), an **IBC sufficiency gate** (authorization grants — may-commit, scope, halt
+   conditions — as machine-checkable contract data rather than relayed prose; field
+   experience shows walkers fill implicit grants with invented rules, in both the
+   over-caution and overreach directions), and the acceptance test: a first trivial
+   campaign runs natively through librecode end-to-end. The capable second harness
+   (`harness-opencode`, acceptance criteria in E) moves post-J/post-MVP, pulled by
+   usage signal — heterogeneity decorrelates nothing until campaigns actually run.
 4. **Campaign 9 — J, the contract substrate** on the unified spine (§7's settled
    shaping design, now concretely seeded by campaign 6's gate-harness-protocol ruling).
    The largest — may split in two — and cannot be thinned: it is the homework premise
