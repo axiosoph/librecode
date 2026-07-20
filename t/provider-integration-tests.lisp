@@ -129,3 +129,179 @@ Authorization: Bearer <token> header to the session's configured
               (sb-posix:unsetenv +auth-env-var+)
               (when harness
                 (librecode-meta.harness:harness-terminate harness)))))))))
+
+;;; ============================================================================
+;;; N7 -- at-rest credential redaction + fail-safe send guard
+;;; ============================================================================
+;;;
+;;; N4's real-credential wiring (above) activated two decorrelated findings
+;;; from the hacker-seat review: the token it threads reaches durable
+;;; storage in cleartext (event_log.payload and session_provider_config.auth),
+;;; and an unauthenticated non-loopback send is never refused. These three
+;;; tests are the RED half of N7's /core cycle -- they assert the target
+;;; (still-unimplemented) behavior and are expected to fail against the
+;;; current tip. The symbols they reference fully-qualified
+;;; (librecode-runner.provider:configure-session,
+;;; librecode-runner.runner:execute-provider-turn) are unqualified here
+;;; deliberately -- this package only :use's librecode-runner.child, and
+;;; widening its :use clause is unnecessary churn for three call sites.
+;;;
+;;; Delegated design decisions (logged per N7's IBC S3 delegation):
+;;;
+;;; - Guard condition type: librecode-runner.runner::unauthenticated-send-refused
+;;;   (unexported -- packages.lisp is outside N7's file_surface, so the
+;;;   implementation worker must define it directly in runner.lisp without
+;;;   an :export; tests reach it via :: internal access). Below, the assert
+;;;   goes through (find-class ... nil) before typep so referencing the
+;;;   not-yet-defined class never trips a hard error pre-implementation --
+;;;   only an intelligible assertion failure.
+;;; - Network-free guard verification: the refusal test swaps
+;;;   (fdefinition 'dexador:post) for a counting stub for its duration
+;;;   (restored via unwind-protect) rather than pointing at a real
+;;;   non-loopback host. This is deliberate -- a real non-loopback address
+;;;   is either flaky (real DNS/network dependency in CI) or, if it happens
+;;;   to resolve locally, not actually testing the loopback/non-loopback
+;;;   classification. Stubbing dexador:post directly gives an exact,
+;;;   deterministic "was a request ever attempted" signal regardless of
+;;;   classification-predicate internals, which are the implementer's call.
+;;; - Loopback-classification boundary exercised: "example.com" (clearly
+;;;   non-loopback) vs "127.0.0.1" (the existing suite's loopback default).
+
+(defun n7-insert-session-state (db session-id)
+  "Minimal session_state row -- mirrors the setup already used by
+test-generic-provider-configuration in provider-tests.lisp; execute-provider-turn
+only needs this row to resolve an agent-id and does not require
+session_history/context_epoch rows for a bare turn."
+  (sqlite:execute-non-query db
+    "INSERT INTO session_state (session_id, agent_id, version, status, last_updated)
+     VALUES (?, ?, 1, 'active', ?)"
+    session-id "agent-1" (librecode-runner.event-store::current-timestamp-ms)))
+
+(test test-n7-credential-redacted-at-rest-live-header-intact
+  "C-N7-1 + C-N7-2: after configure-session commits a real token, neither
+event_log.payload for the :session-provider-configured event nor the
+projected session_provider_config.auth column may contain that token's
+cleartext -- checked before any turn runs, so this is purely an at-rest
+property. A live same-process turn immediately afterward must still send
+the correct `Authorization: Bearer <token>` header: redaction must not
+break the authenticated path it protects."
+  (let ((session-id "n7-redaction-session")
+        (real-token "n7-real-secret-do-not-persist-at-rest")
+        (request-headers nil))
+    (librecode-test.event-store::with-tmp-sandbox (dir)
+      (librecode-test.event-store::with-test-db (db dir)
+        (n7-insert-session-state db session-id)
+
+        (librecode-test.mock-provider:with-mock-provider
+            (port :path "/n7-redact-v1/chat/completions"
+                  :method :post
+                  :responder (lambda (request call-index)
+                               (declare (ignore call-index))
+                               (setf request-headers (hunchentoot:headers-in request))
+                               (list (list :content "Redaction turn works!"))))
+          (let ((base-url (format nil "http://127.0.0.1:~A/n7-redact-v1" port)))
+            (librecode-runner.provider:configure-session session-id
+                                                          :base-url base-url
+                                                          :model "n7-redact-model"
+                                                          :auth real-token)
+
+            ;; C-N7-1: at-rest, in BOTH durable sinks.
+            (let ((logged-payload (sqlite:execute-single db
+                                     "SELECT payload FROM event_log WHERE session_id = ? AND event_type = 'SESSION-PROVIDER-CONFIGURED' ORDER BY sequence DESC LIMIT 1"
+                                     session-id)))
+              (is-true logged-payload)
+              (is (not (search real-token logged-payload))
+                  "event_log.payload must not contain the real credential in cleartext (found it verbatim)"))
+
+            (let ((column-auth (sqlite:execute-single db
+                                  "SELECT auth FROM session_provider_config WHERE session_id = ?"
+                                  session-id)))
+              (is (not (equal real-token column-auth))
+                  "session_provider_config.auth must not contain the real credential in cleartext"))
+
+            ;; C-N7-2: the SAME-process live turn must still authenticate.
+            (let ((librecode-runner.protocol::*session-mailbox* (librecode-runner.protocol:make-mailbox)))
+              (librecode-runner.runner:execute-provider-turn session-id "unused-provider" "n7-redact-model"))
+
+            (is-true request-headers)
+            (is (equal (format nil "Bearer ~A" real-token)
+                       (cdr (assoc :authorization request-headers)))
+                "the live same-process turn must still send the correct Bearer token despite at-rest redaction")))))))
+
+(test test-n7-fail-safe-send-guard-refuses-non-loopback-nil-auth
+  "C-N7-3: execute-provider-turn with a resolved endpoint whose host is
+non-loopback (\"example.com\", not one of 127.*/localhost/::1) and nil
+session auth must refuse -- signal a condition, dispatch zero requests --
+rather than silently POSTing the full request body unauthenticated to a
+remote host. dexador:post is stubbed for this test's duration (see file
+header) so the assertion is network-free and deterministic."
+  (let ((session-id "n7-guard-refuse-session")
+        (call-count 0)
+        (refused nil)
+        (refusal-condition nil)
+        (original-post (fdefinition 'dexador:post)))
+    (librecode-test.event-store::with-tmp-sandbox (dir)
+      (librecode-test.event-store::with-test-db (db dir)
+        (n7-insert-session-state db session-id)
+
+        (librecode-runner.provider:configure-session session-id
+                                                      :base-url "http://example.com/v1"
+                                                      :model "n7-guard-model"
+                                                      :auth nil)
+
+        (unwind-protect
+             (progn
+               (setf (fdefinition 'dexador:post)
+                     (lambda (&rest args)
+                       (declare (ignore args))
+                       (incf call-count)
+                       (make-string-input-stream (format nil "data: [DONE]~%"))))
+               (handler-case
+                   (let ((librecode-runner.protocol::*session-mailbox* (librecode-runner.protocol:make-mailbox)))
+                     (librecode-runner.runner:execute-provider-turn session-id "unused-provider" "n7-guard-model"))
+                 (error (c)
+                   (setf refused t)
+                   (setf refusal-condition c))))
+          (setf (fdefinition 'dexador:post) original-post))
+
+        (is-true refused
+                 "execute-provider-turn must refuse (signal a condition) for a non-loopback endpoint with nil auth; it currently sends silently")
+        (is (and refused
+                 (find-class 'librecode-runner.runner::unauthenticated-send-refused nil)
+                 (typep refusal-condition 'librecode-runner.runner::unauthenticated-send-refused))
+            "the guard must signal the dedicated librecode-runner.runner::unauthenticated-send-refused condition, not an incidental error")
+        (is (= 0 call-count)
+            "dexador:post must never be invoked once the fail-safe guard refuses a non-loopback, unauthenticated send")))))
+
+(test test-n7-fail-safe-send-guard-exempts-loopback-nil-auth
+  "Non-regression companion to C-N7-3: the fail-safe guard must NOT fire
+for a loopback endpoint (127.0.0.1) even with nil auth, so
+test-provider-configuration-fallback-to-default and every other
+loopback-mock-based test keep passing unchanged. Unlike the refusal test,
+this exercises a real local mock round-trip rather than a dexador:post
+stub, since the point is proving the send still actually happens."
+  (let ((session-id "n7-loopback-exempt-session")
+        (request-headers nil))
+    (librecode-test.event-store::with-tmp-sandbox (dir)
+      (librecode-test.event-store::with-test-db (db dir)
+        (n7-insert-session-state db session-id)
+
+        (librecode-test.mock-provider:with-mock-provider
+            (port :path "/n7-loopback-v1/chat/completions"
+                  :method :post
+                  :responder (lambda (request call-index)
+                               (declare (ignore call-index))
+                               (setf request-headers (hunchentoot:headers-in request))
+                               (list (list :content "Loopback unauth still works!"))))
+          (let ((base-url (format nil "http://127.0.0.1:~A/n7-loopback-v1" port)))
+            (librecode-runner.provider:configure-session session-id
+                                                          :base-url base-url
+                                                          :model "n7-loopback-model"
+                                                          :auth nil)
+
+            (let ((librecode-runner.protocol::*session-mailbox* (librecode-runner.protocol:make-mailbox)))
+              (librecode-runner.runner:execute-provider-turn session-id "unused-provider" "n7-loopback-model"))
+
+            (is-true request-headers
+                     "the fail-safe guard must not fire for a loopback endpoint even with nil auth")
+            (is-false (assoc :authorization request-headers))))))))
