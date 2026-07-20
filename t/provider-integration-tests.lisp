@@ -312,10 +312,10 @@ stub, since the point is proving the send still actually happens."
 ;;; ============================================================================
 ;;;
 ;;; A decorrelated security review of the fail-safe send guard above found
-;;; two real defects, both fixed in this branch's rework commit and both
-;;; regression-tested here. A second, independently-decorrelated reviewer
-;;; converged on the same core defect and surfaced one further bypass
-;;; variant of the first finding, also tested here:
+;;; two real defects, fixed in this branch's rework commits and regression-
+;;; tested here. Two further independently-decorrelated reviewers converged
+;;; on the same core defect and surfaced two further bypass variants of the
+;;; first finding, also tested here:
 ;;;
 ;;; - LOOPBACK-HOST-P's IPv4 clause was a bare 4-character prefix check
 ;;;   ((string= host "127." :end1 4)), so "127.evil.com" -- not actually in
@@ -327,24 +327,31 @@ stub, since the point is proving the send still actually happens."
 ;;;   caller-supplied URL) could swap in a new endpoint that was never
 ;;;   re-checked. Fixed by moving the check inside the loop body so it
 ;;;   re-evaluates the freshly-bound *PROVIDER-URL* every iteration.
-;;; - Bypass variant on the first finding: URL-HOST does not strip a
-;;;   "user@" / "user:pass@" userinfo component, so a base-url like
-;;;   "http://127.0.0.1@evil.com/v1" resolves to the raw host string
-;;;   "127.0.0.1@evil.com". Against the ORIGINAL 4-character prefix check
-;;;   this would have passed as loopback (it starts with "127."), exempting
-;;;   an unauthenticated send whose real destination -- once dexador parses
-;;;   userinfo vs host out of the full URL -- is the attacker-controlled
-;;;   "evil.com". The dotted-quad fix above already closes this too, and
-;;;   for a stronger reason than accident: IPV4-DOTTED-QUAD-OCTETS requires
-;;;   the ENTIRE host string to decompose into exactly 4 all-digit
-;;;   components, so any trailing "@evil.com" (non-digit characters, and/or
-;;;   extra "." components) always fails the check regardless of where in
-;;;   the string it appears -- there is no substring/prefix path through
-;;;   it. No additional userinfo-stripping in URL-HOST was added: it would
-;;;   only change behavior in the opposite, non-security direction (a
-;;;   genuine loopback host obscured behind userinfo would be
-;;;   over-refused), which is an availability question outside this node's
-;;;   security-hardening scope, not a gap in the fix below.
+;;; - Bypass variant on the first finding: the original hand-rolled URL-HOST
+;;;   did not strip a "user@" / "user:pass@" userinfo component, so a
+;;;   base-url like "http://127.0.0.1@evil.com/v1" resolved to the raw host
+;;;   string "127.0.0.1@evil.com". Against the ORIGINAL 4-character prefix
+;;;   check this would have passed as loopback (it starts with "127."). The
+;;;   dotted-quad fix closed this bypass too (the unstripped string does not
+;;;   decompose into 4 all-digit components) but for the wrong reason: the
+;;;   real destination was always "evil.com", never even examined.
+;;; - Third, more serious variant, independently verified by executing code
+;;;   against this exact worktree: for
+;;;   "http://127.0.0.1:secretpass@evil.com/v1/chat/completions", the
+;;;   hand-rolled scanner stopped at the FIRST of "/", ":", "?" -- the colon
+;;;   right after "127.0.0.1" -- misreading userinfo syntax as a port
+;;;   separator, and returned host "127.0.0.1" (a clean dotted-quad, so
+;;;   LOOPBACK-HOST-P classified it as loopback). The REAL parser DEXADOR
+;;;   uses to open the connection -- QURI, already a transitive dependency
+;;;   via DEXADOR -- correctly parses this same URL as host "evil.com".
+;;;   The guard would have exempted an unauthenticated request whose actual
+;;;   TCP destination was an arbitrary attacker-controlled host. Fixed by
+;;;   replacing URL-HOST's hand-rolled scanning entirely with
+;;;   QURI:URI-HOST -- the same parser DEXADOR itself uses -- so the
+;;;   guard's understanding of the destination host can never diverge from
+;;;   where the request is actually sent. This closes all three variants
+;;;   above by construction (userinfo is now correctly parsed out of the
+;;;   host in every case) rather than by accretion of ad hoc checks.
 
 (test test-n7-loopback-bypass-prefix-match-refused
   "The loopback classifier must not treat a host that merely STARTS WITH the
@@ -393,14 +400,12 @@ exempted it and dexador:post would have been invoked."
             "dexador:post must never be invoked once the guard correctly classifies \"127.evil.com\" as non-loopback")))))
 
 (test test-n7-loopback-bypass-userinfo-prefix-refused
-  "Bypass variant of the prefix-match finding above: URL-HOST does not
-strip a \"user@\" userinfo component, so a base-url of
-\"http://127.0.0.1@evil.com/v1\" resolves to the raw host string
-\"127.0.0.1@evil.com\". Against the pre-fix 4-character prefix check this
-would have passed as loopback. The dotted-quad fix must reject it too --
-and for the right reason: the host string does not decompose into exactly
-4 all-digit dot-separated components, so the guard must refuse and never
-invoke dexador:post."
+  "Bypass variant of the prefix-match finding above: a base-url of
+\"http://127.0.0.1@evil.com/v1\" carries \"127.0.0.1\" as bare userinfo (no
+port-like colon) ahead of the real host. QURI:URI-HOST -- the same parser
+DEXADOR uses to open the connection -- correctly strips the userinfo and
+resolves this to host \"evil.com\", the actual destination; the guard must
+refuse it as non-loopback and never invoke dexador:post."
   (let ((session-id "n7-loopback-userinfo-bypass-session")
         (call-count 0)
         (refused nil)
@@ -436,11 +441,67 @@ invoke dexador:post."
                  (find-class 'librecode-runner.runner::unauthenticated-send-refused nil)
                  (typep refusal-condition 'librecode-runner.runner::unauthenticated-send-refused))
             "the guard must signal the dedicated unauthenticated-send-refused condition for the userinfo-prefixed host, not silently classify it as loopback")
-        (is (equal "127.0.0.1@evil.com"
+        (is (equal "evil.com"
                    (librecode-runner.runner::unauthenticated-send-refused-host refusal-condition))
-            "the refused host must be the full unstripped userinfo+host string, confirming this test actually exercised the userinfo bypass path and not some other refusal")
+            "the refused host must be the real, userinfo-stripped destination \"evil.com\" (what QURI/DEXADOR actually resolve), confirming this test exercised the userinfo bypass path and that the guard now sees the true target rather than a confused raw string")
         (is (= 0 call-count)
             "dexador:post must never be invoked once the guard correctly classifies the userinfo-prefixed host as non-loopback")))))
+
+(test test-n7-loopback-bypass-userinfo-colon-port-refused
+  "Third, more serious bypass variant against the same hand-rolled
+URL-HOST that the first two exploited: a base-url of
+\"http://127.0.0.1:secretpass@evil.com/v1\" places a COLON inside the
+userinfo component (as if \"secretpass\" were a port), which the pre-fix
+hand-rolled scanner -- stopping at the first \":\", \"/\", or \"?\" --
+misread as \"host 127.0.0.1, port secretpass\", returning the clean
+dotted-quad \"127.0.0.1\" and passing the (already-fixed) dotted-quad
+check as genuine loopback. QURI:URI-HOST -- the same parser DEXADOR uses
+to open the connection -- correctly parses the userinfo
+\"127.0.0.1:secretpass\" and the real host \"evil.com\": the guard must
+refuse this as non-loopback and never invoke dexador:post, or an
+unauthenticated request (full body, no Authorization header) would reach
+an arbitrary attacker-controlled host believing it was talking to
+loopback."
+  (let ((session-id "n7-loopback-userinfo-colon-port-bypass-session")
+        (call-count 0)
+        (refused nil)
+        (refusal-condition nil)
+        (original-post (fdefinition 'dexador:post)))
+    (librecode-test.event-store::with-tmp-sandbox (dir)
+      (librecode-test.event-store::with-test-db (db dir)
+        (n7-insert-session-state db session-id)
+
+        (librecode-runner.provider:configure-session session-id
+                                                      :base-url "http://127.0.0.1:secretpass@evil.com/v1"
+                                                      :model "n7-userinfo-colon-port-bypass-model"
+                                                      :auth nil)
+
+        (unwind-protect
+             (progn
+               (setf (fdefinition 'dexador:post)
+                     (lambda (&rest args)
+                       (declare (ignore args))
+                       (incf call-count)
+                       (make-string-input-stream (format nil "data: [DONE]~%"))))
+               (handler-case
+                   (let ((librecode-runner.protocol::*session-mailbox* (librecode-runner.protocol:make-mailbox)))
+                     (librecode-runner.runner:execute-provider-turn session-id "unused-provider" "n7-userinfo-colon-port-bypass-model"))
+                 (error (c)
+                   (setf refused t)
+                   (setf refusal-condition c))))
+          (setf (fdefinition 'dexador:post) original-post))
+
+        (is-true refused
+                 "execute-provider-turn must refuse a host reached via a colon-bearing userinfo prefix (\"127.0.0.1:secretpass@evil.com\") that a hand-rolled scanner would misparse as loopback port syntax")
+        (is (and refused
+                 (find-class 'librecode-runner.runner::unauthenticated-send-refused nil)
+                 (typep refusal-condition 'librecode-runner.runner::unauthenticated-send-refused))
+            "the guard must signal the dedicated unauthenticated-send-refused condition for the userinfo-colon-port bypass host, not silently classify it as loopback")
+        (is (equal "evil.com"
+                   (librecode-runner.runner::unauthenticated-send-refused-host refusal-condition))
+            "the refused host must be the real destination \"evil.com\" that QURI/DEXADOR agree on, proving the guard's host extraction matches where the request actually goes")
+        (is (= 0 call-count)
+            "dexador:post must never be invoked once the guard correctly classifies the userinfo-colon-port bypass host as non-loopback")))))
 
 (test test-n7-toctou-guard-refires-on-backup-provider-retry
   "The fail-safe send guard must not be a one-shot check performed only

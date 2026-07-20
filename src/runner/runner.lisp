@@ -41,17 +41,28 @@ no request is ever sent. Unexported (packages.lisp is outside this file's declar
 reached by tests via the librecode-runner.runner:: internal-access form."))
 
 (defun url-host (url)
-  "Extract the bare host component (no scheme, port, path, or query) from URL.
-Handles a bracketed IPv6 literal (e.g. \"[::1]\") as well as a plain hostname
-or IPv4 literal."
-  (let* ((scheme-end (search "://" url))
-         (rest (if scheme-end (subseq url (+ scheme-end 3)) url)))
-    (if (and (plusp (length rest)) (char= (char rest 0) #\[))
-        (let ((close (position #\] rest)))
-          (if close (subseq rest 1 close) rest))
-        (let ((host-end (or (position-if (lambda (c) (member c '(#\/ #\: #\?))) rest)
-                             (length rest))))
-          (subseq rest 0 host-end)))))
+  "Extract the bare host component from URL via QURI:URI-HOST -- the same
+RFC 3986 authority parser DEXADOR itself uses to resolve the TCP connection
+target, so this can never diverge from where a request actually goes (unlike
+a hand-rolled scanner, which previously misread userinfo syntax such as
+\"127.0.0.1:secretpass@evil.com\" as host \"127.0.0.1\" with a bogus port,
+when the real destination -- and what QURI/DEXADOR agree on -- is
+\"evil.com\"). May return a bracketed IPv6 literal (e.g. \"[::1]\"); callers
+compare against LOOPBACK-HOST-P, which strips brackets itself. Returns NIL
+if URL cannot be parsed as a URI; callers must treat NIL as definitively
+non-loopback (fail closed) rather than skip the check."
+  (handler-case (quri:uri-host (quri:uri url))
+    (error () nil)))
+
+(defun strip-ipv6-brackets (host)
+  "If HOST is a bracketed IPv6 literal (e.g. \"[::1]\"), return the bare
+literal with brackets removed; otherwise return HOST unchanged. HOST may be
+NIL, in which case NIL is returned."
+  (if (and host (plusp (length host))
+           (char= (char host 0) #\[)
+           (char= (char host (1- (length host))) #\]))
+      (subseq host 1 (1- (length host)))
+      host))
 
 (defun ipv4-dotted-quad-octets (host)
   "Split HOST on '.' and return a list of octet strings, or NIL if HOST is
@@ -75,11 +86,15 @@ performed -- this is a purely syntactic check on the literal string."
   "T if HOST is a loopback address or hostname: 127.0.0.0/8, ::1, or localhost.
 The IPv4 check requires HOST to be a well-formed dotted-quad whose first
 octet is 127 -- a prefix match like \"127.evil.com\" starting with \"127.\"
-is NOT loopback and must not be misclassified as one."
-  (or (string-equal host "localhost")
-      (string= host "::1")
-      (let ((octets (ipv4-dotted-quad-octets host)))
-        (and octets (= (parse-integer (first octets)) 127)))))
+is NOT loopback and must not be misclassified as one. HOST may arrive
+bracketed (e.g. \"[::1]\"), QURI:URI-HOST's form for an IPv6 literal --
+brackets are stripped before comparison. HOST may also be NIL (URL-HOST
+could not parse the source URL); NIL is never loopback (fail closed)."
+  (let ((bare (strip-ipv6-brackets host)))
+    (or (and bare (string-equal bare "localhost"))
+        (and bare (string= bare "::1"))
+        (let ((octets (and bare (ipv4-dotted-quad-octets bare))))
+          (and octets (= (parse-integer (first octets)) 127))))))
 
 (defun get-latest-epoch-baseline (session-id)
   "Retrieve the latest baseline text from context_epoch read projection."
@@ -605,8 +620,11 @@ Enforces that exactly one provider call is made. Returns t if continuation is al
             ;; from SESS-CONFIG above, never mutated by any restart), so
             ;; re-checking it against the freshly-bound *PROVIDER-URL* is
             ;; sufficient to close the gap.
-            (when (and (null auth) (not (loopback-host-p (url-host *provider-url*))))
-              (error 'unauthenticated-send-refused :endpoint *provider-url* :host (url-host *provider-url*)))
+            (let ((current-host (url-host *provider-url*)))
+              (when (and (null auth) (not (loopback-host-p current-host)))
+                (error 'unauthenticated-send-refused
+                       :endpoint *provider-url*
+                       :host (or current-host "(unparseable)"))))
             (unless librecode-runner.event-store:*db*
               (error "No active database connection in *db*."))
             (librecode-runner.protocol:flush-mailbox librecode-runner.protocol:*session-mailbox*)
