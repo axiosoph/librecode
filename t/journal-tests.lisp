@@ -12,7 +12,7 @@
                 #:campaign-node-status
                 #:campaign-node-phase
                 #:campaign-node-deposit
-                #:campaign-node-ibc
+                #:campaign-node-rework-diagnostic
                 #:campaign-node-file-surface
                 #:campaign-node-dependencies
                 #:campaign-node-goal
@@ -66,7 +66,7 @@
              (is (equal :accepted (campaign-node-status (find "A" (campaign-dag-nodes replayed) :key #'campaign-node-id :test #'string=))))
              (let ((node-b (find "B" (campaign-dag-nodes replayed) :key #'campaign-node-id :test #'string=)))
                (is (equal :rework (campaign-node-status node-b)))
-               (is (equal "Linter error on line 42" (campaign-node-ibc node-b)))
+               (is (equal "Linter error on line 42" (campaign-node-rework-diagnostic node-b)))
                (is (equal '("src/b.lisp" "src/c.lisp") (campaign-node-file-surface node-b))))
              (is (equal :skipped (campaign-node-status (find "C" (campaign-dag-nodes replayed) :key #'campaign-node-id :test #'string=)))))
 
@@ -81,7 +81,7 @@
              (is (equal :accepted (campaign-node-status (find "A" (campaign-dag-nodes replayed) :key #'campaign-node-id :test #'string=))))
              (let ((node-b (find "B" (campaign-dag-nodes replayed) :key #'campaign-node-id :test #'string=)))
                (is (equal :rework (campaign-node-status node-b)))
-               (is (equal "Linter error on line 42" (campaign-node-ibc node-b)))
+               (is (equal "Linter error on line 42" (campaign-node-rework-diagnostic node-b)))
                (is (equal '("src/b.lisp" "src/c.lisp") (campaign-node-file-surface node-b))))
              (is (equal :skipped (campaign-node-status (find "C" (campaign-dag-nodes replayed) :key #'campaign-node-id :test #'string=))))))
       
@@ -242,7 +242,7 @@ unrouted through the calculus, without signaling (a3 regression guard)."
            (let ((replayed (replay-journal journal-file dag)))
              (let ((replayed-node (find "A" (campaign-dag-nodes replayed) :key #'campaign-node-id :test #'string=)))
                (is (equal :rework (campaign-node-status replayed-node)))
-               (is (equal "Harness crashed: mock error" (campaign-node-ibc replayed-node))))))
+               (is (equal "Harness crashed: mock error" (campaign-node-rework-diagnostic replayed-node))))))
       (when (probe-file journal-file)
         (delete-file journal-file)))))
 

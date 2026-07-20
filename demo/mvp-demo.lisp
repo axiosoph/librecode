@@ -173,7 +173,7 @@ Do not use write_file or any other tool. Stop immediately when done.")
                     :goal "Write proof.txt and commit it to git"
                     :file-surface '("proof.txt")
                     :harness-type 'real-demo-subprocess-harness
-                    :ibc goal-instructions))
+                    :boundary (librecode-meta.campaign:make-boundary-from-prompt goal-instructions)))
              (dag (librecode-meta.campaign:make-campaign-dag :nodes (list node) :shared-branch "master"))
              (campaign (make-instance 'librecode-meta.campaign:campaign
                                       :dag dag

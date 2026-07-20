@@ -92,9 +92,9 @@ consulting the model. Unrecognized entries, including the retired
            (setf (campaign-node-status node) :accepted)))
         (:node-rework
          (let ((node (%find-journaled-node dag entry (first args)))
-               (ibc (second args)))
+               (diagnostic (second args)))
            (setf (campaign-node-status node) :rework)
-           (setf (campaign-node-ibc node) ibc)))
+           (setf (campaign-node-rework-diagnostic node) diagnostic)))
         (t
          ;; Retired kinds (:layer-advanced) and anything else unrecognized:
          ;; no reader needed (a4).

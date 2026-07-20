@@ -288,8 +288,19 @@
            #:campaign-node-deposit
            #:campaign-node-harness-type
            #:campaign-node-harness-instance
-           #:campaign-node-ibc
-           
+           #:campaign-node-boundary
+           #:campaign-node-rework-diagnostic
+
+           ;; Structured dispatch-boundary grant
+           #:boundary
+           #:boundary-p
+           #:make-boundary
+           #:make-boundary-from-prompt
+           #:boundary-may-commit
+           #:boundary-file-surface
+           #:boundary-halt-conditions
+           #:boundary-prompt
+
            #:make-campaign-dag
            #:campaign-dag-p
            #:campaign-dag-nodes

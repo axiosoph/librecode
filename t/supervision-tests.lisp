@@ -14,7 +14,8 @@
                 #:make-campaign-dag
                 #:run-campaign
                 #:campaign-supervisor-mailbox
-                #:campaign-reply-mailbox)
+                #:campaign-reply-mailbox
+                #:make-boundary-from-prompt)
   (:export #:supervision-suite))
 (in-package #:librecode-test.supervision)
 
@@ -108,12 +109,12 @@
                                             :goal "Success node"
                                             :file-surface '("src/a.lisp")
                                             :harness-type 'mock-supervision-harness
-                                            :ibc "ibc-1")
+                                            :boundary (make-boundary-from-prompt "ibc-1"))
                         (make-campaign-node :id "node-2-fail"
                                             :goal "Fail node"
                                             :file-surface '("src/b.lisp")
                                             :harness-type 'mock-supervision-harness
-                                            :ibc "ibc-2")))
+                                            :boundary (make-boundary-from-prompt "ibc-2"))))
            (dag (make-campaign-dag :nodes nodes :shared-branch "master"))
            (journal-file (uiop:merge-pathnames* "campaign-journal.lisp-expr" dir))
            (workspace-dir (uiop:merge-pathnames* "workspace/" dir))
@@ -154,12 +155,12 @@
                                             :goal "Success node"
                                             :file-surface '("src/a.lisp")
                                             :harness-type 'mock-supervision-harness
-                                            :ibc "ibc-1")
+                                            :boundary (make-boundary-from-prompt "ibc-1"))
                         (make-campaign-node :id "node-2-fail"
                                             :goal "Fail node"
                                             :file-surface '("src/b.lisp")
                                             :harness-type 'mock-supervision-harness
-                                            :ibc "ibc-2")))
+                                            :boundary (make-boundary-from-prompt "ibc-2"))))
            (dag (make-campaign-dag :nodes nodes :shared-branch "master"))
            (journal-file (uiop:merge-pathnames* "campaign-journal.lisp-expr" dir))
            (workspace-dir (uiop:merge-pathnames* "workspace/" dir))
@@ -186,12 +187,12 @@
                                                     :goal "Success node"
                                                     :file-surface '("src/a.lisp")
                                                     :harness-type 'mock-supervision-harness
-                                                    :ibc "ibc-1")
+                                                    :boundary (make-boundary-from-prompt "ibc-1"))
                                 (make-campaign-node :id "node-2-fail"
                                                     :goal "Fail node"
                                                     :file-surface '("src/b.lisp")
                                                     :harness-type 'mock-supervision-harness
-                                                    :ibc "ibc-2")))
+                                                    :boundary (make-boundary-from-prompt "ibc-2"))))
                (dag-new (make-campaign-dag :nodes nodes-new :shared-branch "master"))
                (campaign-new (make-instance 'campaign
                                             :dag dag-new
@@ -226,12 +227,12 @@
                                             :goal "Fail node 1"
                                             :file-surface '("src/a.lisp")
                                             :harness-type 'mock-supervision-harness
-                                            :ibc "ibc-1")
+                                            :boundary (make-boundary-from-prompt "ibc-1"))
                         (make-campaign-node :id "node-2-fail"
                                             :goal "Fail node 2"
                                             :file-surface '("src/b.lisp")
                                             :harness-type 'mock-supervision-harness
-                                            :ibc "ibc-2")))
+                                            :boundary (make-boundary-from-prompt "ibc-2"))))
            (dag (make-campaign-dag :nodes nodes :shared-branch "master"))
            (journal-file (uiop:merge-pathnames* "campaign-journal.lisp-expr" dir))
            (workspace-dir (uiop:merge-pathnames* "workspace/" dir))
@@ -293,12 +294,12 @@
                                             :goal "Goal 1"
                                             :file-surface '("src/a.lisp")
                                             :harness-type 'mock-supervision-harness
-                                            :ibc "ibc-1")
+                                            :boundary (make-boundary-from-prompt "ibc-1"))
                         (make-campaign-node :id "node-2"
                                             :goal "Goal 2"
                                             :file-surface '("src/b.lisp")
                                             :harness-type 'mock-supervision-harness
-                                            :ibc "ibc-2")))
+                                            :boundary (make-boundary-from-prompt "ibc-2"))))
            (dag (make-campaign-dag :nodes nodes :shared-branch "master"))
            (journal-file (uiop:merge-pathnames* "campaign-journal.lisp-expr" dir))
            (workspace-dir (uiop:merge-pathnames* "workspace/" dir)))
@@ -336,12 +337,12 @@
                                                                               :goal "Goal 1"
                                                                               :file-surface '("src/a.lisp")
                                                                               :harness-type 'mock-supervision-harness
-                                                                              :ibc "ibc-1")
+                                                                              :boundary (make-boundary-from-prompt "ibc-1"))
                                                           (make-campaign-node :id "node-2"
                                                                               :goal "Goal 2"
                                                                               :file-surface '("src/b.lisp")
                                                                               :harness-type 'mock-supervision-harness
-                                                                              :ibc "ibc-2"))
+                                                                              :boundary (make-boundary-from-prompt "ibc-2")))
                                              :shared-branch "master"))
                (replayed (librecode-meta.campaign:replay-journal journal-file fresh-dag)))
           (is (eq :accepted (campaign-node-status (first (librecode-meta.campaign:campaign-dag-nodes replayed)))))
