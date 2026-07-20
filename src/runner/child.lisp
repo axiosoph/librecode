@@ -56,8 +56,16 @@
           (let ((db (librecode-runner.event-store:connect-db db-path)))
             (unwind-protect
                  (let ((librecode-runner.event-store:*db* db))
-                   ;; Configure LLM provider
-                   (librecode-runner.provider:configure-session session-id :base-url provider-url :model model)
+                   ;; Configure LLM provider. The credential is sourced here,
+                   ;; inside the already-running child, via uiop:getenv on
+                   ;; the inherited environment -- never interpolated into
+                   ;; this process's own --eval invocation string, so it
+                   ;; never appears in argv/ps (C-N4-1).
+                   (librecode-runner.provider:configure-session
+                    session-id
+                    :base-url provider-url
+                    :model model
+                    :auth (uiop:getenv "LIBRECODE_PROVIDER_API_KEY"))
                    
                    ;; Register built-in tools
                    (librecode-runner.builtin-tools:register-builtin-tools librecode-runner.runner::*tool-registry*)
