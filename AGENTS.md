@@ -300,7 +300,7 @@ Each entry has a **decision/lean** and a **signpost** tracking its implementatio
 
 ### KU1 — LLM provider scope
 * **Decision**: Both (Model C - Layered Bootstrap). `librecode` will support delegating model resolution and execution to child OpenCode harness sessions, but will also implement a native LLM provider wrapper using `dexador` + hand-rolled SSE stream parsing.
-* **Status**: **PARTIAL.** The native provider wrapper is built (`runner.lisp`): `dexador:post :stream t` + hand-rolled OpenAI chat-completions SSE parsing. But it speaks only the OpenAI-chat-completions shape to a localhost mock URL (`http://localhost:8080/v1/chat/completions`) with **no auth header**. Real Anthropic + auth is **not wired** (the next campaign's target).
+* **Status**: **PARTIAL.** The native provider wrapper is built (`runner.lisp`): `dexador:post :stream t` + hand-rolled OpenAI chat-completions SSE parsing. By default it speaks the OpenAI-chat-completions shape to a localhost mock URL (`http://localhost:8080/v1/chat/completions`) and sends the request without an authorization header, since no session-level provider config has been set. The auth mechanism itself already exists and is unit-tested — `configure-session` threads an `:auth` token that `runner.lisp` assembles into an `Authorization: Bearer` header when present (`t/provider-tests.lisp`) — it is simply not configured for production use by default; wiring a configured Anthropic endpoint into production is underway.
 
 ### KU2 — Session identity across process boundaries
 * **Decision**: Parent-child hierarchy. The Metaharness maintains parent session contexts which manage one or more child process harness sessions.
