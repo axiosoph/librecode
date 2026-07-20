@@ -52,6 +52,24 @@ Today it's driven from a Lisp REPL (`just repl`), not yet a polished CLI — see
 
 ## Why this discipline
 
+Hand anyone a non-trivial assignment — homework, a lab experiment, a consulting
+engagement — and the expectation is universal: do the work, *and keep a legible
+record of it*. Show your steps. Keep the lab notebook. File the report. No
+serious discipline, from grade school to professional practice, accepts "trust
+me, it's done" as a deliverable. Should we expect less from our AI helpers?
+
+We can't introspect a model directly, so librecode enforces the same discipline
+externally that we'd expect from any capable colleague:
+
+- **A contract** states the work requirements — machine-checkable, filled as the
+  work progresses, never graded by the one who did the work.
+- **Deterministic gates** check every deposit of work against its contract. An
+  agent supplies work; it never supplies the terms of its own checking.
+- **A durable ledger** keeps the pertinent record, zettelkasten-style — findings,
+  decisions, and their why — append-only and replayable, so progress is
+  tamper-evident and any reviewer can reconstruct what happened from the record
+  alone.
+
 This isn't a complaint about current models, it's structural: an LLM is a
 stochastic walk, not a mind, and open-loop generation drifts by default —
 handed a vague task, it doesn't ask what you meant, it fills the gap with a
