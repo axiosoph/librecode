@@ -306,3 +306,130 @@ stub, since the point is proving the send still actually happens."
             (is-true request-headers
                      "the fail-safe guard must not fire for a loopback endpoint even with nil auth")
             (is-false (assoc :authorization request-headers))))))))
+
+;;; ============================================================================
+;;; N7 REWORK: loopback-classification bypass + guard TOCTOU
+;;; ============================================================================
+;;;
+;;; A decorrelated security review of the fail-safe send guard above found
+;;; two real defects, both fixed in this branch's rework commit and both
+;;; regression-tested here:
+;;;
+;;; - LOOPBACK-HOST-P's IPv4 clause was a bare 4-character prefix check
+;;;   ((string= host "127." :end1 4)), so "127.evil.com" -- not actually in
+;;;   127.0.0.0/8 -- was misclassified as loopback and exempted from the
+;;;   guard. Fixed by validating HOST is a well-formed 4-octet dotted-quad
+;;;   whose first octet is 127.
+;;; - The guard ran once before the retry loop, not on every iteration, so
+;;;   RETRY-WITH-BACKUP-PROVIDER (whose lambda list accepts an arbitrary
+;;;   caller-supplied URL) could swap in a new endpoint that was never
+;;;   re-checked. Fixed by moving the check inside the loop body so it
+;;;   re-evaluates the freshly-bound *PROVIDER-URL* every iteration.
+
+(test test-n7-loopback-bypass-prefix-match-refused
+  "The loopback classifier must not treat a host that merely STARTS WITH the
+literal prefix \"127.\" as loopback -- \"127.evil.com\" is not in
+127.0.0.0/8, so an unauthenticated send to it must be refused exactly like
+any other non-loopback host. This is the exact bypass a decorrelated
+reviewer demonstrated against (string= host \"127.\" :end1 4): that
+prefix check returns T for this host, so pre-fix the guard silently
+exempted it and dexador:post would have been invoked."
+  (let ((session-id "n7-loopback-bypass-session")
+        (call-count 0)
+        (refused nil)
+        (refusal-condition nil)
+        (original-post (fdefinition 'dexador:post)))
+    (librecode-test.event-store::with-tmp-sandbox (dir)
+      (librecode-test.event-store::with-test-db (db dir)
+        (n7-insert-session-state db session-id)
+
+        (librecode-runner.provider:configure-session session-id
+                                                      :base-url "http://127.evil.com/v1"
+                                                      :model "n7-bypass-model"
+                                                      :auth nil)
+
+        (unwind-protect
+             (progn
+               (setf (fdefinition 'dexador:post)
+                     (lambda (&rest args)
+                       (declare (ignore args))
+                       (incf call-count)
+                       (make-string-input-stream (format nil "data: [DONE]~%"))))
+               (handler-case
+                   (let ((librecode-runner.protocol::*session-mailbox* (librecode-runner.protocol:make-mailbox)))
+                     (librecode-runner.runner:execute-provider-turn session-id "unused-provider" "n7-bypass-model"))
+                 (error (c)
+                   (setf refused t)
+                   (setf refusal-condition c))))
+          (setf (fdefinition 'dexador:post) original-post))
+
+        (is-true refused
+                 "execute-provider-turn must refuse a host that merely starts with the literal prefix \"127.\" but is not a genuine loopback dotted-quad")
+        (is (and refused
+                 (find-class 'librecode-runner.runner::unauthenticated-send-refused nil)
+                 (typep refusal-condition 'librecode-runner.runner::unauthenticated-send-refused))
+            "the guard must signal the dedicated unauthenticated-send-refused condition for the bypass host, not silently classify it as loopback")
+        (is (= 0 call-count)
+            "dexador:post must never be invoked once the guard correctly classifies \"127.evil.com\" as non-loopback")))))
+
+(test test-n7-toctou-guard-refires-on-backup-provider-retry
+  "The fail-safe send guard must not be a one-shot check performed only
+before the retry loop starts: RETRY-WITH-BACKUP-PROVIDER can swap in an
+arbitrary caller-supplied URL between iterations, so the guard must
+re-evaluate against the freshly-mutated endpoint on every iteration, not
+just the first. Reproduces the TOCTOU gap the reviewer demonstrated:
+the initial endpoint is loopback (guard exempt) with nil auth; the first
+dexador:post attempt is forced to fail, driving a handler-bind that
+invokes RETRY-WITH-BACKUP-PROVIDER with an explicit non-loopback backup
+URL (mirroring the restart's own lambda list, which accepts one); the
+guard must then refuse before any second dexador:post attempt is ever
+made. Network-free and deterministic: dexador:post is stubbed for this
+test's duration, same pattern as the refusal test above."
+  (let ((session-id "n7-toctou-session")
+        (call-count 0)
+        (retried nil)
+        (refused nil)
+        (refusal-condition nil)
+        (original-post (fdefinition 'dexador:post)))
+    (librecode-test.event-store::with-tmp-sandbox (dir)
+      (librecode-test.event-store::with-test-db (db dir)
+        (n7-insert-session-state db session-id)
+
+        (librecode-runner.provider:configure-session session-id
+                                                      :base-url "http://127.0.0.1:1/v1"
+                                                      :model "n7-toctou-model"
+                                                      :auth nil)
+
+        (unwind-protect
+             (progn
+               (setf (fdefinition 'dexador:post)
+                     (lambda (&rest args)
+                       (declare (ignore args))
+                       (incf call-count)
+                       (error "n7-toctou-forced-first-attempt-failure")))
+               (handler-case
+                   (handler-bind
+                       ((librecode-runner.conditions:provider-error
+                          (lambda (c)
+                            (declare (ignore c))
+                            (unless retried
+                              (setf retried t)
+                              (invoke-restart 'librecode-runner.conditions:retry-with-backup-provider
+                                               "http://example.com/v1")))))
+                     (let ((librecode-runner.protocol::*session-mailbox* (librecode-runner.protocol:make-mailbox)))
+                       (librecode-runner.runner:execute-provider-turn session-id "unused-provider" "n7-toctou-model")))
+                 (error (c)
+                   (setf refused t)
+                   (setf refusal-condition c))))
+          (setf (fdefinition 'dexador:post) original-post))
+
+        (is-true retried
+                 "test setup must actually exercise the retry-with-backup-provider restart, or this test proves nothing about the TOCTOU gap")
+        (is-true refused
+                 "the guard must refuse once the retry swaps in a non-loopback endpoint with nil auth, rather than reaching a second dexador:post unguarded")
+        (is (and refused
+                 (find-class 'librecode-runner.runner::unauthenticated-send-refused nil)
+                 (typep refusal-condition 'librecode-runner.runner::unauthenticated-send-refused))
+            "the second-iteration refusal must be the dedicated unauthenticated-send-refused condition, confirming the guard -- not some other failure -- is what fired")
+        (is (= 1 call-count)
+            "dexador:post must be called exactly once (the forced first-attempt failure); the guard must block the retried second attempt before any second dexador:post call, proving the TOCTOU gap is closed")))))

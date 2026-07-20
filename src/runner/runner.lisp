@@ -53,11 +53,33 @@ or IPv4 literal."
                              (length rest))))
           (subseq rest 0 host-end)))))
 
+(defun ipv4-dotted-quad-octets (host)
+  "Split HOST on '.' and return a list of octet strings, or NIL if HOST is
+not syntactically a clean 4-component dotted-quad IPv4 literal (each
+component non-empty, all-digit, and in 0-255). No DNS resolution is
+performed -- this is a purely syntactic check on the literal string."
+  (let ((parts (loop with start = 0
+                      for dot = (position #\. host :start start)
+                      collect (subseq host start dot)
+                      while dot
+                      do (setf start (1+ dot)))))
+    (when (and (= (length parts) 4)
+               (every (lambda (part)
+                        (and (plusp (length part))
+                             (every #'digit-char-p part)
+                             (<= 0 (parse-integer part) 255)))
+                      parts))
+      parts)))
+
 (defun loopback-host-p (host)
-  "T if HOST is a loopback address or hostname: 127.0.0.0/8, ::1, or localhost."
+  "T if HOST is a loopback address or hostname: 127.0.0.0/8, ::1, or localhost.
+The IPv4 check requires HOST to be a well-formed dotted-quad whose first
+octet is 127 -- a prefix match like \"127.evil.com\" starting with \"127.\"
+is NOT loopback and must not be misclassified as one."
   (or (string-equal host "localhost")
       (string= host "::1")
-      (and (>= (length host) 4) (string= host "127." :end1 4))))
+      (let ((octets (ipv4-dotted-quad-octets host)))
+        (and octets (= (parse-integer (first octets)) 127)))))
 
 (defun get-latest-epoch-baseline (session-id)
   "Retrieve the latest baseline text from context_epoch read projection."
@@ -569,15 +591,22 @@ Enforces that exactly one provider call is made. Returns t if continuation is al
                           *provider-url*))
          (current-provider provider)
          (current-model (or config-model model)))
-    ;; Fail-safe send guard: refuse an unauthenticated request to a
-    ;; non-loopback endpoint before any dexador:post is attempted. Loopback
-    ;; is exempt so mock/local-dev flows with no configured auth keep
-    ;; working.
-    (when (and (null auth) (not (loopback-host-p (url-host current-url))))
-      (error 'unauthenticated-send-refused :endpoint current-url :host (url-host current-url)))
     (loop
       (restart-case
           (let ((*provider-url* current-url))
+            ;; Fail-safe send guard: refuse an unauthenticated request to a
+            ;; non-loopback endpoint before any dexador:post is attempted.
+            ;; Loopback is exempt so mock/local-dev flows with no configured
+            ;; auth keep working. Re-checked on every loop iteration (not
+            ;; just once before the loop) because RETRY-WITH-BACKUP-PROVIDER
+            ;; can mutate CURRENT-URL -- and therefore *PROVIDER-URL* -- to
+            ;; an arbitrary caller-supplied URL between iterations; AUTH
+            ;; itself is fixed for the duration of this turn (sourced once
+            ;; from SESS-CONFIG above, never mutated by any restart), so
+            ;; re-checking it against the freshly-bound *PROVIDER-URL* is
+            ;; sufficient to close the gap.
+            (when (and (null auth) (not (loopback-host-p (url-host *provider-url*))))
+              (error 'unauthenticated-send-refused :endpoint *provider-url* :host (url-host *provider-url*)))
             (unless librecode-runner.event-store:*db*
               (error "No active database connection in *db*."))
             (librecode-runner.protocol:flush-mailbox librecode-runner.protocol:*session-mailbox*)
