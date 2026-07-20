@@ -85,10 +85,10 @@ original design intent: **[BUILT]**, **[PARTIAL]**, **[STUB]**.
   writer, append-only, `force-output` per event.
 - **[BUILT]** The reference state-machine model (roadmap workstream A's first
   piece, workstream J's spine) — `src/model/`, a pure applicative Common Lisp
-  model (dag/status/phase/deposit/event-log/transitions) with the six
+  model (dag/status/phase/deposit/event-log/transitions) with the five
   crown-jewel invariants (phase monotonicity, no-pending-proven,
-  tamper-evidence, DAG soundness, plan-surface monotonicity, schedule
-  correctness) as `check-it` property tests. Not the runtime itself, but no longer merely a future
+  tamper-evidence, DAG soundness, plan-surface monotonicity) as `check-it`
+  property tests. Not the runtime itself, but no longer merely a future
   conformance target either — see the journal-calculus reconciliation entry
   below. See [model.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/model.md).
 - **[BUILT]** Journal-calculus reconciliation and resume boot-gate — the
@@ -98,7 +98,7 @@ original design intent: **[BUILT]**, **[PARTIAL]**, **[STUB]**.
   `transition-event` directly, so a replayed journal folds through the same
   code the model's own invariants are proven against; `:node-accepted`/
   `:node-rework` remain journal-only bookkeeping, named as not-yet-conformant
-  (workstream J). `run-campaign` runs all six crown-jewel invariants against
+  (workstream J). `run-campaign` runs all five crown-jewel invariants against
   the replayed trajectory as a resume boot-gate before any node dispatch,
   refusing to resume on a violation
   (`librecode-runner.conditions:journal-invariant-violation`, tested in
@@ -159,7 +159,7 @@ The implementation of `librecode` is divided into key modules, each documented e
   * **Common Lisp Developer Guidance**: Style constraints, approved library dependencies, and dynamic binding/restarts guidelines.
 
 * **[model.md](file:///var/home/nrd/git/github.com/nrdxp/librecode/docs/model.md)**
-  * **The Reference State Machine (roadmap A/J)**: The pure applicative DAG/phase/deposit/gate model, its six crown-jewel invariants, the three decided degraded-mode edge cases, and the conformance seam to the runtime.
+  * **The Reference State Machine (roadmap A/J)**: The pure applicative DAG/phase/deposit/gate model, its five crown-jewel invariants, the three decided degraded-mode edge cases, and the conformance seam to the runtime.
 
 ## Invariants
 
@@ -241,7 +241,7 @@ src/
     packages.lisp              — the librecode-model package
     dag.lisp                   — work DAG: validity, Kahn layering
     state-machine.lisp         — node status/phase/deposit, transitions, event log, replay
-    invariants.lisp            — the six crown-jewel invariants as pure predicates
+    invariants.lisp            — the five crown-jewel invariants as pure predicates
 ```
 
 ### Dependency Edges (load order)

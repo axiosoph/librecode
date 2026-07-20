@@ -1,6 +1,6 @@
 ;;; -*- Mode: Lisp; Syntax: Common-Lisp; indent-tabs-mode: nil; coding: utf-8; Show-Trailing-Whitespace: t -*-
 ;;;
-;;; invariants.lisp — The six crown-jewel invariants, as pure predicates
+;;; invariants.lisp — The five crown-jewel invariants, as pure predicates
 ;;;
 ;;; Each predicate takes (DAG EVENTS) — an event log, not just a final state —
 ;;; because monotonicity and tamper-evidence are properties of a TRAJECTORY,
