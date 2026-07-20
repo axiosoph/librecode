@@ -4,4 +4,4 @@
 may_commit: true
 file_surface:
   - "src/meta/campaign.lisp"
-prompt: "Implement the campaign-node boundary struct exactly as specified in the N1 design decision, within the declared file_surface only."
+prompt: "Implement the campaign-node boundary struct within the declared file_surface only."

@@ -1,15 +1,13 @@
-# Structured dispatch-boundary grant contract (campaign 8, N1).
+# Structured dispatch-boundary grant contract.
 #
 # Gates the record that will replace campaign-node's bare-string `ibc` slot
 # (src/meta/campaign.lisp:24) at dispatch time: the machine-checkable
 # authorization a walker runs under, named "boundary" (not "deposit",
 # "contract", or "verdict" — those describe src/model's landed-work gating,
-# a different concept; docs/model.md:55-63). Full design rationale — the
-# struct shape this contract mirrors, and how the rework-diagnostic (a
-# genuinely different concept, previously complected into the same slot) is
-# decomplected into its own field — lives in
-# .scratch/campaign-8-end-to-end/prompts/N1-design-decision.md (not
-# committed; this file is the sole normative, git-tracked artifact).
+# a different concept; docs/model.md:55-63). The rework-diagnostic — a
+# genuinely different concept, previously complected into the same slot —
+# is decomplected into its own field below rather than folded back into
+# the boundary grant.
 #
 # Usage:
 #   nickel export <boundary>.yaml --apply-contract contracts/ibc-boundary.ncl

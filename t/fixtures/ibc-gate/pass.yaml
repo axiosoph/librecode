@@ -5,4 +5,4 @@ file_surface:
 halt_conditions:
   - "a cited premise is refuted on re-verification"
   - "no clean single-representation design survives the rework round-trip"
-prompt: "Implement the campaign-node boundary struct exactly as specified in the N1 design decision, within the declared file_surface only."
+prompt: "Implement the campaign-node boundary struct within the declared file_surface only."
