@@ -1,0 +1,7 @@
+# Fails contracts/ibc-boundary.ncl: `halt_conditions` is omitted entirely
+# (not set null/empty — required-field presence is the property under test,
+# not value validation of a present-but-empty field).
+may_commit: true
+file_surface:
+  - "src/meta/campaign.lisp"
+prompt: "Implement the campaign-node boundary struct exactly as specified in the N1 design decision, within the declared file_surface only."
