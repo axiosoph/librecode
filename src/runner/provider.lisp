@@ -48,7 +48,7 @@ and preserve the query parameters."
              (url-path (if q-pos (subseq base-url 0 q-pos) base-url))
              (url-query (if q-pos (subseq base-url q-pos) ""))
              (trimmed (string-right-trim '(#\/) url-path))
-             (suffixes '("/v1/chat/completions" "/chat/completions" "/v1/messages"))
+             (suffixes '("/v1/chat/completions" "/chat/completions"))
              (has-suffix (some (lambda (suffix)
                                  (alexandria:ends-with-subseq suffix trimmed :test #'char=))
                                suffixes))
