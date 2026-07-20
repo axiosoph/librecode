@@ -23,6 +23,42 @@ without unwinding the failing worker's stack -- set from *worker-marker*'s
 value as observed at the restart's invocation site. Never surfaced as tool
 output; inspect via the internal symbol from tests only.")
 
+(define-condition unauthenticated-send-refused (error)
+  ((endpoint :initarg :endpoint :reader unauthenticated-send-refused-endpoint
+             :initform "unknown" :type string)
+   (host :initarg :host :reader unauthenticated-send-refused-host
+         :initform "unknown" :type string))
+  (:report (lambda (condition stream)
+             (format stream "Unauthenticated Send Refused [host: ~A]: refusing to send an unauthenticated request to a non-loopback endpoint ~S.~%~
+                             What failed: fail-safe send guard in EXECUTE-PROVIDER-TURN.~%~
+                             Why: no session auth is configured and the resolved endpoint is not loopback -- sending would leak the full request body unauthenticated to a remote host.~%~
+                             Where: EXECUTE-PROVIDER-TURN, before any dexador:post."
+                     (unauthenticated-send-refused-host condition)
+                     (unauthenticated-send-refused-endpoint condition))))
+  (:documentation "Signal that EXECUTE-PROVIDER-TURN refused to dispatch a request because
+the resolved endpoint host is non-loopback and no session auth is configured. Fail-closed:
+no request is ever sent. Unexported (packages.lisp is outside N7's file_surface) -- reached
+by tests via the librecode-runner.runner:: internal-access form."))
+
+(defun url-host (url)
+  "Extract the bare host component (no scheme, port, path, or query) from URL.
+Handles a bracketed IPv6 literal (e.g. \"[::1]\") as well as a plain hostname
+or IPv4 literal."
+  (let* ((scheme-end (search "://" url))
+         (rest (if scheme-end (subseq url (+ scheme-end 3)) url)))
+    (if (and (plusp (length rest)) (char= (char rest 0) #\[))
+        (let ((close (position #\] rest)))
+          (if close (subseq rest 1 close) rest))
+        (let ((host-end (or (position-if (lambda (c) (member c '(#\/ #\: #\?))) rest)
+                             (length rest))))
+          (subseq rest 0 host-end)))))
+
+(defun loopback-host-p (host)
+  "T if HOST is a loopback address or hostname: 127.0.0.0/8, ::1, or localhost."
+  (or (string-equal host "localhost")
+      (string= host "::1")
+      (and (>= (length host) 4) (string= host "127." :end1 4))))
+
 (defun get-latest-epoch-baseline (session-id)
   "Retrieve the latest baseline text from context_epoch read projection."
   (when (and (boundp 'librecode-runner.event-store:*db*)
@@ -533,6 +569,12 @@ Enforces that exactly one provider call is made. Returns t if continuation is al
                           *provider-url*))
          (current-provider provider)
          (current-model (or config-model model)))
+    ;; Fail-safe send guard: refuse an unauthenticated request to a
+    ;; non-loopback endpoint before any dexador:post is attempted. Loopback
+    ;; is exempt so mock/local-dev flows with no configured auth keep
+    ;; working (P-N7-7, P-N7-8).
+    (when (and (null auth) (not (loopback-host-p (url-host current-url))))
+      (error 'unauthenticated-send-refused :endpoint current-url :host (url-host current-url)))
     (loop
       (restart-case
           (let ((*provider-url* current-url))
