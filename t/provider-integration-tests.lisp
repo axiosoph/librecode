@@ -1,6 +1,6 @@
 ;;; -*- Mode: Lisp; Syntax: Common-Lisp; indent-tabs-mode: nil; coding: utf-8; Show-Trailing-Whitespace: t -*-
 ;;;
-;;; provider-integration-tests.lisp — Real authenticated provider reach (N4)
+;;; provider-integration-tests.lisp — Real authenticated provider reach
 ;;;
 ;;; Proves the credential path end to end: an env-var-sourced secret set in
 ;;; the parent test process, inherited by a genuinely spawned run-child
@@ -25,7 +25,7 @@
 (in-suite provider-integration-suite)
 
 (defparameter +auth-env-var+ "LIBRECODE_PROVIDER_API_KEY"
-  "Env var name run-child reads its provider credential from (U3, N4 delegated choice).")
+  "Env var name run-child reads its provider credential from.")
 
 (test test-child-authenticated-provider-reach
   "run-child, spawned as a genuine subprocess with the credential only ever
@@ -61,8 +61,8 @@ Authorization: Bearer <token> header to the session's configured
                                                 directives
                                                 (list :ignore-inherited-configuration)))
                  (provider-url (format nil "http://127.0.0.1:~A/stream" port))
-                 ;; NB C-N4-1: api-token never appears below -- only the env
-                 ;; var NAME is referenced in this --eval string; the VALUE
+                 ;; The api-token never appears below -- only the env var
+                 ;; NAME is referenced in this --eval string; the VALUE
                  ;; reaches the child solely through inherited environment.
                  (command (list "sbcl" "--noinform" "--non-interactive"
                                 "--eval" "(require :sb-posix)"
@@ -110,12 +110,13 @@ Authorization: Bearer <token> header to the session's configured
                                  (reverse events))))
                      (is (eq landed-status :idle)))
 
-                   ;; AC-N4-1: outbound Authorization: Bearer <token>, env-sourced.
+                   ;; Assert the outbound Authorization header carries the
+                   ;; env-sourced token as a Bearer credential.
                    (is-true request-headers)
                    (is (equal (format nil "Bearer ~A" api-token)
                               (cdr (assoc :authorization request-headers))))
 
-                   ;; AC-N4-1: host:port explicitly differs from both
+                   ;; Assert host:port explicitly differs from both
                    ;; hardcoded unauthenticated defaults -- not merely
                    ;; structurally distinct by construction.
                    (let ((received-host (cdr (assoc :host request-headers))))
@@ -123,9 +124,8 @@ Authorization: Bearer <token> header to the session's configured
                      (is (not (equal "localhost:8080" received-host)))
                      (is (not (equal "localhost:8081" received-host)))))
 
-              ;; C-N4-10: unconditionally unset the credential, regardless of
-              ;; outcome, so no later suite in this just-test SBCL image
-              ;; observes it.
+              ;; Unconditionally unset the credential, regardless of outcome,
+              ;; so no later suite in this just-test SBCL image observes it.
               (sb-posix:unsetenv +auth-env-var+)
               (when harness
                 (librecode-meta.harness:harness-terminate harness)))))))))

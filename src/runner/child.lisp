@@ -63,13 +63,13 @@
                    ;; inside the already-running child, via uiop:getenv on
                    ;; the inherited environment -- never interpolated into
                    ;; this process's own --eval invocation string, so it
-                   ;; never appears in argv/ps (C-N4-1). configure-session
+                   ;; never appears in argv/ps. configure-session
                    ;; persists it into the session's DB-backed provider
                    ;; config, so once read it no longer needs to live in
                    ;; this process's OS environment; unset it there
                    ;; immediately so a later-spawned subprocess (e.g. the
                    ;; bash tool, which inherits this process's environment
-                   ;; by default) cannot read it back out (F1).
+                   ;; by default) cannot read it back out.
                    (let ((provider-api-key (uiop:getenv "LIBRECODE_PROVIDER_API_KEY")))
                      (librecode-runner.provider:configure-session
                       session-id
