@@ -5,6 +5,9 @@
 
 (in-package #:librecode-runner.child)
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  #+sbcl (require :sb-posix))
+
 (defun run-child (&key workspace-root db-path provider-url model task session-id (max-steps 10))
   (setf *random-state* (make-random-state t))
   (let* ((workspace-pathname (uiop:ensure-directory-pathname workspace-root))
@@ -60,13 +63,22 @@
                    ;; inside the already-running child, via uiop:getenv on
                    ;; the inherited environment -- never interpolated into
                    ;; this process's own --eval invocation string, so it
-                   ;; never appears in argv/ps (C-N4-1).
-                   (librecode-runner.provider:configure-session
-                    session-id
-                    :base-url provider-url
-                    :model model
-                    :auth (uiop:getenv "LIBRECODE_PROVIDER_API_KEY"))
-                   
+                   ;; never appears in argv/ps (C-N4-1). configure-session
+                   ;; persists it into the session's DB-backed provider
+                   ;; config, so once read it no longer needs to live in
+                   ;; this process's OS environment; unset it there
+                   ;; immediately so a later-spawned subprocess (e.g. the
+                   ;; bash tool, which inherits this process's environment
+                   ;; by default) cannot read it back out (F1).
+                   (let ((provider-api-key (uiop:getenv "LIBRECODE_PROVIDER_API_KEY")))
+                     (librecode-runner.provider:configure-session
+                      session-id
+                      :base-url provider-url
+                      :model model
+                      :auth provider-api-key)
+                     (when provider-api-key
+                       (sb-posix:unsetenv "LIBRECODE_PROVIDER_API_KEY")))
+
                    ;; Register built-in tools
                    (librecode-runner.builtin-tools:register-builtin-tools librecode-runner.runner::*tool-registry*)
 
