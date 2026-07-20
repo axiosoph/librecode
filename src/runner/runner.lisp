@@ -37,8 +37,8 @@ output; inspect via the internal symbol from tests only.")
                      (unauthenticated-send-refused-endpoint condition))))
   (:documentation "Signal that EXECUTE-PROVIDER-TURN refused to dispatch a request because
 the resolved endpoint host is non-loopback and no session auth is configured. Fail-closed:
-no request is ever sent. Unexported (packages.lisp is outside N7's file_surface) -- reached
-by tests via the librecode-runner.runner:: internal-access form."))
+no request is ever sent. Unexported (packages.lisp is outside this file's declared surface) --
+reached by tests via the librecode-runner.runner:: internal-access form."))
 
 (defun url-host (url)
   "Extract the bare host component (no scheme, port, path, or query) from URL.
@@ -572,7 +572,7 @@ Enforces that exactly one provider call is made. Returns t if continuation is al
     ;; Fail-safe send guard: refuse an unauthenticated request to a
     ;; non-loopback endpoint before any dexador:post is attempted. Loopback
     ;; is exempt so mock/local-dev flows with no configured auth keep
-    ;; working (P-N7-7, P-N7-8).
+    ;; working.
     (when (and (null auth) (not (loopback-host-p (url-host current-url))))
       (error 'unauthenticated-send-refused :endpoint current-url :host (url-host current-url)))
     (loop

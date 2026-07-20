@@ -131,26 +131,27 @@ Authorization: Bearer <token> header to the session's configured
                 (librecode-meta.harness:harness-terminate harness)))))))))
 
 ;;; ============================================================================
-;;; N7 -- at-rest credential redaction + fail-safe send guard
+;;; At-rest credential redaction + fail-safe send guard
 ;;; ============================================================================
 ;;;
-;;; N4's real-credential wiring (above) activated two decorrelated findings
-;;; from the hacker-seat review: the token it threads reaches durable
-;;; storage in cleartext (event_log.payload and session_provider_config.auth),
-;;; and an unauthenticated non-loopback send is never refused. These three
-;;; tests are the RED half of N7's /core cycle -- they assert the target
-;;; (still-unimplemented) behavior and are expected to fail against the
-;;; current tip. The symbols they reference fully-qualified
+;;; The real-credential wiring added earlier in this branch (above) activated
+;;; two decorrelated findings from the hacker-seat review: the token it
+;;; threads reaches durable storage in cleartext (event_log.payload and
+;;; session_provider_config.auth), and an unauthenticated non-loopback send
+;;; is never refused. These three tests are the RED half of the /core cycle
+;;; for this behavior -- they assert the target (still-unimplemented)
+;;; behavior and are expected to fail against the current tip. The symbols
+;;; they reference fully-qualified
 ;;; (librecode-runner.provider:configure-session,
 ;;; librecode-runner.runner:execute-provider-turn) are unqualified here
 ;;; deliberately -- this package only :use's librecode-runner.child, and
 ;;; widening its :use clause is unnecessary churn for three call sites.
 ;;;
-;;; Delegated design decisions (logged per N7's IBC S3 delegation):
+;;; Delegated design decisions (logged per this branch's IBC S3 delegation):
 ;;;
 ;;; - Guard condition type: librecode-runner.runner::unauthenticated-send-refused
-;;;   (unexported -- packages.lisp is outside N7's file_surface, so the
-;;;   implementation worker must define it directly in runner.lisp without
+;;;   (unexported -- packages.lisp is outside this file's declared surface, so
+;;;   the implementation worker must define it directly in runner.lisp without
 ;;;   an :export; tests reach it via :: internal access). Below, the assert
 ;;;   goes through (find-class ... nil) before typep so referencing the
 ;;;   not-yet-defined class never trips a hard error pre-implementation --
@@ -178,7 +179,7 @@ session_history/context_epoch rows for a bare turn."
     session-id "agent-1" (librecode-runner.event-store::current-timestamp-ms)))
 
 (test test-n7-credential-redacted-at-rest-live-header-intact
-  "C-N7-1 + C-N7-2: after configure-session commits a real token, neither
+  "After configure-session commits a real token, neither
 event_log.payload for the :session-provider-configured event nor the
 projected session_provider_config.auth column may contain that token's
 cleartext -- checked before any turn runs, so this is purely an at-rest
@@ -205,7 +206,7 @@ break the authenticated path it protects."
                                                           :model "n7-redact-model"
                                                           :auth real-token)
 
-            ;; C-N7-1: at-rest, in BOTH durable sinks.
+            ;; At-rest, in BOTH durable sinks.
             (let ((logged-payload (sqlite:execute-single db
                                      "SELECT payload FROM event_log WHERE session_id = ? AND event_type = 'SESSION-PROVIDER-CONFIGURED' ORDER BY sequence DESC LIMIT 1"
                                      session-id)))
@@ -219,7 +220,7 @@ break the authenticated path it protects."
               (is (not (equal real-token column-auth))
                   "session_provider_config.auth must not contain the real credential in cleartext"))
 
-            ;; C-N7-2: the SAME-process live turn must still authenticate.
+            ;; The SAME-process live turn must still authenticate.
             (let ((librecode-runner.protocol::*session-mailbox* (librecode-runner.protocol:make-mailbox)))
               (librecode-runner.runner:execute-provider-turn session-id "unused-provider" "n7-redact-model"))
 
@@ -229,7 +230,7 @@ break the authenticated path it protects."
                 "the live same-process turn must still send the correct Bearer token despite at-rest redaction")))))))
 
 (test test-n7-fail-safe-send-guard-refuses-non-loopback-nil-auth
-  "C-N7-3: execute-provider-turn with a resolved endpoint whose host is
+  "execute-provider-turn with a resolved endpoint whose host is
 non-loopback (\"example.com\", not one of 127.*/localhost/::1) and nil
 session auth must refuse -- signal a condition, dispatch zero requests --
 rather than silently POSTing the full request body unauthenticated to a
@@ -274,8 +275,8 @@ header) so the assertion is network-free and deterministic."
             "dexador:post must never be invoked once the fail-safe guard refuses a non-loopback, unauthenticated send")))))
 
 (test test-n7-fail-safe-send-guard-exempts-loopback-nil-auth
-  "Non-regression companion to C-N7-3: the fail-safe guard must NOT fire
-for a loopback endpoint (127.0.0.1) even with nil auth, so
+  "Non-regression companion to the fail-safe send guard refusal test above:
+the fail-safe guard must NOT fire for a loopback endpoint (127.0.0.1) even with nil auth, so
 test-provider-configuration-fallback-to-default and every other
 loopback-mock-based test keep passing unchanged. Unlike the refusal test,
 this exercises a real local mock round-trip rather than a dexador:post

@@ -16,7 +16,7 @@ reader that skipped rehydration.")
 credential. CONFIGURE-SESSION populates it; GET-SESSION-CONFIG rehydrates
 the live token from it for the same-process authenticated turn. Never
 persisted -- process-lifetime-only retention is the accepted at-rest
-boundary (N7 non-goals); a fresh process (e.g. after restart) has no entry
+boundary; a fresh process (e.g. after restart) has no entry
 and GET-SESSION-CONFIG falls back to NIL, which correctly trips the
 fail-safe send guard for a non-loopback endpoint rather than leaking or
 misusing the marker as a header value.")
