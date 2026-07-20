@@ -11,8 +11,9 @@
                 #:make-campaign-node
                 #:campaign-node-id
                 #:campaign-node-status
-                #:campaign-node-ibc
+                #:campaign-node-rework-diagnostic
                 #:campaign-node-goal
+                #:make-boundary-from-prompt
                 #:make-campaign-dag
                 #:run-campaign
                 #:campaign-supervisor-mailbox
@@ -41,7 +42,7 @@
                                      :goal "Fail node"
                                      :file-surface '("src/a.lisp")
                                      :harness-type 'librecode-test.supervision::mock-supervision-harness
-                                     :ibc "ibc-1"))
+                                     :boundary (make-boundary-from-prompt "ibc-1")))
            (dag (make-campaign-dag :nodes (list node) :shared-branch "master"))
            (journal-file (uiop:merge-pathnames* "campaign-journal.lisp-expr" dir))
            (workspace-dir (uiop:merge-pathnames* "workspace/" dir))
@@ -57,9 +58,9 @@
       
       ;; The node should have gone through retry -> rework -> skip (accepted)
       (is (eq :skipped (campaign-node-status node)))
-      ;; Verify that the IBC was updated during the rework step with the error trace
-      (is (not (null (campaign-node-ibc node))))
-      (is (search "Error trace from failure:" (campaign-node-ibc node)))
+      ;; Verify that the rework-diagnostic was set during the rework step with the error trace
+      (is (not (null (campaign-node-rework-diagnostic node))))
+      (is (search "Error trace from failure:" (campaign-node-rework-diagnostic node)))
       ;; Assert the exact number of attempts made for the persistently failing node
       (is (= 3 (gethash "node-1-fail" (campaign-failure-counts campaign)))))))
 
@@ -71,12 +72,12 @@
                                              :goal "Success node"
                                              :file-surface '("src/a.lisp")
                                              :harness-type 'librecode-test.supervision::mock-supervision-harness
-                                             :ibc "ibc-1"))
+                                             :boundary (make-boundary-from-prompt "ibc-1")))
            (fail-node (make-campaign-node :id "node-2-fail"
                                           :goal "Fail node"
                                           :file-surface '("src/b.lisp")
                                           :harness-type 'librecode-test.supervision::mock-supervision-harness
-                                          :ibc "ibc-2"))
+                                          :boundary (make-boundary-from-prompt "ibc-2")))
            (dag (make-campaign-dag :nodes (list success-node fail-node) :shared-branch "master"))
            (journal-file (uiop:merge-pathnames* "campaign-journal.lisp-expr" dir))
            (workspace-dir (uiop:merge-pathnames* "workspace/" dir))
@@ -102,7 +103,7 @@
                                      :goal "Fail node"
                                      :file-surface '("src/a.lisp")
                                      :harness-type 'librecode-test.supervision::mock-supervision-harness
-                                     :ibc "ibc-1"))
+                                     :boundary (make-boundary-from-prompt "ibc-1")))
            (dag (make-campaign-dag :nodes (list node) :shared-branch "master"))
            (journal-file (uiop:merge-pathnames* "campaign-journal.lisp-expr" dir))
            (workspace-dir (uiop:merge-pathnames* "workspace/" dir))
@@ -145,7 +146,7 @@
                                      :goal "Fail node"
                                      :file-surface '("src/a.lisp")
                                      :harness-type 'librecode-test.supervision::mock-supervision-harness
-                                     :ibc "ibc-1"))
+                                     :boundary (make-boundary-from-prompt "ibc-1")))
            (dag (make-campaign-dag :nodes (list node) :shared-branch "master"))
            (journal-file (uiop:merge-pathnames* "campaign-journal.lisp-expr" dir))
            (workspace-dir (uiop:merge-pathnames* "workspace/" dir))

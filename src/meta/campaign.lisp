@@ -9,6 +9,22 @@
 ;;; campaign-node and campaign-dag structs
 ;;; ============================================================================
 
+(defstruct boundary
+  "Structured dispatch-boundary grant -- mirrors contracts/ibc-boundary.ncl
+field-for-field. The one representation of a node's dispatch-time
+authorization; distinct from REWORK-DIAGNOSTIC below, which is an
+ephemeral, failure-triggered artifact, not a second boundary."
+  (may-commit nil :type boolean)       ; Whether this dispatch grants commit authorization
+  (file-surface nil :type list)        ; Paths/globs this dispatch is authorized to modify
+  (halt-conditions nil :type list)     ; Conditions under which the dispatch must halt and report
+  (prompt nil :type (or null string))) ; The base instructions the harness reads at dispatch
+
+(defun make-boundary-from-prompt (prompt)
+  "Convenience constructor for call sites that only care about the prompt
+text; the other three fields default inert/empty (never production-shaped),
+so a test stub is never mistaken for a real dispatch grant."
+  (make-boundary :prompt prompt :may-commit nil :file-surface nil :halt-conditions nil))
+
 (defstruct campaign-node
   "Represents an execution unit within a campaign DAG."
   (id nil :type (or null string))
@@ -21,7 +37,22 @@
   (deposit nil)                        ; librecode-model deposit struct (or nil, never landed), threaded from the fold
   (harness-type nil :type symbol)      ; Class name of harness (e.g., 'harness-opencode)
   (harness-instance nil)               ; Reference to the active CLOS harness-instance
-  (ibc nil :type (or null string)))    ; Initial Boundary Condition text (instructions/goals)
+  (boundary nil :type (or null boundary))          ; Structured dispatch-boundary grant (contracts/ibc-boundary.ncl)
+  (rework-diagnostic nil :type (or null string)))  ; Formatted failure-trace text from a prior rework, decomplected from BOUNDARY
+
+(defun campaign-node-effective-prompt (node)
+  "Compose the dispatch prompt for NODE: the boundary's prompt (or the
+node's goal, if no boundary is set), augmented with any rework-diagnostic
+from a prior in-process failure -- the walker keeps its full original
+authorization/instructions on retry, now augmented with failure context
+instead of losing them to it."
+  (let ((base (if (campaign-node-boundary node)
+                   (boundary-prompt (campaign-node-boundary node))
+                   (campaign-node-goal node)))
+        (diagnostic (campaign-node-rework-diagnostic node)))
+    (if diagnostic
+        (format nil "~A~%~%~A" base diagnostic)
+        base)))
 
 (defstruct (campaign-dag
             (:constructor %make-campaign-dag))
@@ -349,8 +380,8 @@ or if any dependency is unresolved."
       
       (unwind-protect
            (progn
-             ;; Prompt the harness with the goal/ibc
-             (librecode-meta.harness:harness-prompt harness (or (campaign-node-ibc node) (campaign-node-goal node)) :mode :steer)
+             ;; Prompt the harness with the composed boundary/rework-diagnostic prompt
+             (librecode-meta.harness:harness-prompt harness (campaign-node-effective-prompt node) :mode :steer)
              
              ;; Monitor loop
              (loop
@@ -446,9 +477,9 @@ or if any dependency is unresolved."
                               ((= count 1)
                                (setf (campaign-node-status failed-node) :pending))
                               ((= count 2)
-                               (setf (campaign-node-ibc failed-node)
+                               (setf (campaign-node-rework-diagnostic failed-node)
                                      (format nil "Error trace from failure: ~A" (princ-to-string failed-cond)))
-                               (safe-write-journal-entry campaign journal-stream (list :node-rework node-id (campaign-node-ibc failed-node)))
+                               (safe-write-journal-entry campaign journal-stream (list :node-rework node-id (campaign-node-rework-diagnostic failed-node)))
                                (setf (campaign-node-status failed-node) :rework))
                               ((and (>= count 3) (< count (1- limit)))
                                (setf (campaign-node-status failed-node) :skipped)
