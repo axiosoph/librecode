@@ -313,7 +313,9 @@ stub, since the point is proving the send still actually happens."
 ;;;
 ;;; A decorrelated security review of the fail-safe send guard above found
 ;;; two real defects, both fixed in this branch's rework commit and both
-;;; regression-tested here:
+;;; regression-tested here. A second, independently-decorrelated reviewer
+;;; converged on the same core defect and surfaced one further bypass
+;;; variant of the first finding, also tested here:
 ;;;
 ;;; - LOOPBACK-HOST-P's IPv4 clause was a bare 4-character prefix check
 ;;;   ((string= host "127." :end1 4)), so "127.evil.com" -- not actually in
@@ -325,6 +327,24 @@ stub, since the point is proving the send still actually happens."
 ;;;   caller-supplied URL) could swap in a new endpoint that was never
 ;;;   re-checked. Fixed by moving the check inside the loop body so it
 ;;;   re-evaluates the freshly-bound *PROVIDER-URL* every iteration.
+;;; - Bypass variant on the first finding: URL-HOST does not strip a
+;;;   "user@" / "user:pass@" userinfo component, so a base-url like
+;;;   "http://127.0.0.1@evil.com/v1" resolves to the raw host string
+;;;   "127.0.0.1@evil.com". Against the ORIGINAL 4-character prefix check
+;;;   this would have passed as loopback (it starts with "127."), exempting
+;;;   an unauthenticated send whose real destination -- once dexador parses
+;;;   userinfo vs host out of the full URL -- is the attacker-controlled
+;;;   "evil.com". The dotted-quad fix above already closes this too, and
+;;;   for a stronger reason than accident: IPV4-DOTTED-QUAD-OCTETS requires
+;;;   the ENTIRE host string to decompose into exactly 4 all-digit
+;;;   components, so any trailing "@evil.com" (non-digit characters, and/or
+;;;   extra "." components) always fails the check regardless of where in
+;;;   the string it appears -- there is no substring/prefix path through
+;;;   it. No additional userinfo-stripping in URL-HOST was added: it would
+;;;   only change behavior in the opposite, non-security direction (a
+;;;   genuine loopback host obscured behind userinfo would be
+;;;   over-refused), which is an availability question outside this node's
+;;;   security-hardening scope, not a gap in the fix below.
 
 (test test-n7-loopback-bypass-prefix-match-refused
   "The loopback classifier must not treat a host that merely STARTS WITH the
@@ -371,6 +391,56 @@ exempted it and dexador:post would have been invoked."
             "the guard must signal the dedicated unauthenticated-send-refused condition for the bypass host, not silently classify it as loopback")
         (is (= 0 call-count)
             "dexador:post must never be invoked once the guard correctly classifies \"127.evil.com\" as non-loopback")))))
+
+(test test-n7-loopback-bypass-userinfo-prefix-refused
+  "Bypass variant of the prefix-match finding above: URL-HOST does not
+strip a \"user@\" userinfo component, so a base-url of
+\"http://127.0.0.1@evil.com/v1\" resolves to the raw host string
+\"127.0.0.1@evil.com\". Against the pre-fix 4-character prefix check this
+would have passed as loopback. The dotted-quad fix must reject it too --
+and for the right reason: the host string does not decompose into exactly
+4 all-digit dot-separated components, so the guard must refuse and never
+invoke dexador:post."
+  (let ((session-id "n7-loopback-userinfo-bypass-session")
+        (call-count 0)
+        (refused nil)
+        (refusal-condition nil)
+        (original-post (fdefinition 'dexador:post)))
+    (librecode-test.event-store::with-tmp-sandbox (dir)
+      (librecode-test.event-store::with-test-db (db dir)
+        (n7-insert-session-state db session-id)
+
+        (librecode-runner.provider:configure-session session-id
+                                                      :base-url "http://127.0.0.1@evil.com/v1"
+                                                      :model "n7-userinfo-bypass-model"
+                                                      :auth nil)
+
+        (unwind-protect
+             (progn
+               (setf (fdefinition 'dexador:post)
+                     (lambda (&rest args)
+                       (declare (ignore args))
+                       (incf call-count)
+                       (make-string-input-stream (format nil "data: [DONE]~%"))))
+               (handler-case
+                   (let ((librecode-runner.protocol::*session-mailbox* (librecode-runner.protocol:make-mailbox)))
+                     (librecode-runner.runner:execute-provider-turn session-id "unused-provider" "n7-userinfo-bypass-model"))
+                 (error (c)
+                   (setf refused t)
+                   (setf refusal-condition c))))
+          (setf (fdefinition 'dexador:post) original-post))
+
+        (is-true refused
+                 "execute-provider-turn must refuse a host with an unstripped userinfo prefix (\"127.0.0.1@evil.com\") -- it is not a genuine loopback dotted-quad")
+        (is (and refused
+                 (find-class 'librecode-runner.runner::unauthenticated-send-refused nil)
+                 (typep refusal-condition 'librecode-runner.runner::unauthenticated-send-refused))
+            "the guard must signal the dedicated unauthenticated-send-refused condition for the userinfo-prefixed host, not silently classify it as loopback")
+        (is (equal "127.0.0.1@evil.com"
+                   (librecode-runner.runner::unauthenticated-send-refused-host refusal-condition))
+            "the refused host must be the full unstripped userinfo+host string, confirming this test actually exercised the userinfo bypass path and not some other refusal")
+        (is (= 0 call-count)
+            "dexador:post must never be invoked once the guard correctly classifies the userinfo-prefixed host as non-loopback")))))
 
 (test test-n7-toctou-guard-refires-on-backup-provider-retry
   "The fail-safe send guard must not be a one-shot check performed only
