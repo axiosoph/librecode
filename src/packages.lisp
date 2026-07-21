@@ -347,9 +347,3 @@
   (:use #:cl)
   (:documentation "Persona layout compilation and prompt delivery hooks.")
   (:export #:compose-conditioning))
-
-(defpackage #:librecode-meta.metaharness
-  (:use #:cl)
-  (:documentation "Metaharness orchestrator entry point, campaign loop supervisor, and signal gates.")
-  (:export #:start-metaharness
-           #:stop-metaharness))
