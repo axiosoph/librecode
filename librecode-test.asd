@@ -35,6 +35,7 @@
      (:file "gate-tests")
      (:file "supervision-tests")
      (:file "recovery-tests")
+     (:file "ibc-gate-tests")
      (:file "failure-relay-tests")
      (:file "cross-process-tests")
      (:file "provider-tests")
@@ -72,6 +73,8 @@
                                                            (uiop:find-symbol* :supervision-suite :librecode-test.supervision))
                                          (uiop:symbol-call :fiveam :run
                                                            (uiop:find-symbol* :recovery-suite :librecode-test.recovery))
+                                         (uiop:symbol-call :fiveam :run
+                                                           (uiop:find-symbol* :ibc-gate-suite :librecode-test.ibc-gate))
                                          (uiop:symbol-call :fiveam :run
                                                            (uiop:find-symbol* :failure-relay-suite :librecode-test.failure-relay))
                                          (uiop:symbol-call :fiveam :run
