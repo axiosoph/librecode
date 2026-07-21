@@ -308,7 +308,7 @@ stub, since the point is proving the send still actually happens."
             (is-false (assoc :authorization request-headers))))))))
 
 ;;; ============================================================================
-;;; N7 REWORK: loopback-classification bypass + guard TOCTOU
+;;; Fail-safe send guard rework: loopback-classification bypass + guard TOCTOU
 ;;; ============================================================================
 ;;;
 ;;; A decorrelated security review of the fail-safe send guard above found
