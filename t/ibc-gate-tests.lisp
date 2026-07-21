@@ -3,7 +3,7 @@
 ;;; ibc-gate-tests.lisp — Unit/integration tests for the pre-dispatch IBC-sufficiency gate
 ;;;
 ;;; Red-first per /core: this file is authored BEFORE the gate's serializer,
-;;; contract-check, and run-node-execution wiring exist (campaign 8, node N3).
+;;; contract-check, and run-node-execution wiring exist.
 ;;; Every test below is expected to fail against current HEAD, either with an
 ;;; UNDEFINED-FUNCTION condition (the serializer/gate functions do not exist
 ;;; yet) or a wrong final node status (the gate is not wired into
@@ -34,9 +34,9 @@
 (in-suite ibc-gate-suite)
 
 ;;; ============================================================================
-;;; C7 instrumentation -- a NEW harness class, never an edit to
-;;; t/supervision-tests.lisp's mock-supervision-harness (outside file_surface,
-;;; P14). Per P14's CLOS analysis: harness-prompt/harness-status/
+;;; Harness instrumentation -- a NEW harness class, never an edit to
+;;; t/supervision-tests.lisp's mock-supervision-harness (outside this file's
+;;; declared surface). harness-prompt/harness-status/
 ;;; harness-terminate/harness-read-event dispatch on the INSTANCE, so a plain
 ;;; CLOS subclass inherits them and only needs to override harness-prompt (to
 ;;; count invocations, then call-next-method to preserve mock-supervision-
@@ -49,9 +49,9 @@
 ;;;
 ;;; The counter itself is a plain special variable, not a CLOS class-
 ;;; allocated slot: the gate under test rejects the node before ANY harness
-;;; instance is ever constructed (Decision Rights: insertion point is the
-;;; first statement inside run-node-execution, before prepare-node-worktree
-;;; -- earlier even than harness-spawn), so there is no single instance whose
+;;; instance is ever constructed -- the insertion point is the
+;;; first statement inside run-node-execution, before prepare-node-worktree,
+;;; earlier even than harness-spawn -- so there is no single instance whose
 ;;; slot could accumulate a count across the retry ladder's repeated
 ;;; attempts; a special variable observed across the whole test body is the
 ;;; correct shape for "was harness-prompt ever reached, on any attempt."
@@ -64,7 +64,7 @@ the current test body. Reset to 0 at the start of every test that reads it.")
 (defclass gate-test-harness (librecode-test.supervision::mock-supervision-harness)
   ()
   (:documentation "mock-supervision-harness subclass instrumented to prove
-C7's \"the harness never received a prompt\" claim -- see file header."))
+the \"harness never received a prompt\" claim -- see file header."))
 
 (defmethod librecode-meta.harness:harness-prompt ((instance gate-test-harness) prompt &key mode)
   (incf *gate-test-prompt-count*)
@@ -90,13 +90,13 @@ C7's \"the harness never received a prompt\" claim -- see file header."))
   t)
 
 ;;; ============================================================================
-;;; AC3/C2 -- kebab->snake serializer, verified independent of any nickel
+;;; kebab->snake serializer, verified independent of any nickel
 ;;; invocation (a pure unit test on the hash-table shape).
 ;;; ============================================================================
 
 (test t-boundary-serializer-field-mapping
   "boundary->json-hash-table maps the 4 kebab-case slots to the contract's
-exact 4 snake_case keys, 1:1, no extra/missing keys (P7, P8, P13)."
+exact 4 snake_case keys, 1:1, no extra/missing keys."
   (let* ((b (make-boundary :may-commit t
                            :file-surface '("src/a.lisp" "src/b.lisp")
                            :halt-conditions '("a cited premise is refuted")
@@ -116,7 +116,7 @@ exact 4 snake_case keys, 1:1, no extra/missing keys (P7, P8, P13)."
 (test t-boundary-serializer-false-and-empty-fields
   "may-commit NIL serializes to JSON false (not a missing key), and empty
 file-surface/halt-conditions serialize to an empty array (not null/missing) --
-per P8, these three fields have no null/non-null mismatch against the
+these three fields have no null/non-null mismatch against the
 contract, unlike prompt."
   (let* ((b (make-boundary :may-commit nil :file-surface nil :halt-conditions nil :prompt "x"))
          (ht (librecode-meta.campaign::boundary->json-hash-table b)))
@@ -132,12 +132,12 @@ contract, unlike prompt."
       (is (null val)))))
 
 ;;; ============================================================================
-;;; C3 -- any nickel export --apply-contract failure against the boundary
+;;; Any nickel export --apply-contract failure against the boundary
 ;;; contract is classified as gate-failure, never protocol-invariant-
-;;; violation (P5, P6, Decision Rights). Exercised at the raw-hash-table
+;;; violation. Exercised at the raw-hash-table
 ;;; level (bypassing the boundary struct entirely) to prove the missing-
 ;;; field shape specifically -- a defstruct's 4 slots always round-trip to
-;;; 4 JSON keys (P8), so a genuine "some required key is absent" case can
+;;; 4 JSON keys, so a genuine "some required key is absent" case can
 ;;; only be constructed below the struct layer, directly against the
 ;;; contract-checking primitive.
 ;;; ============================================================================
@@ -145,7 +145,7 @@ contract, unlike prompt."
 (test t-missing-required-field-rejected
   "A hash-table missing halt_conditions entirely (not merely empty) fails
 contracts/ibc-boundary.ncl's built-in presence check and is classified
-gate-failure, never protocol-invariant-violation (C3)."
+gate-failure, never protocol-invariant-violation."
   (let ((ht (make-hash-table :test 'equal)))
     (setf (gethash "may_commit" ht) t)
     (setf (gethash "file_surface" ht) '("src/a.lisp"))
@@ -155,7 +155,7 @@ gate-failure, never protocol-invariant-violation (C3)."
       (librecode-meta.campaign::run-boundary-contract-gate ht))))
 
 ;;; ============================================================================
-;;; C4 -- the maintainer's carry-forward: prompt = nil is legal at the Lisp
+;;; prompt = nil is legal at the Lisp
 ;;; level (defstruct's (or null string) type) but must be REJECTED by the
 ;;; gate, exercised end-to-end through the full struct->hash-table->nickel
 ;;; pipeline (gate-check-boundary), never a silent pass, never a raw Lisp
@@ -164,19 +164,19 @@ gate-failure, never protocol-invariant-violation (C3)."
 
 (test t-null-prompt-rejected
   "A boundary with prompt = nil is legal Lisp but fails the contract's
-non-null String requirement for prompt -- gate-failure signaled (P8, P13, C4)."
+non-null String requirement for prompt -- gate-failure signaled."
   (let ((b (make-boundary :may-commit t :file-surface nil :halt-conditions nil :prompt nil)))
     (signals librecode-runner.conditions:gate-failure
       (librecode-meta.campaign::gate-check-boundary b))))
 
 ;;; ============================================================================
-;;; C5 -- a complete boundary (all 4 fields present, prompt non-null) passes
+;;; A complete boundary (all 4 fields present, prompt non-null) passes
 ;;; the gate silently.
 ;;; ============================================================================
 
 (test t-complete-boundary-passes
   "A boundary with all 4 fields present and a non-null prompt passes the
-gate without signaling any condition (C5)."
+gate without signaling any condition."
   (let ((b (make-boundary :may-commit t
                           :file-surface '("src/a.lisp")
                           :halt-conditions '("halt-condition-a")
@@ -185,15 +185,15 @@ gate without signaling any condition (C5)."
     (is (eq t (librecode-meta.campaign::gate-check-boundary b)))))
 
 ;;; ============================================================================
-;;; C6 -- a nil-boundary node is unaffected: the existing goal-fallback
+;;; A nil-boundary node is unaffected: the existing goal-fallback
 ;;; (campaign-node-effective-prompt) still drives dispatch, and the gate is a
-;;; no-op for it (Decision Rights: "does a nil boundary get gated too? No").
+;;; no-op for it -- a nil boundary is deliberately not gated.
 ;;; ============================================================================
 
 (test t-nil-boundary-node-unaffected
   "A node whose boundary slot is nil (the pre-existing goal-fallback path)
 still dispatches and lands normally under the mock harness, unchanged from
-pre-N3 behavior (C6, AC4)."
+prior behavior."
   (librecode-test.event-store::with-tmp-sandbox (dir :git t)
     (setup-test-git-repo dir)
     (let* ((node (make-campaign-node :id "node-nil-boundary-ok"
@@ -213,7 +213,7 @@ pre-N3 behavior (C6, AC4)."
       (is (eq :accepted (campaign-node-status node))))))
 
 ;;; ============================================================================
-;;; C7/AC2 -- integration proof: a node with an insufficient boundary never
+;;; Integration proof: a node with an insufficient boundary never
 ;;; reaches harness-prompt (the instrumented counter stays at 0) and ends the
 ;;; run in :rework or :skipped via the existing, unmodified autonomous
 ;;; retry/rework/skip ladder (execute-node-batch, campaign.lisp:443-523) --
@@ -230,7 +230,7 @@ pre-N3 behavior (C6, AC4)."
 (test t-insufficient-boundary-gated-before-dispatch
   "A node with prompt = nil never advances the instrumented harness's
 prompt-received counter past zero, and ends in :rework or :skipped -- never
-:landed -- via the existing autonomous retry/rework/skip ladder (C1, C3, C7, AC2)."
+:landed -- via the existing autonomous retry/rework/skip ladder."
   (setf *gate-test-prompt-count* 0)
   (librecode-test.event-store::with-tmp-sandbox (dir :git t)
     (setup-test-git-repo dir)
@@ -259,8 +259,8 @@ prompt-received counter past zero, and ends in :rework or :skipped -- never
 
 (test t-complete-boundary-node-still-dispatches
   "A node WITH a complete, sufficient boundary still reaches harness-prompt
-and lands normally -- the gate must not reject valid grants (AC1, C5,
-regression companion to C7's rejection proof)."
+and lands normally -- the gate must not reject valid grants (a regression
+companion to the insufficient-boundary rejection proof above)."
   (setf *gate-test-prompt-count* 0)
   (librecode-test.event-store::with-tmp-sandbox (dir :git t)
     (setup-test-git-repo dir)

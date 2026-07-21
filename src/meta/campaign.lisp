@@ -352,21 +352,21 @@ or if any dependency is unresolved."
     (nreverse (mapcar #'identity batches))))
 
 ;;; ============================================================================
-;;; IBC-sufficiency gate (campaign 8, node N3) -- validates a campaign-node's
+;;; IBC-sufficiency gate -- validates a campaign-node's
 ;;; structured BOUNDARY against contracts/ibc-boundary.ncl before any
 ;;; harness action for that node. A nil boundary (the pre-existing
 ;;; goal-fallback path, campaign-node-effective-prompt above) is out of
 ;;; scope for this gate; the call site in run-node-execution below only
-;;; invokes it when a boundary is actually set (Decision Rights, Resolved).
+;;; invokes it when a boundary is actually set.
 ;;; ============================================================================
 
 (defun boundary->json-hash-table (boundary)
   "Serialize BOUNDARY's 4 kebab-case slots to a hash-table keyed by
 contracts/ibc-boundary.ncl's exact snake_case field names -- 1:1, no
-extra/missing keys (P7, P8, P13's kebab->snake carry-forward). NIL
+extra/missing keys. NIL
 may-commit/file-surface/halt-conditions round-trip to JSON false/[]/[]
 (all valid per the contract); only a NIL prompt has no valid counterpart,
-left for the gate itself to reject (P8)."
+left for the gate itself to reject."
   (let ((ht (make-hash-table :test 'equal)))
     (setf (gethash "may_commit" ht) (boundary-may-commit boundary))
     (setf (gethash "file_surface" ht) (boundary-file-surface boundary))
@@ -380,7 +380,7 @@ file_surface/halt_conditions values (when present) are coerced to vectors.
 com.inuoe.jzon:stringify cannot distinguish a Lisp NIL meaning \"empty
 list\" from NIL meaning \"boolean false\", so an empty FILE-SURFACE/
 HALT-CONDITIONS would otherwise round-trip to JSON `false` instead of `[]`
--- which contracts/ibc-boundary.ncl's Array String type rejects (P8).
+-- which contracts/ibc-boundary.ncl's Array String type rejects.
 may_commit/prompt pass through untouched: their NIL is genuinely boolean
 false / absent, never an empty-array ambiguity."
   (let ((out (make-hash-table :test 'equal)))
@@ -398,9 +398,9 @@ false / absent, never an empty-array ambiguity."
 Any non-zero exit -- missing field, null prompt, or any other contract
 violation -- signals GATE-FAILURE unconditionally. Deliberately does NOT
 reuse gate.lisp's NICKEL-CONTRACT-VIOLATION-P/PROTOCOL-INVARIANT-VIOLATION
-pairing: per P6, that classifier's substring checks also match ordinary
+pairing: that classifier's substring checks also match ordinary
 boundary insufficiency, which would mislabel a per-node-recoverable defect
-as a campaign-halting one (Decision Rights, Resolved; C3)."
+as a campaign-halting one."
   (let* ((contract-path (namestring (truename (librecode-meta.gate::resolve-gate-path "contracts/ibc-boundary.ncl"))))
          (json-text (com.inuoe.jzon:stringify (coerce-json-array-fields json-hash-table)))
          (temp-path (uiop:merge-pathnames*
@@ -429,7 +429,7 @@ as a campaign-halting one (Decision Rights, Resolved; C3)."
 (defun gate-check-boundary (boundary)
   "The pre-dispatch sufficiency gate's entry point: serialize BOUNDARY and
 run it through RUN-BOUNDARY-CONTRACT-GATE. Returns T on a passing grant;
-signals GATE-FAILURE on any contract violation (Decision Rights, Resolved)."
+signals GATE-FAILURE on any contract violation."
   (run-boundary-contract-gate (boundary->json-hash-table boundary)))
 
 (defun run-node-execution (campaign node journal-stream)
@@ -445,7 +445,7 @@ signals GATE-FAILURE on any contract violation (Decision Rights, Resolved)."
                        :provider "mock-provider"
                        :model "mock-model"
                        :max-steps 10)))
-    ;; 0. Pre-dispatch sufficiency gate (C1): a non-nil boundary MUST pass
+    ;; 0. Pre-dispatch sufficiency gate: a non-nil boundary MUST pass
     ;; contracts/ibc-boundary.ncl before any worktree/harness action for
     ;; this node is reached. A nil boundary is the existing goal-fallback
     ;; path and is untouched (gate-check-boundary is simply not called).
