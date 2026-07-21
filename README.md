@@ -115,11 +115,18 @@ development.
 Inside the Nix shell (`shell.nix` provides SBCL and dependencies):
 
 ```
-just build   # compile all systems
-just test    # FiveAM + check-it suite
-just repl    # interactive REPL with everything loaded
-just demo    # end-to-end campaign demo against local Ollama
+just build       # compile all systems
+just test        # FiveAM + check-it suite
+just repl        # interactive REPL with everything loaded
+just repl-drive  # REPL loaded to charter and drive a real campaign
+just demo        # end-to-end campaign demo against local Ollama
 ```
+
+`just repl-drive` is the native (non-TUI) way to charter and drive one real
+campaign end to end from the REPL — build a DAG, dispatch it against a real
+provider, and watch deposits, gates, and the journal as they land. It's a
+library, not a script: see `demo/repl-drive.lisp`'s header for the full
+interactive session recipe.
 
 ## Documentation
 

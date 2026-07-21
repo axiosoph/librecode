@@ -33,8 +33,8 @@ reaching it via inherited environment (never argv), must configure the
 session with :auth and cause execute-provider-turn to send an outbound
 Authorization: Bearer <token> header to the session's configured
 (non-default) endpoint."
-  (let ((session-id "n4-auth-reach-session")
-        (api-token "n4-integration-secret-token-do-not-log")
+  (let ((session-id "auth-reach-session")
+        (api-token "integration-secret-token-do-not-log")
         (request-headers nil))
     (librecode-test.event-store::with-tmp-sandbox (dir)
       (let* ((target-dir (uiop:merge-pathnames* "target/" dir))
@@ -168,7 +168,7 @@ Authorization: Bearer <token> header to the session's configured
 ;;; - Loopback-classification boundary exercised: "example.com" (clearly
 ;;;   non-loopback) vs "127.0.0.1" (the existing suite's loopback default).
 
-(defun n7-insert-session-state (db session-id)
+(defun insert-session-state (db session-id)
   "Minimal session_state row -- mirrors the setup already used by
 test-generic-provider-configuration in provider-tests.lisp; execute-provider-turn
 only needs this row to resolve an agent-id and does not require
@@ -178,7 +178,7 @@ session_history/context_epoch rows for a bare turn."
      VALUES (?, ?, 1, 'active', ?)"
     session-id "agent-1" (librecode-runner.event-store::current-timestamp-ms)))
 
-(test test-n7-credential-redacted-at-rest-live-header-intact
+(test test-credential-redacted-at-rest-live-header-intact
   "After configure-session commits a real token, neither
 event_log.payload for the :session-provider-configured event nor the
 projected session_provider_config.auth column may contain that token's
@@ -186,24 +186,24 @@ cleartext -- checked before any turn runs, so this is purely an at-rest
 property. A live same-process turn immediately afterward must still send
 the correct `Authorization: Bearer <token>` header: redaction must not
 break the authenticated path it protects."
-  (let ((session-id "n7-redaction-session")
-        (real-token "n7-real-secret-do-not-persist-at-rest")
+  (let ((session-id "redaction-session")
+        (real-token "real-secret-do-not-persist-at-rest")
         (request-headers nil))
     (librecode-test.event-store::with-tmp-sandbox (dir)
       (librecode-test.event-store::with-test-db (db dir)
-        (n7-insert-session-state db session-id)
+        (insert-session-state db session-id)
 
         (librecode-test.mock-provider:with-mock-provider
-            (port :path "/n7-redact-v1/chat/completions"
+            (port :path "/redact-v1/chat/completions"
                   :method :post
                   :responder (lambda (request call-index)
                                (declare (ignore call-index))
                                (setf request-headers (hunchentoot:headers-in request))
                                (list (list :content "Redaction turn works!"))))
-          (let ((base-url (format nil "http://127.0.0.1:~A/n7-redact-v1" port)))
+          (let ((base-url (format nil "http://127.0.0.1:~A/redact-v1" port)))
             (librecode-runner.provider:configure-session session-id
                                                           :base-url base-url
-                                                          :model "n7-redact-model"
+                                                          :model "redact-model"
                                                           :auth real-token)
 
             ;; At-rest, in BOTH durable sinks.
@@ -222,32 +222,32 @@ break the authenticated path it protects."
 
             ;; The SAME-process live turn must still authenticate.
             (let ((librecode-runner.protocol::*session-mailbox* (librecode-runner.protocol:make-mailbox)))
-              (librecode-runner.runner:execute-provider-turn session-id "unused-provider" "n7-redact-model"))
+              (librecode-runner.runner:execute-provider-turn session-id "unused-provider" "redact-model"))
 
             (is-true request-headers)
             (is (equal (format nil "Bearer ~A" real-token)
                        (cdr (assoc :authorization request-headers)))
                 "the live same-process turn must still send the correct Bearer token despite at-rest redaction")))))))
 
-(test test-n7-fail-safe-send-guard-refuses-non-loopback-nil-auth
+(test test-fail-safe-send-guard-refuses-non-loopback-nil-auth
   "execute-provider-turn with a resolved endpoint whose host is
 non-loopback (\"example.com\", not one of 127.*/localhost/::1) and nil
 session auth must refuse -- signal a condition, dispatch zero requests --
 rather than silently POSTing the full request body unauthenticated to a
 remote host. dexador:request is stubbed for this test's duration (see file
 header) so the assertion is network-free and deterministic."
-  (let ((session-id "n7-guard-refuse-session")
+  (let ((session-id "guard-refuse-session")
         (call-count 0)
         (refused nil)
         (refusal-condition nil)
         (original-request (fdefinition 'dexador:request)))
     (librecode-test.event-store::with-tmp-sandbox (dir)
       (librecode-test.event-store::with-test-db (db dir)
-        (n7-insert-session-state db session-id)
+        (insert-session-state db session-id)
 
         (librecode-runner.provider:configure-session session-id
                                                       :base-url "http://example.com/v1"
-                                                      :model "n7-guard-model"
+                                                      :model "guard-model"
                                                       :auth nil)
 
         (unwind-protect
@@ -259,7 +259,7 @@ header) so the assertion is network-free and deterministic."
                        (make-string-input-stream (format nil "data: [DONE]~%"))))
                (handler-case
                    (let ((librecode-runner.protocol::*session-mailbox* (librecode-runner.protocol:make-mailbox)))
-                     (librecode-runner.runner:execute-provider-turn session-id "unused-provider" "n7-guard-model"))
+                     (librecode-runner.runner:execute-provider-turn session-id "unused-provider" "guard-model"))
                  (error (c)
                    (setf refused t)
                    (setf refusal-condition c))))
@@ -274,34 +274,34 @@ header) so the assertion is network-free and deterministic."
         (is (= 0 call-count)
             "dexador:request must never be invoked once the fail-safe guard refuses a non-loopback, unauthenticated send")))))
 
-(test test-n7-fail-safe-send-guard-exempts-loopback-nil-auth
+(test test-fail-safe-send-guard-exempts-loopback-nil-auth
   "Non-regression companion to the fail-safe send guard refusal test above:
 the fail-safe guard must NOT fire for a loopback endpoint (127.0.0.1) even with nil auth, so
 test-provider-configuration-fallback-to-default and every other
 loopback-mock-based test keep passing unchanged. Unlike the refusal test,
 this exercises a real local mock round-trip rather than a dexador:request
 stub, since the point is proving the send still actually happens."
-  (let ((session-id "n7-loopback-exempt-session")
+  (let ((session-id "loopback-exempt-session")
         (request-headers nil))
     (librecode-test.event-store::with-tmp-sandbox (dir)
       (librecode-test.event-store::with-test-db (db dir)
-        (n7-insert-session-state db session-id)
+        (insert-session-state db session-id)
 
         (librecode-test.mock-provider:with-mock-provider
-            (port :path "/n7-loopback-v1/chat/completions"
+            (port :path "/loopback-v1/chat/completions"
                   :method :post
                   :responder (lambda (request call-index)
                                (declare (ignore call-index))
                                (setf request-headers (hunchentoot:headers-in request))
                                (list (list :content "Loopback unauth still works!"))))
-          (let ((base-url (format nil "http://127.0.0.1:~A/n7-loopback-v1" port)))
+          (let ((base-url (format nil "http://127.0.0.1:~A/loopback-v1" port)))
             (librecode-runner.provider:configure-session session-id
                                                           :base-url base-url
-                                                          :model "n7-loopback-model"
+                                                          :model "loopback-model"
                                                           :auth nil)
 
             (let ((librecode-runner.protocol::*session-mailbox* (librecode-runner.protocol:make-mailbox)))
-              (librecode-runner.runner:execute-provider-turn session-id "unused-provider" "n7-loopback-model"))
+              (librecode-runner.runner:execute-provider-turn session-id "unused-provider" "loopback-model"))
 
             (is-true request-headers
                      "the fail-safe guard must not fire for a loopback endpoint even with nil auth")
@@ -353,7 +353,7 @@ stub, since the point is proving the send still actually happens."
 ;;;   above by construction (userinfo is now correctly parsed out of the
 ;;;   host in every case) rather than by accretion of ad hoc checks.
 
-(test test-n7-loopback-bypass-prefix-match-refused
+(test test-loopback-bypass-prefix-match-refused
   "The loopback classifier must not treat a host that merely STARTS WITH the
 literal prefix \"127.\" as loopback -- \"127.evil.com\" is not in
 127.0.0.0/8, so an unauthenticated send to it must be refused exactly like
@@ -361,18 +361,18 @@ any other non-loopback host. This is the exact bypass a decorrelated
 reviewer demonstrated against (string= host \"127.\" :end1 4): that
 prefix check returns T for this host, so pre-fix the guard silently
 exempted it and dexador:request would have been invoked."
-  (let ((session-id "n7-loopback-bypass-session")
+  (let ((session-id "loopback-bypass-session")
         (call-count 0)
         (refused nil)
         (refusal-condition nil)
         (original-request (fdefinition 'dexador:request)))
     (librecode-test.event-store::with-tmp-sandbox (dir)
       (librecode-test.event-store::with-test-db (db dir)
-        (n7-insert-session-state db session-id)
+        (insert-session-state db session-id)
 
         (librecode-runner.provider:configure-session session-id
                                                       :base-url "http://127.evil.com/v1"
-                                                      :model "n7-bypass-model"
+                                                      :model "bypass-model"
                                                       :auth nil)
 
         (unwind-protect
@@ -384,7 +384,7 @@ exempted it and dexador:request would have been invoked."
                        (make-string-input-stream (format nil "data: [DONE]~%"))))
                (handler-case
                    (let ((librecode-runner.protocol::*session-mailbox* (librecode-runner.protocol:make-mailbox)))
-                     (librecode-runner.runner:execute-provider-turn session-id "unused-provider" "n7-bypass-model"))
+                     (librecode-runner.runner:execute-provider-turn session-id "unused-provider" "bypass-model"))
                  (error (c)
                    (setf refused t)
                    (setf refusal-condition c))))
@@ -399,25 +399,25 @@ exempted it and dexador:request would have been invoked."
         (is (= 0 call-count)
             "dexador:request must never be invoked once the guard correctly classifies \"127.evil.com\" as non-loopback")))))
 
-(test test-n7-loopback-bypass-userinfo-prefix-refused
+(test test-loopback-bypass-userinfo-prefix-refused
   "Bypass variant of the prefix-match finding above: a base-url of
 \"http://127.0.0.1@evil.com/v1\" carries \"127.0.0.1\" as bare userinfo (no
 port-like colon) ahead of the real host. QURI:URI-HOST -- the same parser
 DEXADOR uses to open the connection -- correctly strips the userinfo and
 resolves this to host \"evil.com\", the actual destination; the guard must
 refuse it as non-loopback and never invoke dexador:request."
-  (let ((session-id "n7-loopback-userinfo-bypass-session")
+  (let ((session-id "loopback-userinfo-bypass-session")
         (call-count 0)
         (refused nil)
         (refusal-condition nil)
         (original-request (fdefinition 'dexador:request)))
     (librecode-test.event-store::with-tmp-sandbox (dir)
       (librecode-test.event-store::with-test-db (db dir)
-        (n7-insert-session-state db session-id)
+        (insert-session-state db session-id)
 
         (librecode-runner.provider:configure-session session-id
                                                       :base-url "http://127.0.0.1@evil.com/v1"
-                                                      :model "n7-userinfo-bypass-model"
+                                                      :model "userinfo-bypass-model"
                                                       :auth nil)
 
         (unwind-protect
@@ -429,7 +429,7 @@ refuse it as non-loopback and never invoke dexador:request."
                        (make-string-input-stream (format nil "data: [DONE]~%"))))
                (handler-case
                    (let ((librecode-runner.protocol::*session-mailbox* (librecode-runner.protocol:make-mailbox)))
-                     (librecode-runner.runner:execute-provider-turn session-id "unused-provider" "n7-userinfo-bypass-model"))
+                     (librecode-runner.runner:execute-provider-turn session-id "unused-provider" "userinfo-bypass-model"))
                  (error (c)
                    (setf refused t)
                    (setf refusal-condition c))))
@@ -447,7 +447,7 @@ refuse it as non-loopback and never invoke dexador:request."
         (is (= 0 call-count)
             "dexador:request must never be invoked once the guard correctly classifies the userinfo-prefixed host as non-loopback")))))
 
-(test test-n7-loopback-bypass-userinfo-colon-port-refused
+(test test-loopback-bypass-userinfo-colon-port-refused
   "Third, more serious bypass variant against the same hand-rolled
 URL-HOST that the first two exploited: a base-url of
 \"http://127.0.0.1:secretpass@evil.com/v1\" places a COLON inside the
@@ -462,18 +462,18 @@ refuse this as non-loopback and never invoke dexador:request, or an
 unauthenticated request (full body, no Authorization header) would reach
 an arbitrary attacker-controlled host believing it was talking to
 loopback."
-  (let ((session-id "n7-loopback-userinfo-colon-port-bypass-session")
+  (let ((session-id "loopback-userinfo-colon-port-bypass-session")
         (call-count 0)
         (refused nil)
         (refusal-condition nil)
         (original-request (fdefinition 'dexador:request)))
     (librecode-test.event-store::with-tmp-sandbox (dir)
       (librecode-test.event-store::with-test-db (db dir)
-        (n7-insert-session-state db session-id)
+        (insert-session-state db session-id)
 
         (librecode-runner.provider:configure-session session-id
                                                       :base-url "http://127.0.0.1:secretpass@evil.com/v1"
-                                                      :model "n7-userinfo-colon-port-bypass-model"
+                                                      :model "userinfo-colon-port-bypass-model"
                                                       :auth nil)
 
         (unwind-protect
@@ -485,7 +485,7 @@ loopback."
                        (make-string-input-stream (format nil "data: [DONE]~%"))))
                (handler-case
                    (let ((librecode-runner.protocol::*session-mailbox* (librecode-runner.protocol:make-mailbox)))
-                     (librecode-runner.runner:execute-provider-turn session-id "unused-provider" "n7-userinfo-colon-port-bypass-model"))
+                     (librecode-runner.runner:execute-provider-turn session-id "unused-provider" "userinfo-colon-port-bypass-model"))
                  (error (c)
                    (setf refused t)
                    (setf refusal-condition c))))
@@ -503,7 +503,7 @@ loopback."
         (is (= 0 call-count)
             "dexador:request must never be invoked once the guard correctly classifies the userinfo-colon-port bypass host as non-loopback")))))
 
-(test test-n7-toctou-guard-refires-on-backup-provider-retry
+(test test-toctou-guard-refires-on-backup-provider-retry
   "The fail-safe send guard must not be a one-shot check performed only
 before the retry loop starts: RETRY-WITH-BACKUP-PROVIDER can swap in an
 arbitrary caller-supplied URL between iterations, so the guard must
@@ -518,7 +518,7 @@ made. Network-free and deterministic: DEXADOR:REQUEST (EXECUTE-PROVIDER-TURN's
 underlying call -- see the redirect-suppression section below for why it
 is REQUEST and not POST) is stubbed for this test's duration, same
 pattern as the refusal test above."
-  (let ((session-id "n7-toctou-session")
+  (let ((session-id "toctou-session")
         (call-count 0)
         (retried nil)
         (refused nil)
@@ -526,11 +526,11 @@ pattern as the refusal test above."
         (original-request (fdefinition 'dexador:request)))
     (librecode-test.event-store::with-tmp-sandbox (dir)
       (librecode-test.event-store::with-test-db (db dir)
-        (n7-insert-session-state db session-id)
+        (insert-session-state db session-id)
 
         (librecode-runner.provider:configure-session session-id
                                                       :base-url "http://127.0.0.1:1/v1"
-                                                      :model "n7-toctou-model"
+                                                      :model "toctou-model"
                                                       :auth nil)
 
         (unwind-protect
@@ -539,7 +539,7 @@ pattern as the refusal test above."
                      (lambda (&rest args)
                        (declare (ignore args))
                        (incf call-count)
-                       (error "n7-toctou-forced-first-attempt-failure")))
+                       (error "toctou-forced-first-attempt-failure")))
                (handler-case
                    (handler-bind
                        ((librecode-runner.conditions:provider-error
@@ -550,7 +550,7 @@ pattern as the refusal test above."
                               (invoke-restart 'librecode-runner.conditions:retry-with-backup-provider
                                                "http://example.com/v1")))))
                      (let ((librecode-runner.protocol::*session-mailbox* (librecode-runner.protocol:make-mailbox)))
-                       (librecode-runner.runner:execute-provider-turn session-id "unused-provider" "n7-toctou-model")))
+                       (librecode-runner.runner:execute-provider-turn session-id "unused-provider" "toctou-model")))
                  (error (c)
                    (setf refused t)
                    (setf refusal-condition c))))
@@ -601,7 +601,7 @@ pattern as the refusal test above."
 ;;; actual security property (the second host is never contacted) rather
 ;;; than only pinning a call argument.
 
-(test test-n7-redirect-to-second-host-never-followed
+(test test-redirect-to-second-host-never-followed
   "A real local loopback HTTP server (guard-exempt, nil auth) answers with
 an actual 302 and a Location header pointing at a SECOND real local
 server standing in for an attacker-controlled remote host. The load-bearing
@@ -611,28 +611,28 @@ not required to succeed; an empty response body is a legitimate, if
 degenerate, outcome), the one property that must hold is that the full
 unauthenticated request body is never re-sent to wherever the redirect
 points."
-  (let ((session-id "n7-redirect-roundtrip-session")
+  (let ((session-id "redirect-roundtrip-session")
         (primary-call-count 0)
         (secondary-call-count 0)
         (port-a (librecode-test.mock-provider:get-free-port))
         (port-b (librecode-test.mock-provider:get-free-port)))
     (librecode-test.event-store::with-tmp-sandbox (dir)
       (librecode-test.event-store::with-test-db (db dir)
-        (n7-insert-session-state db session-id)
+        (insert-session-state db session-id)
 
         (let* ((acceptor-a (make-instance 'hunchentoot:easy-acceptor :port port-a :address "127.0.0.1"))
                (acceptor-b (make-instance 'hunchentoot:easy-acceptor :port port-b :address "127.0.0.1"))
                (dispatcher-a
                  (lambda (request)
-                   (when (and (equal (hunchentoot:script-name request) "/n7-redirect-v1/chat/completions")
+                   (when (and (equal (hunchentoot:script-name request) "/redirect-v1/chat/completions")
                               (= (hunchentoot:acceptor-port (hunchentoot:request-acceptor request)) port-a))
                      (lambda ()
                        (incf primary-call-count)
                        (hunchentoot:redirect
-                        (format nil "http://127.0.0.1:~A/n7-redirect-target/chat/completions" port-b))))))
+                        (format nil "http://127.0.0.1:~A/redirect-target/chat/completions" port-b))))))
                (dispatcher-b
                  (lambda (request)
-                   (when (and (equal (hunchentoot:script-name request) "/n7-redirect-target/chat/completions")
+                   (when (and (equal (hunchentoot:script-name request) "/redirect-target/chat/completions")
                               (= (hunchentoot:acceptor-port (hunchentoot:request-acceptor request)) port-b))
                      (lambda ()
                        (incf secondary-call-count)
@@ -652,8 +652,8 @@ points."
                  (hunchentoot:start acceptor-b)
 
                  (librecode-runner.provider:configure-session session-id
-                                                               :base-url (format nil "http://127.0.0.1:~A/n7-redirect-v1" port-a)
-                                                               :model "n7-redirect-roundtrip-model"
+                                                               :base-url (format nil "http://127.0.0.1:~A/redirect-v1" port-a)
+                                                               :model "redirect-roundtrip-model"
                                                                :auth nil)
 
                  ;; EXECUTE-PROVIDER-TURN is not required to succeed against an
@@ -661,7 +661,7 @@ points."
                  ;; (secondary-call-count below) is load-bearing.
                  (ignore-errors
                   (let ((librecode-runner.protocol::*session-mailbox* (librecode-runner.protocol:make-mailbox)))
-                    (librecode-runner.runner:execute-provider-turn session-id "unused-provider" "n7-redirect-roundtrip-model"))))
+                    (librecode-runner.runner:execute-provider-turn session-id "unused-provider" "redirect-roundtrip-model"))))
             (hunchentoot:stop acceptor-a)
             (hunchentoot:stop acceptor-b)
             (setf hunchentoot:*dispatch-table* (delete dispatcher-a hunchentoot:*dispatch-table*))
