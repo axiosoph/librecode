@@ -432,18 +432,47 @@ run it through RUN-BOUNDARY-CONTRACT-GATE. Returns T on a passing grant;
 signals GATE-FAILURE on any contract violation."
   (run-boundary-contract-gate (boundary->json-hash-table boundary)))
 
+(defvar *provider-url-override* nil
+  "Internal, unexported override for the real provider base-url threaded
+into a dispatched node's harness-spawn config plist, read by
+RUN-NODE-EXECUTION below. NIL (the default, and the value every existing
+call site leaves it at) means no override is in play -- the config plist's
+:provider-url key carries NIL exactly as it always implicitly did, so a
+harness-spawn method that never reads that key sees no behavior change at
+all. RUN-NODE-EXECUTION dispatches each node's own work on a fresh worker
+thread (EXECUTE-NODE-BATCH's BT:MAKE-THREAD calls), which does not inherit
+a calling thread's dynamic LET bindings -- so a caller (e.g. a REPL charter
+session's driver function) MUST set this via SETF under UNWIND-PROTECT, not
+LET, for a dispatched node's worker thread to see the override at all.
+Never holds a credential -- the real provider token reaches the dispatched
+child exclusively through RUN-CHILD's own environment-variable sourcing.")
+
+(defvar *model-override* nil
+  "Internal, unexported override for the real provider model threaded into
+a dispatched node's harness-spawn config plist, read by RUN-NODE-EXECUTION
+below. NIL (the default) preserves the existing \"mock-model\" literal
+unchanged for every call site that never binds this. Same SETF-not-LET
+caveat as *PROVIDER-URL-OVERRIDE* above applies -- worker-thread dispatch
+never sees a calling thread's LET binding.")
+
 (defun run-node-execution (campaign node journal-stream)
   (let* ((node-id (campaign-node-id node))
          (harness-type (campaign-node-harness-type node))
          (worktree-dir (get-node-worktree-dir campaign node))
          (repo-path (campaign-repository-path campaign))
          (db-path "librecode.db")
-         ;; Prepare the config for harness-spawn
+         ;; Prepare the config for harness-spawn. :provider is an inert
+         ;; label only harness-librecode.lisp's (out-of-surface,
+         ;; auth-free) path branches on -- real reach turns entirely on
+         ;; :provider-url/:model, which *PROVIDER-URL-OVERRIDE*/
+         ;; *MODEL-OVERRIDE* let a caller (e.g. a REPL charter session)
+         ;; set to real values without disturbing this literal.
          (config (list :id node-id
                        :db-path db-path
                        :workspace-root worktree-dir
                        :provider "mock-provider"
-                       :model "mock-model"
+                       :provider-url *provider-url-override*
+                       :model (or *model-override* "mock-model")
                        :max-steps 10)))
     ;; 0. Pre-dispatch sufficiency gate: a non-nil boundary MUST pass
     ;; contracts/ibc-boundary.ncl before any worktree/harness action for

@@ -24,5 +24,4 @@
        (:file "campaign")
        (:file "gate")
        (:file "council")
-       (:file "conditioning")
-       (:file "metaharness")))))))
+       (:file "conditioning")))))))
