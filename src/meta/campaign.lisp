@@ -9,6 +9,22 @@
 ;;; campaign-node and campaign-dag structs
 ;;; ============================================================================
 
+(defstruct boundary
+  "Structured dispatch-boundary grant -- mirrors contracts/ibc-boundary.ncl
+field-for-field. The one representation of a node's dispatch-time
+authorization; distinct from REWORK-DIAGNOSTIC below, which is an
+ephemeral, failure-triggered artifact, not a second boundary."
+  (may-commit nil :type boolean)       ; Whether this dispatch grants commit authorization
+  (file-surface nil :type list)        ; Paths/globs this dispatch is authorized to modify
+  (halt-conditions nil :type list)     ; Conditions under which the dispatch must halt and report
+  (prompt nil :type (or null string))) ; The base instructions the harness reads at dispatch
+
+(defun make-boundary-from-prompt (prompt)
+  "Convenience constructor for call sites that only care about the prompt
+text; the other three fields default inert/empty (never production-shaped),
+so a test stub is never mistaken for a real dispatch grant."
+  (make-boundary :prompt prompt :may-commit nil :file-surface nil :halt-conditions nil))
+
 (defstruct campaign-node
   "Represents an execution unit within a campaign DAG."
   (id nil :type (or null string))
@@ -21,7 +37,22 @@
   (deposit nil)                        ; librecode-model deposit struct (or nil, never landed), threaded from the fold
   (harness-type nil :type symbol)      ; Class name of harness (e.g., 'harness-opencode)
   (harness-instance nil)               ; Reference to the active CLOS harness-instance
-  (ibc nil :type (or null string)))    ; Initial Boundary Condition text (instructions/goals)
+  (boundary nil :type (or null boundary))          ; Structured dispatch-boundary grant (contracts/ibc-boundary.ncl)
+  (rework-diagnostic nil :type (or null string)))  ; Formatted failure-trace text from a prior rework, decomplected from BOUNDARY
+
+(defun campaign-node-effective-prompt (node)
+  "Compose the dispatch prompt for NODE: the boundary's prompt (or the
+node's goal, if no boundary is set), augmented with any rework-diagnostic
+from a prior in-process failure -- the walker keeps its full original
+authorization/instructions on retry, now augmented with failure context
+instead of losing them to it."
+  (let ((base (if (campaign-node-boundary node)
+                   (boundary-prompt (campaign-node-boundary node))
+                   (campaign-node-goal node)))
+        (diagnostic (campaign-node-rework-diagnostic node)))
+    (if diagnostic
+        (format nil "~A~%~%~A" base diagnostic)
+        base)))
 
 (defstruct (campaign-dag
             (:constructor %make-campaign-dag))
@@ -320,19 +351,136 @@ or if any dependency is unresolved."
           (push (list node) batches))))
     (nreverse (mapcar #'identity batches))))
 
+;;; ============================================================================
+;;; IBC-sufficiency gate -- validates a campaign-node's
+;;; structured BOUNDARY against contracts/ibc-boundary.ncl before any
+;;; harness action for that node. A nil boundary (the pre-existing
+;;; goal-fallback path, campaign-node-effective-prompt above) is out of
+;;; scope for this gate; the call site in run-node-execution below only
+;;; invokes it when a boundary is actually set.
+;;; ============================================================================
+
+(defun boundary->json-hash-table (boundary)
+  "Serialize BOUNDARY's 4 kebab-case slots to a hash-table keyed by
+contracts/ibc-boundary.ncl's exact snake_case field names -- 1:1, no
+extra/missing keys. NIL
+may-commit/file-surface/halt-conditions round-trip to JSON false/[]/[]
+(all valid per the contract); only a NIL prompt has no valid counterpart,
+left for the gate itself to reject."
+  (let ((ht (make-hash-table :test 'equal)))
+    (setf (gethash "may_commit" ht) (boundary-may-commit boundary))
+    (setf (gethash "file_surface" ht) (boundary-file-surface boundary))
+    (setf (gethash "halt_conditions" ht) (boundary-halt-conditions boundary))
+    (setf (gethash "prompt" ht) (boundary-prompt boundary))
+    ht))
+
+(defun coerce-json-array-fields (hash-table)
+  "Return a fresh hash-table equivalent to HASH-TABLE, except its
+file_surface/halt_conditions values (when present) are coerced to vectors.
+com.inuoe.jzon:stringify cannot distinguish a Lisp NIL meaning \"empty
+list\" from NIL meaning \"boolean false\", so an empty FILE-SURFACE/
+HALT-CONDITIONS would otherwise round-trip to JSON `false` instead of `[]`
+-- which contracts/ibc-boundary.ncl's Array String type rejects.
+may_commit/prompt pass through untouched: their NIL is genuinely boolean
+false / absent, never an empty-array ambiguity."
+  (let ((out (make-hash-table :test 'equal)))
+    (maphash (lambda (k v)
+               (setf (gethash k out)
+                     (if (member k '("file_surface" "halt_conditions") :test #'string=)
+                         (coerce v 'vector)
+                         v)))
+             hash-table)
+    out))
+
+(defun run-boundary-contract-gate (json-hash-table)
+  "Validate JSON-HASH-TABLE against contracts/ibc-boundary.ncl by shelling
+`nickel export <tmp>.json --apply-contract contracts/ibc-boundary.ncl`.
+Any non-zero exit -- missing field, null prompt, or any other contract
+violation -- signals GATE-FAILURE unconditionally. Deliberately does NOT
+reuse gate.lisp's NICKEL-CONTRACT-VIOLATION-P/PROTOCOL-INVARIANT-VIOLATION
+pairing: that classifier's substring checks also match ordinary
+boundary insufficiency, which would mislabel a per-node-recoverable defect
+as a campaign-halting one."
+  (let* ((contract-path (namestring (truename (librecode-meta.gate::resolve-gate-path "contracts/ibc-boundary.ncl"))))
+         (json-text (com.inuoe.jzon:stringify (coerce-json-array-fields json-hash-table)))
+         (temp-path (uiop:merge-pathnames*
+                     (format nil "~A.json" (symbol-name (gensym "ibc-boundary-gate-")))
+                     (uiop:ensure-directory-pathname (uiop:temporary-directory)))))
+    (unwind-protect
+         (progn
+           (with-open-file (stream temp-path :direction :output
+                                              :if-exists :supersede
+                                              :if-does-not-exist :create)
+             (write-string json-text stream))
+           (let* ((nickel-bin (librecode-meta.gate::resolve-absolute-binary "nickel"))
+                  (cmd-list (list nickel-bin "export" (namestring temp-path)
+                                  "--apply-contract" contract-path)))
+             (multiple-value-bind (stdout stderr exit-code)
+                 (librecode-meta.gate::run-program-capture cmd-list)
+               (declare (ignore stdout))
+               (if (= exit-code 0)
+                   t
+                   (error 'librecode-runner.conditions:gate-failure
+                          :message stderr
+                          :command (format nil "~{~A~^ ~}" cmd-list)
+                          :exit-code exit-code)))))
+      (uiop:delete-file-if-exists temp-path))))
+
+(defun gate-check-boundary (boundary)
+  "The pre-dispatch sufficiency gate's entry point: serialize BOUNDARY and
+run it through RUN-BOUNDARY-CONTRACT-GATE. Returns T on a passing grant;
+signals GATE-FAILURE on any contract violation."
+  (run-boundary-contract-gate (boundary->json-hash-table boundary)))
+
+(defvar *provider-url-override* nil
+  "Internal, unexported override for the real provider base-url threaded
+into a dispatched node's harness-spawn config plist, read by
+RUN-NODE-EXECUTION below. NIL (the default, and the value every existing
+call site leaves it at) means no override is in play -- the config plist's
+:provider-url key carries NIL exactly as it always implicitly did, so a
+harness-spawn method that never reads that key sees no behavior change at
+all. RUN-NODE-EXECUTION dispatches each node's own work on a fresh worker
+thread (EXECUTE-NODE-BATCH's BT:MAKE-THREAD calls), which does not inherit
+a calling thread's dynamic LET bindings -- so a caller (e.g. a REPL charter
+session's driver function) MUST set this via SETF under UNWIND-PROTECT, not
+LET, for a dispatched node's worker thread to see the override at all.
+Never holds a credential -- the real provider token reaches the dispatched
+child exclusively through RUN-CHILD's own environment-variable sourcing.")
+
+(defvar *model-override* nil
+  "Internal, unexported override for the real provider model threaded into
+a dispatched node's harness-spawn config plist, read by RUN-NODE-EXECUTION
+below. NIL (the default) preserves the existing \"mock-model\" literal
+unchanged for every call site that never binds this. Same SETF-not-LET
+caveat as *PROVIDER-URL-OVERRIDE* above applies -- worker-thread dispatch
+never sees a calling thread's LET binding.")
+
 (defun run-node-execution (campaign node journal-stream)
   (let* ((node-id (campaign-node-id node))
          (harness-type (campaign-node-harness-type node))
          (worktree-dir (get-node-worktree-dir campaign node))
          (repo-path (campaign-repository-path campaign))
          (db-path "librecode.db")
-         ;; Prepare the config for harness-spawn
+         ;; Prepare the config for harness-spawn. :provider is an inert
+         ;; label only harness-librecode.lisp's (out-of-surface,
+         ;; auth-free) path branches on -- real reach turns entirely on
+         ;; :provider-url/:model, which *PROVIDER-URL-OVERRIDE*/
+         ;; *MODEL-OVERRIDE* let a caller (e.g. a REPL charter session)
+         ;; set to real values without disturbing this literal.
          (config (list :id node-id
                        :db-path db-path
                        :workspace-root worktree-dir
                        :provider "mock-provider"
-                       :model "mock-model"
+                       :provider-url *provider-url-override*
+                       :model (or *model-override* "mock-model")
                        :max-steps 10)))
+    ;; 0. Pre-dispatch sufficiency gate: a non-nil boundary MUST pass
+    ;; contracts/ibc-boundary.ncl before any worktree/harness action for
+    ;; this node is reached. A nil boundary is the existing goal-fallback
+    ;; path and is untouched (gate-check-boundary is simply not called).
+    (when (campaign-node-boundary node)
+      (gate-check-boundary (campaign-node-boundary node)))
+
     ;; 1. Prepare worktree/workspace
     (prepare-node-worktree campaign node worktree-dir)
     (librecode-meta.harness:harness-prepare-workspace harness-type repo-path worktree-dir)
@@ -349,8 +497,8 @@ or if any dependency is unresolved."
       
       (unwind-protect
            (progn
-             ;; Prompt the harness with the goal/ibc
-             (librecode-meta.harness:harness-prompt harness (or (campaign-node-ibc node) (campaign-node-goal node)) :mode :steer)
+             ;; Prompt the harness with the composed boundary/rework-diagnostic prompt
+             (librecode-meta.harness:harness-prompt harness (campaign-node-effective-prompt node) :mode :steer)
              
              ;; Monitor loop
              (loop
@@ -446,9 +594,9 @@ or if any dependency is unresolved."
                               ((= count 1)
                                (setf (campaign-node-status failed-node) :pending))
                               ((= count 2)
-                               (setf (campaign-node-ibc failed-node)
+                               (setf (campaign-node-rework-diagnostic failed-node)
                                      (format nil "Error trace from failure: ~A" (princ-to-string failed-cond)))
-                               (safe-write-journal-entry campaign journal-stream (list :node-rework node-id (campaign-node-ibc failed-node)))
+                               (safe-write-journal-entry campaign journal-stream (list :node-rework node-id (campaign-node-rework-diagnostic failed-node)))
                                (setf (campaign-node-status failed-node) :rework))
                               ((and (>= count 3) (< count (1- limit)))
                                (setf (campaign-node-status failed-node) :skipped)

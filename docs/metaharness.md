@@ -9,8 +9,8 @@
 > **DEFERRED**. Per-section tags below mark each.
 >
 > **Note on the supervisor entry point:** the actual campaign supervisor is
-> `run-campaign` in `campaign.lisp`. The `metaharness.lisp` `start-metaharness` /
-> `stop-metaharness` functions are stubs that return `nil`.
+> `run-campaign` in `campaign.lisp`. `metaharness.lisp` itself has been removed —
+> it was a dead stub with no call sites, fully superseded by `run-campaign`.
 
 The Metaharness (`librecode-meta`) is the parent supervisor that coordinates multi-agent campaigns across physical process boundaries, establishing a **"Team of Teams"** topology. 
 

@@ -23,6 +23,79 @@ without unwinding the failing worker's stack -- set from *worker-marker*'s
 value as observed at the restart's invocation site. Never surfaced as tool
 output; inspect via the internal symbol from tests only.")
 
+(define-condition unauthenticated-send-refused (error)
+  ((endpoint :initarg :endpoint :reader unauthenticated-send-refused-endpoint
+             :initform "unknown" :type string)
+   (host :initarg :host :reader unauthenticated-send-refused-host
+         :initform "unknown" :type string))
+  (:report (lambda (condition stream)
+             (format stream "Unauthenticated Send Refused [host: ~A]: refusing to send an unauthenticated request to a non-loopback endpoint ~S.~%~
+                             What failed: fail-safe send guard in EXECUTE-PROVIDER-TURN.~%~
+                             Why: no session auth is configured and the resolved endpoint is not loopback -- sending would leak the full request body unauthenticated to a remote host.~%~
+                             Where: EXECUTE-PROVIDER-TURN, before any dexador:post."
+                     (unauthenticated-send-refused-host condition)
+                     (unauthenticated-send-refused-endpoint condition))))
+  (:documentation "Signal that EXECUTE-PROVIDER-TURN refused to dispatch a request because
+the resolved endpoint host is non-loopback and no session auth is configured. Fail-closed:
+no request is ever sent. Unexported (packages.lisp is outside this file's declared surface) --
+reached by tests via the librecode-runner.runner:: internal-access form."))
+
+(defun url-host (url)
+  "Extract the bare host component from URL via QURI:URI-HOST -- the same
+RFC 3986 authority parser DEXADOR itself uses to resolve the TCP connection
+target, so this can never diverge from where a request actually goes (unlike
+a hand-rolled scanner, which previously misread userinfo syntax such as
+\"127.0.0.1:secretpass@evil.com\" as host \"127.0.0.1\" with a bogus port,
+when the real destination -- and what QURI/DEXADOR agree on -- is
+\"evil.com\"). May return a bracketed IPv6 literal (e.g. \"[::1]\"); callers
+compare against LOOPBACK-HOST-P, which strips brackets itself. Returns NIL
+if URL cannot be parsed as a URI; callers must treat NIL as definitively
+non-loopback (fail closed) rather than skip the check."
+  (handler-case (quri:uri-host (quri:uri url))
+    (error () nil)))
+
+(defun strip-ipv6-brackets (host)
+  "If HOST is a bracketed IPv6 literal (e.g. \"[::1]\"), return the bare
+literal with brackets removed; otherwise return HOST unchanged. HOST may be
+NIL, in which case NIL is returned."
+  (if (and host (plusp (length host))
+           (char= (char host 0) #\[)
+           (char= (char host (1- (length host))) #\]))
+      (subseq host 1 (1- (length host)))
+      host))
+
+(defun ipv4-dotted-quad-octets (host)
+  "Split HOST on '.' and return a list of octet strings, or NIL if HOST is
+not syntactically a clean 4-component dotted-quad IPv4 literal (each
+component non-empty, all-digit, and in 0-255). No DNS resolution is
+performed -- this is a purely syntactic check on the literal string."
+  (let ((parts (loop with start = 0
+                      for dot = (position #\. host :start start)
+                      collect (subseq host start dot)
+                      while dot
+                      do (setf start (1+ dot)))))
+    (when (and (= (length parts) 4)
+               (every (lambda (part)
+                        (and (plusp (length part))
+                             (every #'digit-char-p part)
+                             (<= 0 (parse-integer part) 255)))
+                      parts))
+      parts)))
+
+(defun loopback-host-p (host)
+  "T if HOST is a loopback address or hostname: 127.0.0.0/8, ::1, or localhost.
+The IPv4 check requires HOST to be a well-formed dotted-quad whose first
+octet is 127 -- a prefix match like \"127.evil.com\" starting with \"127.\"
+is NOT loopback and must not be misclassified as one. HOST may arrive
+bracketed (e.g. \"[::1]\"), QURI:URI-HOST's form for an IPv6 literal --
+brackets are stripped before comparison. HOST may also be NIL (URL-HOST
+could not parse the source URL); NIL is never loopback (fail closed)."
+  (let ((bare (strip-ipv6-brackets host)))
+    (or (and bare (string-equal bare "localhost"))
+        (and bare (string= bare "::1"))
+        (let ((octets (and bare (ipv4-dotted-quad-octets bare))))
+          (and octets (= (parse-integer (first octets)) 127))))))
+
 (defun get-latest-epoch-baseline (session-id)
   "Retrieve the latest baseline text from context_epoch read projection."
   (when (and (boundp 'librecode-runner.event-store:*db*)
@@ -536,6 +609,22 @@ Enforces that exactly one provider call is made. Returns t if continuation is al
     (loop
       (restart-case
           (let ((*provider-url* current-url))
+            ;; Fail-safe send guard: refuse an unauthenticated request to a
+            ;; non-loopback endpoint before any dexador:post is attempted.
+            ;; Loopback is exempt so mock/local-dev flows with no configured
+            ;; auth keep working. Re-checked on every loop iteration (not
+            ;; just once before the loop) because RETRY-WITH-BACKUP-PROVIDER
+            ;; can mutate CURRENT-URL -- and therefore *PROVIDER-URL* -- to
+            ;; an arbitrary caller-supplied URL between iterations; AUTH
+            ;; itself is fixed for the duration of this turn (sourced once
+            ;; from SESS-CONFIG above, never mutated by any restart), so
+            ;; re-checking it against the freshly-bound *PROVIDER-URL* is
+            ;; sufficient to close the gap.
+            (let ((current-host (url-host *provider-url*)))
+              (when (and (null auth) (not (loopback-host-p current-host)))
+                (error 'unauthenticated-send-refused
+                       :endpoint *provider-url*
+                       :host (or current-host "(unparseable)"))))
             (unless librecode-runner.event-store:*db*
               (error "No active database connection in *db*."))
             (librecode-runner.protocol:flush-mailbox librecode-runner.protocol:*session-mailbox*)
@@ -568,7 +657,17 @@ Enforces that exactly one provider call is made. Returns t if continuation is al
                    (request-body (com.inuoe.jzon:stringify
                                   (librecode-runner.event-store::coerce-to-hash-table request-plist)))
                    (dex-stream (handler-case
-                                   (dexador:post *provider-url*
+                                   ;; DEXADOR:POST's own lambda list has no
+                                   ;; MAX-REDIRECTS key (and no
+                                   ;; &ALLOW-OTHER-KEYS), so it cannot accept
+                                   ;; the override below at all -- passing it
+                                   ;; would signal an unknown-keyword error on
+                                   ;; every call. DEXADOR:REQUEST (which POST
+                                   ;; is itself defined in terms of) does
+                                   ;; accept it, so :METHOD :POST goes there
+                                   ;; directly instead.
+                                   (dexador:request *provider-url*
+                                                 :method :post
                                                  :headers (let ((h (list (cons "Content-Type" "application/json"))))
                                                             (when auth
                                                               (push (cons "Authorization" (format nil "Bearer ~A" auth)) h))
@@ -577,6 +676,16 @@ Enforces that exactly one provider call is made. Returns t if continuation is al
                                                  :want-stream t
                                                  :connect-timeout 10
                                                  :read-timeout 30
+                                                 ;; The fail-safe guard above validates only the
+                                                 ;; INITIAL host; DEXADOR defaults to following up
+                                                 ;; to 5 redirects on its own, so a guard-exempt
+                                                 ;; loopback endpoint could 3xx the connection to an
+                                                 ;; arbitrary remote host and DEXADOR would silently
+                                                 ;; follow, sending the full unauthenticated body
+                                                 ;; there. LLM completion endpoints have no
+                                                 ;; legitimate reason to redirect -- refuse to follow
+                                                 ;; any redirect at all.
+                                                 :max-redirects 0
                                                  :keep-alive nil)
                                  (dexador:http-request-failed (c)
                                    (let* ((body-raw (dexador:response-body c))

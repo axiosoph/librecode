@@ -129,7 +129,7 @@
                            :goal "Produce E2E artifact"
                            :file-surface '("e2e-artifact.txt")
                            :harness-type 'e2e-subprocess-harness
-                           :ibc "ibc-e2e"))
+                           :boundary (librecode-meta.campaign:make-boundary-from-prompt "ibc-e2e")))
                     (dag (librecode-meta.campaign:make-campaign-dag :nodes (list node) :shared-branch "master"))
                     (journal-file (uiop:merge-pathnames* "campaign-journal.lisp-expr" dir))
                     (workspace-dir (uiop:merge-pathnames* "workspace/" dir))
@@ -204,7 +204,7 @@
                            :goal "Produce E2E artifact"
                            :file-surface '("e2e-artifact.txt")
                            :harness-type 'e2e-subprocess-harness
-                           :ibc "ibc-e2e"))
+                           :boundary (librecode-meta.campaign:make-boundary-from-prompt "ibc-e2e")))
                     (dag (librecode-meta.campaign:make-campaign-dag :nodes (list node) :shared-branch "master"))
                     (journal-file (uiop:merge-pathnames* "campaign-journal.lisp-expr" dir))
                     (workspace-dir (uiop:merge-pathnames* "workspace/" dir))
@@ -250,7 +250,7 @@
                                    :goal "Produce E2E artifact"
                                    :file-surface '("e2e-artifact.txt")
                                    :harness-type 'e2e-subprocess-harness
-                                   :ibc "ibc-e2e"))
+                                   :boundary (librecode-meta.campaign:make-boundary-from-prompt "ibc-e2e")))
                         (dag-new (librecode-meta.campaign:make-campaign-dag :nodes (list node-new) :shared-branch "master"))
                         (campaign-new (make-instance 'librecode-meta.campaign:campaign
                                                      :dag dag-new
@@ -363,7 +363,7 @@ that drove it (premise p7-subprocess-harness-precedent-exists)."
                       :goal "Produce E2E artifact via a fail-then-correct bash step"
                       :file-surface '("e2e-artifact.txt")
                       :harness-type 'e2e-subprocess-harness
-                      :ibc "ibc-e2e-scenario"))
+                      :boundary (librecode-meta.campaign:make-boundary-from-prompt "ibc-e2e-scenario")))
                (dag (librecode-meta.campaign:make-campaign-dag :nodes (list node) :shared-branch "master"))
                (journal-file (uiop:merge-pathnames* "campaign-journal.lisp-expr" dir))
                (workspace-dir (uiop:merge-pathnames* "workspace/" dir))
@@ -410,7 +410,7 @@ order, and the run still lands correctly after resume."
                       :goal "Produce E2E artifact via a fail-then-correct bash step"
                       :file-surface '("e2e-artifact.txt")
                       :harness-type 'e2e-subprocess-harness
-                      :ibc "ibc-e2e-scenario-kr"))
+                      :boundary (librecode-meta.campaign:make-boundary-from-prompt "ibc-e2e-scenario-kr")))
                (dag (librecode-meta.campaign:make-campaign-dag :nodes (list node) :shared-branch "master"))
                (journal-file (uiop:merge-pathnames* "campaign-journal.lisp-expr" dir))
                (workspace-dir (uiop:merge-pathnames* "workspace/" dir))
@@ -454,7 +454,7 @@ order, and the run still lands correctly after resume."
                               :goal "Produce E2E artifact via a fail-then-correct bash step"
                               :file-surface '("e2e-artifact.txt")
                               :harness-type 'e2e-subprocess-harness
-                              :ibc "ibc-e2e-scenario-kr"))
+                              :boundary (librecode-meta.campaign:make-boundary-from-prompt "ibc-e2e-scenario-kr")))
                    (dag-new (librecode-meta.campaign:make-campaign-dag :nodes (list node-new) :shared-branch "master"))
                    (campaign-new (make-instance 'librecode-meta.campaign:campaign
                                                 :dag dag-new

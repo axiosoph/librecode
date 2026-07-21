@@ -9,6 +9,7 @@
                 #:campaign
                 #:make-campaign-node
                 #:campaign-node-status
+                #:make-boundary-from-prompt
                 #:make-campaign-dag
                 #:run-campaign
                 #:campaign-failure-counts)
@@ -63,7 +64,7 @@ which is strictly stronger than asserting a clean working tree."
                                      :goal "Always-failing subprocess node"
                                      :file-surface '("src/a.lisp")
                                      :harness-type 'failing-subprocess-harness
-                                     :ibc "ibc-subproc"))
+                                     :boundary (make-boundary-from-prompt "ibc-subproc")))
            (dag (make-campaign-dag :nodes (list node) :shared-branch "master"))
            (journal-file (uiop:merge-pathnames* "campaign-journal.lisp-expr" dir))
            (workspace-dir (uiop:merge-pathnames* "workspace/" dir))

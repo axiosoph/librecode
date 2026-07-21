@@ -1,0 +1,8 @@
+may_commit: true
+file_surface:
+  - "src/meta/campaign.lisp"
+  - "t/campaign-tests.lisp"
+halt_conditions:
+  - "a cited premise is refuted on re-verification"
+  - "no clean single-representation design survives the rework round-trip"
+prompt: "Implement the campaign-node boundary struct within the declared file_surface only."

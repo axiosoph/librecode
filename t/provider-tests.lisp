@@ -95,7 +95,8 @@
                 (let ((payload (com.inuoe.jzon:parse payload-str)))
                   (is (equal custom-base-url (gethash "base-url" payload)))
                   (is (equal custom-model (gethash "model" payload)))
-                  (is (equal custom-token (gethash "auth" payload))))))
+                  (is (not (equal custom-token (gethash "auth" payload)))
+                      "event_log.payload must not contain the real credential in cleartext (found it verbatim)"))))
 
             ;; 3. Verify that the read model was correctly projected into the DB
             (let ((config (get-session-config session-id)))
@@ -196,7 +197,7 @@ a response (premise p6-request-body-inspected-but-not-branched)."
              (resolve-provider-endpoint "http://localhost:8000/v1/chat/completions")))
   (is (equal "http://localhost:8000/chat/completions"
              (resolve-provider-endpoint "http://localhost:8000/chat/completions")))
-  (is (equal "http://localhost:8000/v1/messages"
+  (is (equal "http://localhost:8000/v1/messages/chat/completions"
              (resolve-provider-endpoint "http://localhost:8000/v1/messages")))
   (is (equal "http://localhost:8000/v1/chat/completions"
              (resolve-provider-endpoint "http://localhost:8000/v1")))
@@ -208,7 +209,7 @@ a response (premise p6-request-body-inspected-but-not-branched)."
   ;; 2. Suffix checks with query parameters (Acceptance Criteria Requirement)
   (is (equal "http://localhost/v1/chat/completions?api-version=2023-05-15"
              (resolve-provider-endpoint "http://localhost/v1?api-version=2023-05-15")))
-  (is (equal "http://localhost:8000/v1/messages?some-arg=1&other-arg=2"
+  (is (equal "http://localhost:8000/v1/messages/chat/completions?some-arg=1&other-arg=2"
              (resolve-provider-endpoint "http://localhost:8000/v1/messages?some-arg=1&other-arg=2")))
   (is (equal "http://localhost/chat/completions?q=hello"
              (resolve-provider-endpoint "http://localhost?q=hello"))))

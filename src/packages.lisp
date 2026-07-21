@@ -288,8 +288,19 @@
            #:campaign-node-deposit
            #:campaign-node-harness-type
            #:campaign-node-harness-instance
-           #:campaign-node-ibc
-           
+           #:campaign-node-boundary
+           #:campaign-node-rework-diagnostic
+
+           ;; Structured dispatch-boundary grant
+           #:boundary
+           #:boundary-p
+           #:make-boundary
+           #:make-boundary-from-prompt
+           #:boundary-may-commit
+           #:boundary-file-surface
+           #:boundary-halt-conditions
+           #:boundary-prompt
+
            #:make-campaign-dag
            #:campaign-dag-p
            #:campaign-dag-nodes
@@ -336,9 +347,3 @@
   (:use #:cl)
   (:documentation "Persona layout compilation and prompt delivery hooks.")
   (:export #:compose-conditioning))
-
-(defpackage #:librecode-meta.metaharness
-  (:use #:cl)
-  (:documentation "Metaharness orchestrator entry point, campaign loop supervisor, and signal gates.")
-  (:export #:start-metaharness
-           #:stop-metaharness))

@@ -42,6 +42,15 @@ repl:
                 --eval '(push (truename "./") asdf:*central-registry*)' \
                 --eval "(handler-bind ((warning #'muffle-warning)) (asdf:load-system :librecode-runner) (asdf:load-system :librecode-meta) (asdf:load-system :librecode-model))"
 
+# Start a REPL with all packages loaded, plus demo/repl-drive.lisp for
+# chartering and driving a real campaign end to end (see the file's own
+# header docstring for the interactive session recipe)
+repl-drive:
+    rlwrap sbcl --eval '(require :asdf)' \
+                --eval '(push (truename "./") asdf:*central-registry*)' \
+                --eval "(handler-bind ((warning #'muffle-warning)) (asdf:load-system :librecode-runner) (asdf:load-system :librecode-meta) (asdf:load-system :librecode-model))" \
+                --load demo/repl-drive.lisp
+
 # Clean system fasl compiler caches
 clean:
     rm -rf ~/.cache/common-lisp/sbcl-*$(pwd)*
