@@ -95,7 +95,8 @@
                 (let ((payload (com.inuoe.jzon:parse payload-str)))
                   (is (equal custom-base-url (gethash "base-url" payload)))
                   (is (equal custom-model (gethash "model" payload)))
-                  (is (equal custom-token (gethash "auth" payload))))))
+                  (is (not (equal custom-token (gethash "auth" payload)))
+                      "event_log.payload must not contain the real credential in cleartext (found it verbatim)"))))
 
             ;; 3. Verify that the read model was correctly projected into the DB
             (let ((config (get-session-config session-id)))
