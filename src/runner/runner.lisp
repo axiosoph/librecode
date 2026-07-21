@@ -657,7 +657,17 @@ Enforces that exactly one provider call is made. Returns t if continuation is al
                    (request-body (com.inuoe.jzon:stringify
                                   (librecode-runner.event-store::coerce-to-hash-table request-plist)))
                    (dex-stream (handler-case
-                                   (dexador:post *provider-url*
+                                   ;; DEXADOR:POST's own lambda list has no
+                                   ;; MAX-REDIRECTS key (and no
+                                   ;; &ALLOW-OTHER-KEYS), so it cannot accept
+                                   ;; the override below at all -- passing it
+                                   ;; would signal an unknown-keyword error on
+                                   ;; every call. DEXADOR:REQUEST (which POST
+                                   ;; is itself defined in terms of) does
+                                   ;; accept it, so :METHOD :POST goes there
+                                   ;; directly instead.
+                                   (dexador:request *provider-url*
+                                                 :method :post
                                                  :headers (let ((h (list (cons "Content-Type" "application/json"))))
                                                             (when auth
                                                               (push (cons "Authorization" (format nil "Bearer ~A" auth)) h))
@@ -666,6 +676,16 @@ Enforces that exactly one provider call is made. Returns t if continuation is al
                                                  :want-stream t
                                                  :connect-timeout 10
                                                  :read-timeout 30
+                                                 ;; The fail-safe guard above validates only the
+                                                 ;; INITIAL host; DEXADOR defaults to following up
+                                                 ;; to 5 redirects on its own, so a guard-exempt
+                                                 ;; loopback endpoint could 3xx the connection to an
+                                                 ;; arbitrary remote host and DEXADOR would silently
+                                                 ;; follow, sending the full unauthenticated body
+                                                 ;; there. LLM completion endpoints have no
+                                                 ;; legitimate reason to redirect -- refuse to follow
+                                                 ;; any redirect at all.
+                                                 :max-redirects 0
                                                  :keep-alive nil)
                                  (dexador:http-request-failed (c)
                                    (let* ((body-raw (dexador:response-body c))
